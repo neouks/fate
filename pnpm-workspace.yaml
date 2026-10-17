@@ -1,0 +1,10 @@
+packages:
+  - "apps/*"
+# web/ 保持独立的 npm 工作流，不纳入 pnpm workspace，
+# 避免双包管理器锁文件互相干扰。
+# （pnpm 12 的设置只认本文件，不再读 package.json 的 pnpm 字段）
+
+onlyBuiltDependencies:
+  - esbuild
+  - protobufjs
+  - "@google/genai"
