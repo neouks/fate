@@ -85,6 +85,7 @@ export type EngineActivity = {
   detail?: string;
   toolCallId?: string;
   mainSeg?: number;
+  streamID?: string;
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;
@@ -685,13 +686,13 @@ export class Engine {
   ): void {
     switch (a.kind) {
       case "assistant_delta":
-        this.bus.emit("delta", { taskID: rt.taskID, expID: rt.expID, worker: meta.worker, nodeID: meta.intentID, mainSeg: meta.mainSeg, text: a.text, isThinking: a.isThinking });
+        this.bus.emit("delta", { taskID: rt.taskID, expID: rt.expID, worker: meta.worker, nodeID: meta.intentID, mainSeg: meta.mainSeg, text: a.text, streamID: a.streamID, isThinking: a.isThinking });
         break;
       case "assistant_message_end":
         if (!a.text) break;
         this.emitActivity(rt.taskID, {
           nodeID: meta.intentID ?? null, worker: meta.worker, mainSeg: meta.mainSeg,
-          kind: a.isThinking ? "thinking" : "text",
+          kind: a.isThinking ? "thinking" : "text", streamID: a.streamID,
           summary: a.text.slice(0, 4000), detail: a.text,
         });
         break;

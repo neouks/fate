@@ -154,6 +154,7 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
       kind: a.kind,
       main_seg: a.mainSeg,
       tool_use_id: a.toolCallId,
+      stream_id: a.streamID,
       tool: a.tool ?? null,
       is_error: a.isError ?? false,
       summary: a.summary ?? "",
@@ -173,6 +174,13 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
       send(dto(a));
     };
     app.engine.bus.on("activity", onActivity);
+    const onDelta = (delta: { expID: number; worker: string; nodeID?: number; mainSeg?: number; text: string; streamID: string; isThinking?: boolean }) => {
+      if (delta.expID !== expID || delta.isThinking || replaying) return;
+      raw.write(`event: delta\ndata: ${JSON.stringify({ worker: delta.worker === "main" ? "mainagent" : delta.worker,
+        intent_id: delta.nodeID == null ? undefined : String(delta.nodeID), main_seg: delta.mainSeg,
+        text: delta.text, stream_id: delta.streamID })}\n\n`);
+    };
+    app.engine.bus.on("delta", onDelta);
     try {
       // Page the complete gap; never advance the cursor past omitted history.
       for (;;) {
@@ -194,6 +202,7 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
       for (const activity of buffered.sort((a,b) => (a.id ?? 0) - (b.id ?? 0))) onActivity(activity);
     } catch {
       app.engine.bus.off("activity", onActivity);
+      app.engine.bus.off("delta", onDelta);
       raw.end(); // reconnect from the last delivered ID, instead of silently dropping history
       return;
     }
@@ -204,6 +213,7 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
     const cleanup = (): void => {
       clearInterval(ping);
       app.engine.bus.off("activity", onActivity);
+      app.engine.bus.off("delta", onDelta);
     };
     req.raw.on("close", cleanup);
     raw.on("error", cleanup);

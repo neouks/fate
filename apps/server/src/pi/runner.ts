@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 /**
@@ -66,8 +67,8 @@ export type WrapupBudget = () => WrapupDecision | undefined | Promise<WrapupDeci
 
 /** 归一化后的 activity 事件（对接 Go/norma 的 activity 流） */
 export type RunnerActivity =
-	| { kind: 'assistant_delta'; text: string; isThinking?: boolean }
-	| { kind: 'assistant_message_end'; text: string; isThinking?: boolean }
+	| { kind: 'assistant_delta'; text: string; streamID: string; isThinking?: boolean }
+	| { kind: 'assistant_message_end'; text: string; streamID?: string; isThinking?: boolean }
 	| { kind: 'tool_start'; toolCallId: string; toolName: string; args: unknown }
 	| { kind: 'tool_end'; toolCallId: string; toolName: string; isError: boolean; durationMs?: number; text?: string }
 	| { kind: 'settled'; aborted: boolean }
@@ -132,6 +133,7 @@ export class AgentRunner {
 	private readonly session: AgentSession;
 	private readonly opts: AgentRunnerOptions;
 	private turns = 0;
+	private streamID = randomUUID();
 	private budgetExceeded = false;
 	private modelError: string | undefined;
 	private settled!: (result: RunResult) => void;
@@ -285,10 +287,13 @@ export class AgentRunner {
 				this.turns++;
 				if (this.opts.maxTurns && this.turns >= this.opts.maxTurns) this.budgetExceeded = true;
 				break;
+			case 'message_start':
+				if (event.message.role === 'assistant') this.streamID = randomUUID();
+				break;
 			case 'message_update': {
 				const update = event.assistantMessageEvent;
 				if (update.type === 'text_delta' || update.type === 'thinking_delta') {
-					this.opts.onActivity?.({ kind: 'assistant_delta', text: update.delta, isThinking: update.type === 'thinking_delta' });
+					this.opts.onActivity?.({ kind: 'assistant_delta', text: update.delta, streamID: this.streamID, isThinking: update.type === 'thinking_delta' });
 				}
 				break;
 			}
@@ -299,7 +304,7 @@ export class AgentRunner {
 					if (thinking) {
 						this.opts.onActivity?.({ kind: 'assistant_message_end', text: thinking, isThinking: true });
 					}
-					this.opts.onActivity?.({ kind: 'assistant_message_end', text: assistantText(event.message) });
+					this.opts.onActivity?.({ kind: 'assistant_message_end', text: assistantText(event.message), streamID: this.streamID });
 					const u = (event.message as { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } }).usage;
 					if (u) {
 						this.opts.onActivity?.({ kind: 'usage', input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite });
