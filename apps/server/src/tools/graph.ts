@@ -1,3 +1,4 @@
+import { resolveGraphNode } from "../db/graph_view.js";
 // 探索图读写工具：record_fact（写通道纪律核心）、node_detail、
 // search_worker_traces / get_worker_trace（worker 间过程级信息交换）。
 
@@ -84,13 +85,13 @@ export function nodeDetailTool(ctx: ToolRunContext) {
       },
       readOnly: true,
       async run(args, c) {
-        const s = c.db.exploration(c.expID);
-        const node = await s.getNode(args.node_id);
-        if (!node) throw new Error(`节点 #${args.node_id} 不存在`);
+        const resolved = await resolveGraphNode(c.db, c.taskID, c.expID, args.node_id, c.role === 'worker');
+        const { node } = resolved;
+        const s = c.db.exploration(resolved.expID);
         const edges = await c.db.query(
           `SELECT src_id, rel, dst_id FROM exploration_edges
            WHERE exploration_id=$1 AND (src_id=$2 OR dst_id=$2) ORDER BY id`,
-          [c.expID, args.node_id],
+          [resolved.expID, args.node_id],
         );
         const anchors = await s.anchorAssetIDs(args.node_id);
         const anchorAssets =
@@ -102,6 +103,7 @@ export function nodeDetailTool(ctx: ToolRunContext) {
               }))
             : [];
         return {
+          source_task_id: resolved.taskID, inherited: resolved.inherited,
           node: { id: node.id, kind: node.kind, state: node.state, payload: node.payload, created_at: node.created_at },
           edges: edges.rows,
           anchors: anchorAssets,
@@ -167,7 +169,7 @@ export function searchWorkerTracesTool(ctx: ToolRunContext) {
 
 // ─── get_worker_trace：某条 work 的过程详情（含最终结论）───────────────────
 
-interface GetTraceArgs { intent_id: number; step_ids?: number[]; include_output?: boolean; }
+interface GetTraceArgs { intent_id: number; step_ids?: number[]; include_output?: boolean; offset?: number; after_id?: number; }
 
 export function getWorkerTraceTool(ctx: ToolRunContext) {
   return domainTool<GetTraceArgs>(
@@ -188,6 +190,8 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
             maxItems: 5,
             description: "要取完整内容的步骤 id 列表（省略则只列摘要）",
           },
+          offset: { type: "integer", minimum: 0, description: "步骤正文字符偏移，使用 next_offset 继续读取" },
+          after_id: { type: "integer", minimum: 0, description: "步骤列表游标" },
           include_output: { type: "boolean", description: "是否附最终总结，默认 false" },
         },
         required: ["intent_id"],
@@ -200,11 +204,11 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
 
         const listRows = await c.db.query(
           `SELECT id, kind, tool, is_error, summary, created_at FROM activity
-           WHERE exploration_id=$1 AND node_id=$2 AND kind NOT IN ('usage','round')
-           ORDER BY id LIMIT 100`,
-          [c.expID, args.intent_id],
+           WHERE exploration_id=$1 AND node_id=$2 AND kind NOT IN ('usage','round') AND id>$3
+           ORDER BY id LIMIT 51`,
+          [c.expID, args.intent_id, args.after_id ?? 0],
         );
-        const steps = listRows.rows.map((r: Record<string, unknown>) => ({
+        const steps = listRows.rows.slice(0,50).map((r: Record<string, unknown>) => ({
           step_id: Number(r["id"]),
           kind: r["kind"],
           tool: r["tool"],
@@ -217,7 +221,7 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
           const rows = await c.db.query(
             `SELECT id, kind, tool, summary, detail FROM activity
              WHERE exploration_id=$1 AND node_id=$2 AND id=ANY($3::bigint[]) ORDER BY id`,
-            [c.expID, args.intent_id, args.step_ids],
+            [c.expID, args.intent_id, args.step_ids.slice(0,5)],
           );
           for (const r of rows.rows) {
             const body = (r["detail"] as string | null) ?? (r["summary"] as string | null) ?? "";
@@ -225,8 +229,9 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
               step_id: Number(r["id"]),
               kind: r["kind"],
               tool: r["tool"],
-              body: body.slice(0, 6000),
-              truncated: body.length > 6000,
+              body: body.slice(Math.max(0,args.offset ?? 0), Math.max(0,args.offset ?? 0)+3000),
+              total_chars: body.length,
+              next_offset: (args.offset ?? 0)+3000<body.length ? (args.offset ?? 0)+3000 : null,
             });
           }
         }
@@ -243,6 +248,7 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
         return {
           intent: { id: intent.id, state: intent.state, summary: intent.payload["summary"] },
           steps,
+          next_cursor: listRows.rows.length>50 ? Number(listRows.rows[49]!.id) : null,
           detail,
           final_output: output,
         };

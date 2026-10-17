@@ -1,3 +1,4 @@
+import { authorizedNodes, graphSources } from "../db/graph_view.js";
 // graph_overview：planner/worker/mainagent 的态势输入。
 // 有界 JSON 投影（替代 Go 的 lightformat 渲染协议）：
 // goals / frontier / running / open_intents / recent_facts / recent_done / coverage / hints / digests。
@@ -8,6 +9,7 @@ import type { ToolRunContext } from "./context.js";
 interface OverviewOptions {
   /** worker 视角删除 coverage（Go 语义：worker 只看方向不看度量）。 */
   forWorker?: boolean;
+  localOnly?: boolean;
 }
 
 export async function buildGraphOverview(
@@ -16,13 +18,18 @@ export async function buildGraphOverview(
 ): Promise<Record<string, unknown>> {
   const s = c.db.exploration(c.expID);
 
-  const [goals, hints, digests] = await Promise.all([
+  let [goals, hints, digests] = await Promise.all([
     s.listByKind("goal", 30),
     s.listByKind("hint", 10),
-    s.listByKind("digest", 15),
+    c.db.query("SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND kind='digest' AND state='active' ORDER BY id DESC LIMIT 20",[c.expID]).then(r=>s.nodesByIDs(r.rows.map(n=>Number(n.id)))),
   ]);
-  const frontier = await s.frontier(30);
-  const counts = await s.executionCounts();
+  [goals,hints,digests] = await Promise.all([authorizedNodes(c.db,c.taskID,c.expID,goals,opts.forWorker),authorizedNodes(c.db,c.taskID,c.expID,hints,opts.forWorker),authorizedNodes(c.db,c.taskID,c.expID,digests,opts.forWorker)]);
+  const frontier = await authorizedNodes(c.db,c.taskID,c.expID,await s.frontier(30),opts.forWorker);
+  const totals = await c.db.query<{ done: string; open: string; facts: string }>(
+    `SELECT count(*) FILTER (WHERE kind='intent' AND state IN ('done','exhausted','blocked','stopped')) AS done,
+            count(*) FILTER (WHERE kind='intent' AND state='open') AS open,
+            count(*) FILTER (WHERE kind='fact' AND state='confirmed') AS facts
+     FROM exploration_nodes WHERE exploration_id=$1`, [c.expID]);
 
   const running = await c.db.query(
     `SELECT id, payload->>'summary' AS summary, owner FROM exploration_nodes
@@ -51,9 +58,14 @@ export async function buildGraphOverview(
     [c.taskID],
   );
 
+  for (const result of [running,recentFacts,recentDone]) {
+    const nodes=await s.nodesByIDs(result.rows.map(r=>Number(r.id)));
+    const allowed=new Set((await authorizedNodes(c.db,c.taskID,c.expID,nodes,opts.forWorker)).map(n=>n.id));
+    result.rows=result.rows.filter(r=>allowed.has(Number(r.id)));
+  }
   const overview: Record<string, unknown> = {
     goals: goals.map((g) => ({ id: g.id, text: g.payload["text"], state: g.state })),
-    frontier_open: frontier.length,
+    frontier_open: Number(totals.rows[0]?.open ?? 0),
     open_intents: frontier.slice(0, 30).map((n) => ({
       id: n.id,
       summary: n.payload["summary"],
@@ -64,7 +76,7 @@ export async function buildGraphOverview(
       summary: r["summary"],
       owner: r["owner"],
     })),
-    done_intents_total: counts.goals >= 0 ? Number(recentDone.rows.length) : 0,
+    done_intents_total: Number(totals.rows[0]?.done ?? 0),
     recent_done_intents: recentDone.rows.map((r: Record<string, unknown>) => ({
       id: Number(r["id"]),
       summary: r["summary"],
@@ -76,18 +88,30 @@ export async function buildGraphOverview(
       confidence: r["confidence"] ?? "medium",
       from_intent: r["from_intent"] === null ? null : Number(r["from_intent"]),
     })),
-    facts_total_hint: "recent 20 shown; use node_detail for more",
+    facts_total: Number(totals.rows[0]?.facts ?? 0),
+    facts_total_hint: "使用 list_facts 分页发现事实，node_detail 展开原文",
     findings_total: Number(findingsTotal.rows[0]?.["n"] ?? 0),
     active_hints: hints.filter((h) => h.state === "active").map((h) => ({ id: h.id, text: h.payload["text"] })),
     cold_digests: digests
       .filter((d) => d.state === "active")
-      .map((d) => ({ id: d.id, summary: d.payload["summary"], member_ids: d.payload["member_ids"] })),
+      .map((d) => ({ id: d.id, summary: String(d.payload["summary"] ?? "").slice(0,300), member_count: (d.payload["member_ids"] as unknown[] ?? []).length })),
+    cold_digests_index: { tool: 'expand_index', task_id:c.taskID },
     todos: c.todos ? c.todos.get(c.expID) : undefined,
   };
 
   if (!opts.forWorker) {
     const cov = await c.db.taskScope().taskCoverage(c.taskID, c.expID);
     overview["coverage"] = cov;
+  }
+  if (!opts.localOnly) {
+    const sources=await graphSources(c.db,c.taskID);
+    overview.related_tasks=await Promise.all(sources.map(async source=>{
+      const v=await buildGraphOverview({...c,taskID:source.taskID,expID:source.expID,todos:undefined},{...opts,localOnly:true});
+      return {source_task_id:source.taskID,inherited:true,read_only:true,
+        goals:(v.goals as unknown[]).slice(0,5),recent_facts:(v.recent_facts as unknown[]).slice(0,5),
+        cold_digests:(v.cold_digests as unknown[]).slice(0,3),facts_total:v.facts_total,findings_total:v.findings_total,
+        index:{tool:'expand_index',task_id:source.taskID}};
+    }));
   }
   return overview;
 }

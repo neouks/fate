@@ -16,6 +16,7 @@ export async function roleResources(db: Database, role: string, skillsDir?: stri
     const all = rows.find((v) => !v.mcp_tool_name)?.enabled === true;
     if (!all && !rows.some((v) => v.enabled && v.mcp_tool_name)) return [];
     const config: Record<string, unknown> = {
+      transport: server.transport, insecure: server.insecure,
       ...(server.transport === "stdio" ? { command: server.command, args: server.args, env: server.env }
         : { url: server.url, headers: server.env }),
       exposure: all ? "direct" : "hidden",

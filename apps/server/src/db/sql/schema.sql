@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS explorations (
 -- planner wakes and processes a round. Drives the ≥R cold-node debounce (measured in
 -- this exploration's own rounds, not global node ids or wall-clock).
 ALTER TABLE explorations ADD COLUMN IF NOT EXISTS round_no BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE explorations ADD COLUMN IF NOT EXISTS planner_todos JSONB NOT NULL DEFAULT '[]'::jsonb;
 DROP TRIGGER IF EXISTS trg_exp_upd ON explorations;
 CREATE TRIGGER trg_exp_upd BEFORE UPDATE ON explorations
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -1711,6 +1712,10 @@ BEGIN
             IF TG_OP = 'UPDATE' AND NEW.payload IS NOT DISTINCT FROM OLD.payload AND NEW.state = OLD.state THEN RETURN NEW; END IF;
             eid := NEW.exploration_id;
         END IF;
+    ELSIF TG_TABLE_NAME = 'exploration_anchors' THEN
+        SELECT exploration_id INTO eid FROM exploration_nodes
+          WHERE id=COALESCE(NEW.node_id,OLD.node_id) AND kind<>'digest';
+        IF eid IS NULL THEN RETURN COALESCE(NEW,OLD); END IF;
     ELSE
         IF TG_OP = 'DELETE' THEN
             IF OLD.rel = 'covers' THEN RETURN OLD; END IF;
@@ -1730,3 +1735,50 @@ CREATE TRIGGER trg_nodes_invalidate_digests AFTER INSERT OR UPDATE OF payload,st
 DROP TRIGGER IF EXISTS trg_edges_invalidate_digests ON exploration_edges;
 CREATE TRIGGER trg_edges_invalidate_digests AFTER INSERT OR DELETE ON exploration_edges
     FOR EACH ROW EXECUTE FUNCTION invalidate_exploration_digests();
+DROP TRIGGER IF EXISTS trg_anchors_invalidate_digests ON exploration_anchors;
+CREATE TRIGGER trg_anchors_invalidate_digests AFTER INSERT OR DELETE ON exploration_anchors
+    FOR EACH ROW EXECUTE FUNCTION invalidate_exploration_digests();
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
+
+-- pi request routing audit; API credentials are never persisted here.
+CREATE TABLE IF NOT EXISTS llm_request_attempts (
+  id BIGSERIAL PRIMARY KEY,
+  task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  role TEXT NOT NULL, profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL,
+  model TEXT NOT NULL, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '',
+  usage JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT now(), finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_llm_attempts_task ON llm_request_attempts(task_id,id DESC);
+CREATE TABLE IF NOT EXISTS llm_request_limits (
+  profile_id BIGINT PRIMARY KEY REFERENCES llm_profiles(id) ON DELETE CASCADE,
+  next_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS engine_task_leases (
+  task_id BIGINT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  owner TEXT NOT NULL,token TEXT NOT NULL UNIQUE,expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS engine_worker_slots (
+  id TEXT PRIMARY KEY,task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  token TEXT NOT NULL
+);
+
+-- Immutable, content-addressed evidence survives deletion from the traffic inbox.
+CREATE TABLE IF NOT EXISTS evidence_blobs(hash TEXT PRIMARY KEY,bytes BYTEA NOT NULL);
+CREATE TABLE IF NOT EXISTS traffic_exchanges(
+ id TEXT PRIMARY KEY REFERENCES traffic_evidence_snapshots(id),task_id BIGINT REFERENCES tasks(id) ON DELETE SET NULL,
+ intent_id BIGINT REFERENCES exploration_nodes(id) ON DELETE SET NULL,host TEXT NOT NULL,truncated BOOLEAN NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS idx_traffic_task ON traffic_exchanges(task_id,id);
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS tool_call_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_idempotency ON findings(task_id,tool_call_id) WHERE tool_call_id IS NOT NULL;
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS supports_images BOOLEAN NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS chat_artifacts (
+ id TEXT PRIMARY KEY,task_id BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+ conversation_id BIGINT REFERENCES conversations(id) ON DELETE CASCADE,
+ name TEXT NOT NULL,path TEXT NOT NULL UNIQUE,mime TEXT NOT NULL,size BIGINT NOT NULL,
+ sha256 TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE finding_retests ADD COLUMN IF NOT EXISTS lease_token TEXT;
+ALTER TABLE finding_retests ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;

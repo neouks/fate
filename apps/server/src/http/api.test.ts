@@ -222,7 +222,7 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
     expect(frames[0]).toBe(": connected");
     const dataLine = (f: string): string => f.split("\n").find((l) => l.startsWith("data: "))!.slice(6);
     expect(frames[1]!.startsWith(`id: ${r1}\n`)).toBe(true);
-    expect(JSON.parse(dataLine(frames[1]!))).toMatchObject({ id: r1, summary: "历史帧1" });
+    expect(JSON.parse(dataLine(frames[1]!))).toMatchObject({ id: r1, seq: r1, summary: "历史帧1" });
     expect(frames[2]!.startsWith(`id: ${r2}\n`)).toBe(true);
     expect(JSON.parse(dataLine(frames[2]!))).toMatchObject({ id: r2, summary: "历史帧2" });
 
@@ -231,12 +231,17 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
     engine.bus.emit("activity", live);
     await collectUntil(() => frames.length >= 4);
     expect(frames[3]!.startsWith(`id: ${r2 + 1}\n`)).toBe(true);
-    expect(JSON.parse(dataLine(frames[3]!))).toMatchObject({ id: r2 + 1, kind: "tool_use", tool: "bash", task_id: 0 });
+    expect(JSON.parse(dataLine(frames[3]!))).toMatchObject({ id: r2 + 1, seq: r2 + 1, intent_id: "7", kind: "tool_use", tool: "bash", task_id: 0 });
 
     // 过滤语义：非本探索的事件不投递。
     engine.bus.emit("activity", { taskID: 1, expID: expID + 999_999, kind: "text", id: r2 + 2 });
     await new Promise((r) => setTimeout(r, 300));
     expect(frames.length).toBe(4);
+
+    engine.bus.emit("delta", { expID, worker: "main", mainSeg: 2, text: "streaming", streamID: "fixture-stream" });
+    await collectUntil(() => frames.length >= 5);
+    expect(frames[4]).toContain("event: delta");
+    expect(JSON.parse(dataLine(frames[4]!))).toMatchObject({ worker: "mainagent", main_seg: 2, text: "streaming" });
 
     ac.abort();
     await sseApp.close().catch(() => undefined);

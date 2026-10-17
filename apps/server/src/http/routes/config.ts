@@ -4,7 +4,7 @@
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { testProfileConnection } from "../../pi/providerFromProfile.js";
+import { testProfileConnection, type ProfileLike } from "../../pi/providerFromProfile.js";
 import type { Agent, LLMProfile } from "../../db/platform.js";
 import { ActiveLLMProfileDeleteError, LLMProfileNotFoundError } from "../../db/platform.js";
 
@@ -25,6 +25,7 @@ function profileDTO(p: LLMProfile): Record<string, unknown> {
     rate_per_second: p.ratePerSecond,
     rate_per_minute: p.ratePerMinute,
     context_window_k: p.contextWindowK,
+    supports_images:p.supportsImages===true,
     thinking_type: p.thinkingType,
     reasoning_effort: p.reasoningEffort,
     is_default: p.isDefault,
@@ -42,8 +43,8 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   // ─── LLM 测试连接：按 body 参数（或已存 profile id）构造 provider 做一次最小补全 ───
   // ─── 内置工具目录 ───
   app.get("/api/tools", async () => {
-    const rows = await app.db.query(`SELECT key, system, description, schema, agents, enabled, kind FROM tools ORDER BY kind, key`);
-    return { tools: rows.rows.map((r) => ({ ...r, schema: r["schema"] ?? {}, agents: r["agents"] ?? [], deferred: false })) };
+    const rows = await app.db.query(`SELECT key, system, description, schema, agents, enabled, kind, exec, deferred, directory, usage_help, when_to_use, executable FROM tools ORDER BY kind, key`);
+    return { tools: rows.rows.map((r) => ({ ...r, schema: r["schema"] ?? {}, agents: r["agents"] ?? [], deferred: r["deferred"] === true })) };
   });
 
   app.put("/api/tools/:key", async (req) => {
@@ -72,7 +73,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   app.post("/api/llm/test", async (req) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const profileID = Number(b["profile_id"] ?? b["id"]) || 0;
-    let profile: { id: number; name: string; model: string; baseURL: string; apiKey: string; contextWindowK: number; maxTokens: number; thinkingType?: string } | null = null;
+    let profile: ProfileLike | null = null;
     if (profileID > 0) {
       const rows = await app.db.query(`SELECT * FROM llm_profiles WHERE id=$1`, [profileID]);
       const r = rows.rows[0] as Record<string, unknown> | undefined;
@@ -87,6 +88,8 @@ export function registerConfigRoutes(app: FastifyInstance): void {
           apiKey: bodyKey || String(r["api_key"] ?? ""),
           contextWindowK: Number(r["context_window_k"] ?? 0), maxTokens: Number(r["max_tokens"] ?? 0),
           thinkingType: String(b["thinking_type"] ?? r["thinking_type"] ?? ""),
+          format: String(b["format"] ?? r["format"] ?? "openai"),
+          reasoningEffort: String(b["reasoning_effort"] ?? r["reasoning_effort"] ?? ""),
         };
       }
     }
@@ -96,6 +99,8 @@ export function registerConfigRoutes(app: FastifyInstance): void {
         model: String(b["model"] ?? ""), baseURL: String(b["base_url"] ?? ""), apiKey: String(b["api_key"] ?? ""),
         contextWindowK: Number(b["context_window_k"] ?? 0), maxTokens: Number(b["max_tokens"] ?? 0),
         thinkingType: String(b["thinking_type"] ?? ""),
+        format: String(b["format"] ?? "openai"),
+        reasoningEffort: String(b["reasoning_effort"] ?? ""),
       };
     }
     if (!profile.model || !profile.baseURL) {
@@ -173,12 +178,14 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       platform().getSetting("active_task"),
       platform().getEnabledTools(),
     ]);
-    return { workers, active_task: activeTask ?? "", intercept_enabled_tools: enabledTools };
+    return { workers, task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"global; next claim",role_settings:"next session",task_concurrency:"next admission"}, active_task: activeTask ?? "", intercept_enabled_tools: enabledTools };
   });
 
   const setSettings = async (req: { body?: unknown }, reply: { code(c: number): { send(v: unknown): unknown } }): Promise<unknown> => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const out: Record<string, unknown> = {};
+    if(b["task_concurrency_enabled"]!==undefined)await platform().setSetting("task_concurrency_enabled",String(b["task_concurrency_enabled"]===true));
+    if(b["task_concurrency_limit"]!==undefined){const n=Number(b["task_concurrency_limit"]);if(!Number.isInteger(n)||n<1)return reply.code(400).send({error:"task_concurrency_limit 必须为正整数"});await platform().setSetting("task_concurrency_limit",String(n));}
     if (b["workers"] !== undefined) {
       const n = Number(b["workers"]);
       if (!Number.isInteger(n) || n <= 0) return reply.code(400).send({ error: "workers 必须 >0" });
@@ -269,6 +276,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       ratePerSecond: Number(b["rate_per_second"]) || 0,
       ratePerMinute: Number(b["rate_per_minute"]) || 0,
       contextWindowK: Number(b["context_window_k"]) || 0,
+      supportsImages: typeof b["supports_images"]==='boolean'?b["supports_images"]:undefined,
       thinkingType: typeof b["thinking_type"] === "string" ? b["thinking_type"] : "",
       reasoningEffort: typeof b["reasoning_effort"] === "string" ? b["reasoning_effort"] : "",
       priority: Number(b["priority"]) || 0,
@@ -327,6 +335,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       rate_per_second: p.ratePerSecond,
       rate_per_minute: p.ratePerMinute,
       context_window_k: p.contextWindowK,
+    supports_images:p.supportsImages===true,
       thinking_type: p.thinkingType,
       reasoning_effort: p.reasoningEffort,
     };

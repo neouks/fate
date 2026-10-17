@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 // 拦截审批门：把 InterceptStore 的规则引擎接到 agent 工具调用前（等价 Go guard.applyIntercept）。
 // 顺序：工具不在拦截范围 → 放行；规则匹配 allow → 放行；deny → block；
 // ask → 落 intercept_pending 并轮询人工决定（allow → 放行，deny/超时 → block）。
@@ -9,7 +10,7 @@ import type { ToolGuard } from "../pi/runner.js";
 
 /** 每个进程一个 Interceptor（规则缓存跨 run 复用；DB 变更由 invalidate 失效——路由层调用）。 */
 const interceptors = new WeakMap<Database, Interceptor>();
-function interceptorFor(db: Database): Interceptor {
+export function interceptorFor(db: Database): Interceptor {
   let ic = interceptors.get(db);
   if (!ic) {
     ic = new Interceptor(db);
@@ -28,7 +29,8 @@ export interface GateContext {
 }
 
 export function interceptGate(db: Database, ctx: GateContext): ToolGuard {
-  return async ({ toolName, args }) => {
+  return async ({ toolName, args, signal }) => {
+    signal?.throwIfAborted();
     const ic = interceptorFor(db);
     if (!(await ic.isToolEnabled(toolName))) return undefined;
 
@@ -54,7 +56,11 @@ export function interceptGate(db: Database, ctx: GateContext): ToolGuard {
     const timeoutMs = decision.timeoutEnabled && decision.timeoutSeconds > 0 ? decision.timeoutSeconds * 1000 : ASK_TIMEOUT_MS;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, ASK_POLL_MS));
+      try { await delay(ASK_POLL_MS, undefined, { signal }); }
+      catch {
+        await db.interceptStore().decideInterceptPending(pending, "denied").catch(() => undefined);
+        return { block: true, reason: "执行已取消，待审批操作未执行。" };
+      }
       const row = await db.query<{ status: string }>(`SELECT status FROM intercept_pending WHERE id=$1`, [pending]);
       const status = row.rows[0]?.status;
       if (status === "allowed") return undefined;

@@ -1,3 +1,4 @@
+import {prepareAttachments} from "../../evidence/attachments.js";
 // 任务路由：CRUD + 生命周期（start/pause/resume/stop|finish|control/delete）+ 意图控制 + 主对话。
 // 生命周期约定（对齐 Go manager/engine 分层）：tasks 表状态先落库，再驱动 engine；
 // engine 侧未运行（无运行时）时引擎调用静默跳过，DB 状态仍是唯一真源。
@@ -83,9 +84,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       assetApprovalTemplate: typeof b["asset_approval_template"] === "string" ? b["asset_approval_template"] : undefined,
     });
     // 状态先落库（running），再后台跑 goals 分解 + 引擎循环；分解失败由引擎以活动事件记录。
-    await tasks().setTaskStatus(task.id, "running");
-    await tasks().stampFirstRun(task.id, task.timeout_seconds).catch(() => null);
-    void engineNoop(app.engine.run(task.id, { decompose: { description } }));
+    void engineNoop(app.engine.admitTask(task.id, { decompose: { description } }));
     return reply.code(201).send(taskDTO(task));
   });
 
@@ -127,9 +126,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
   async function startTask(id: number): Promise<Record<string, unknown>> {
     const task = await tasks().getTask(id);
     if (!task) throw Object.assign(new Error("task not found"), { statusCode: 404 });
-    await tasks().setTaskStatus(id, "running");
-    await tasks().stampFirstRun(id, task.timeout_seconds).catch(() => null);
-    void engineNoop(app.engine.run(id));
+    await app.engine.admitTask(id);
     return { id, status: "running" };
   }
 
@@ -139,20 +136,13 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     } catch (err) {
       throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), { statusCode: 409 });
     }
-    void engineNoop(app.engine.pause(id));
+    await app.engine.pause(id);
     return { id, paused: true, status: "paused" };
   }
 
   async function resumeTask(id: number): Promise<Record<string, unknown>> {
-    const res = await app.db.query<{ status: string }>(
-      `UPDATE tasks SET paused=false,
-         status=CASE WHEN status IN ('done','failed','timeout') THEN status ELSE 'running' END
-       WHERE id=$1 AND deleted_at IS NULL RETURNING status`,
-      [id],
-    );
-    if (res.rows.length === 0) throw Object.assign(new Error("task not found"), { statusCode: 404 });
-    void engineNoop(app.engine.resume(id));
-    return { id, paused: false, status: res.rows[0]!.status };
+    await app.engine.admitTask(id);
+    return { id, paused: false, status: (await tasks().getTask(id))?.status };
   }
 
   async function stopTask(id: number): Promise<Record<string, unknown>> {
@@ -199,9 +189,6 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const task = await tasks().getTask(id);
     if (!task) return reply.code(404).send({ error: "task not found" });
     await app.db.platform().setSetting("active_task", String(id));
-    if (!isTerminalTaskStatus(task.status) && !task.queued) {
-      void engineNoop(app.engine.run(id)); // 幂等：已运行只踢一轮规划
-    }
     return { active: String(id) };
   });
 
@@ -213,61 +200,12 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     return task.exploration_id;
   }
 
-  app.post("/api/tasks/:id/intents/:intentID/pause", async (req, reply) => {
-    const taskID = Number((req.params as { id: string }).id);
-    const intentID = Number((req.params as { intentID: string }).intentID);
-    const expID = await taskExploration(taskID);
-    const s = app.db.exploration(expID);
-    // TODO(M6): 引擎侧单意图暂停（当前仅 DB 状态机；在跑意图的运行中 abort 随审批门一并接线）。
-    if (!(await s.compareAndSetIntentState(intentID, "running", "paused"))) {
-      const n = await s.getNode(intentID);
-      if (!n) return reply.code(404).send({ error: "intent not found" });
-      if (n.state !== "paused") return reply.code(409).send({ error: `意图 #${intentID} 状态为 ${n.state}，无法暂停` });
-    }
-    return { id: intentID, state: "paused" };
-  });
-
-  app.post("/api/tasks/:id/intents/:intentID/resume", async (req, reply) => {
-    const taskID = Number((req.params as { id: string }).id);
-    const intentID = Number((req.params as { intentID: string }).intentID);
-    const expID = await taskExploration(taskID);
-    const s = app.db.exploration(expID);
-    if (!(await s.compareAndSetIntentState(intentID, "paused", "open"))) {
-      const n = await s.getNode(intentID);
-      if (!n) return reply.code(404).send({ error: "intent not found" });
-      if (n.state !== "open" && n.state !== "running") {
-        return reply.code(409).send({ error: `意图 #${intentID} 状态为 ${n.state}，无法恢复` });
-      }
-    }
-    // 唤醒 worker 池（引擎未运行则 no-op；副作用：整任务的 paused 标记一并解除）。
-    await engineNoop(app.engine.resume(taskID));
-    return { id: intentID, state: "open" };
-  });
-
-  app.post("/api/tasks/:id/intents/:intentID/cancel", async (req, reply) => {
-    const taskID = Number((req.params as { id: string }).id);
-    const intentID = Number((req.params as { intentID: string }).intentID);
-    const body = (req.body ?? {}) as { reason?: unknown };
-    const reason = typeof body["reason"] === "string" ? body["reason"] : "";
-    const expID = await taskExploration(taskID);
-    const s = app.db.exploration(expID);
-    // 先落终态再盖 cancelled_by_user（store 的状态写入会拒绝已取消的意图）。
-    const n = await s.getNode(intentID);
-    if (!n) return reply.code(404).send({ error: "intent not found" });
-    if (n.state !== "done" && n.state !== "stopped" && n.state !== "blocked" && n.state !== "exhausted") {
-      if (!(await s.compareAndSetIntentState(intentID, "running", "stopped").catch(() => false))) {
-        await s.setIntentState(intentID, "stopped").catch(() => undefined);
-      }
-    }
-    await app.db.query(
-      `UPDATE exploration_nodes SET payload=payload||jsonb_build_object('cancelled_by_user',true,'cancel_reason',$2::text)
-       WHERE id=$1 AND exploration_id=$3`,
-      [intentID, reason, expID],
-    );
-    // 在跑意图直接终止（无句柄=不在跑，忽略）。
-    await engineNoop(app.engine.killWork(taskID, intentID, reason || "用户取消"));
-    return { id: intentID, state: "stopped", cancelled_by_user: true, cancel_reason: reason };
-  });
+  for (const action of ['pause','resume','cancel'] as const) {
+    app.post(`/api/tasks/:id/intents/:intentID/${action}`, async req => {
+      const p = req.params as {id:string;intentID:string};
+      return app.engine.controlIntent(Number(p.id),Number(p.intentID),action,String((req.body as {reason?:string})?.reason ?? ''));
+    });
+  }
 
   // 人工介入：运行中的意图注入纠偏消息（drain 语义，模型下一轮读）。
   app.post("/api/tasks/:id/intents/:intentID/messages", async (req, reply) => {
@@ -322,9 +260,9 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       if (!exists.rowCount) throw Object.assign(new Error("会话不存在"), { statusCode: 404 });
     }
     const message = typeof body["message"] === "string" ? body["message"] : "";
-    if (!message.trim()) throw Object.assign(new Error("message 不能为空"), { statusCode: 400 });
-    if (Array.isArray(body["attachments"]) && body["attachments"].length) throw Object.assign(new Error("附件尚未接入，请将必要内容粘贴到消息中"), { statusCode: 400 });
-    return { reply: await app.engine.mainChat(taskID, message, segment), mode: "main" };
+    if (!message.trim() && !(Array.isArray(body["attachments"]) && body["attachments"].length)) throw Object.assign(new Error("message 不能为空"), { statusCode: 400 });
+    const attached=await prepareAttachments(app.db,app.dataDir,taskID,body["attachments"]);
+    return { reply: await app.engine.mainChat(taskID,[message,attached.text].filter(Boolean).join('\n\n'),segment,attached), mode: "main" };
   };
   app.post("/api/tasks/:id/chat", async (req) => chat(Number((req.params as { id: string }).id), (req.body ?? {}) as Record<string, unknown>));
   app.post("/api/chat", async (req) => {
@@ -416,19 +354,14 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       : [];
     const activeRaw = Number(b["active_llm_profile_id"]);
     const activeID = Number.isInteger(activeRaw) && activeRaw > 0 ? activeRaw : null;
+    if(new Set(ids).size!==ids.length || (activeID && !ids.includes(activeID)))return reply.code(400).send({error:'模型链不能重复，激活模型必须属于模型链'});
     const first = ids[0] ?? null;
-    await app.db.query(
-      `UPDATE tasks SET llm_profile_id=$2::bigint, active_llm_profile_id=COALESCE($3::bigint,$2::bigint) WHERE id=$1`,
-      [taskID, first, activeID],
-    );
-    await app.db.query(`DELETE FROM task_llm_profiles WHERE task_id=$1`, [taskID]);
-    for (let pos = 0; pos < ids.length; pos++) {
-      await app.db.query(`INSERT INTO task_llm_profiles(task_id, profile_id, position) VALUES ($1,$2,$3)`, [
-        taskID,
-        ids[pos],
-        pos,
-      ]);
-    }
+    await app.db.transaction(async tx=>{
+      await tx.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[taskID]);
+      await tx.query(`UPDATE tasks SET llm_profile_id=$2,active_llm_profile_id=COALESCE($3,$2) WHERE id=$1`,[taskID,first,activeID]);
+      await tx.query(`DELETE FROM task_llm_profiles WHERE task_id=$1`,[taskID]);
+      for(let pos=0;pos<ids.length;pos++)await tx.query(`INSERT INTO task_llm_profiles(task_id,profile_id,position) VALUES($1,$2,$3)`,[taskID,ids[pos],pos]);
+    });
     return { ok: true, llm_profile_ids: ids, active_llm_profile_id: activeID ?? first };
   });
 

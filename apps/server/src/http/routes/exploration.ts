@@ -8,7 +8,7 @@ import type { EngineActivity } from "../../engine/engine.js";
 /** engine.bus activity 事件（EngineActivity + 落库后的自增 id）。 */
 type BusActivity = EngineActivity & { id?: number };
 
-const ACTIVITY_COLS = `id, node_id, worker, kind, tool, tool_use_id, is_error, summary, detail, main_seg, created_at`;
+const ACTIVITY_COLS = `id, node_id, worker, kind, tool, tool_use_id, is_error, summary, detail, main_seg, metadata, created_at`;
 
 function num(v: unknown, def = 0): number {
   const n = Number(v);
@@ -153,6 +153,7 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
       worker: a.worker === "main" ? "mainagent" : a.worker ?? "",
       kind: a.kind,
       main_seg: a.mainSeg,
+      metadata: a.metadata,
       tool_use_id: a.toolCallId,
       stream_id: a.streamID,
       tool: a.tool ?? null,
@@ -207,11 +208,22 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
       return;
     }
 
+    let polling=false;
+    const poll=setInterval(async()=>{
+      if(polling||replaying||raw.destroyed)return;polling=true;
+      try{
+        const rows=await db().query(`SELECT ${ACTIVITY_COLS} FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT 2000`,[expID,last]);
+        for(const row of rows.rows){const id=Number(row.id);if(id<=last)continue;last=id;
+          send({...row,id,seq:id,exp_id:expID,worker:row.worker==='main'?'mainagent':row.worker,intent_id:row.node_id==null?undefined:String(row.node_id)});
+        }
+      }catch{raw.end();}finally{polling=false;}
+    },1000);
     const ping = setInterval(() => {
       raw.write(": ping\n\n"); // 注释行：不推进 Last-Event-ID、不伪造活动事件
     }, 20_000);
     const cleanup = (): void => {
       clearInterval(ping);
+      clearInterval(poll);
       app.engine.bus.off("activity", onActivity);
       app.engine.bus.off("delta", onDelta);
     };

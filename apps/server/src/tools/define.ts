@@ -24,6 +24,7 @@ export interface DomainToolSpec<T> {
   /** JSON Schema（对象类型，properties/required）。 */
   parameters: Record<string, unknown>;
   readOnly?: boolean;
+  transactional?: boolean;
   idempotent?: boolean;
   /** 返回 string 原样输出；对象则 JSON 序列化（经 clamp）。 */
   run: (args: T, ctx: ToolRunContext) => Promise<string | Record<string, unknown>>;
@@ -40,9 +41,11 @@ export function domainTool<T>(spec: DomainToolSpec<T>, ctx: ToolRunContext) {
       readOnlyHint: spec.readOnly === true,
       idempotentHint: spec.idempotent === true,
     },
-    async execute(_toolCallId: string, params: T) {
+    async execute(_toolCallId: string, params: T, signal?: AbortSignal) {
       try {
-        const out = await spec.run(params, ctx);
+        if(ctx.hooks.assertOwnership && spec.transactional===false)await ctx.hooks.assertOwnership(ctx.db);
+        const execute=(db:typeof ctx.db)=>spec.run(params, { ...ctx, db, signal, toolCallID: _toolCallId });
+        const out = ctx.hooks.assertOwnership && spec.transactional!==false ? await ctx.db.transaction(async db=>{await ctx.hooks.assertOwnership!(db);return execute(db);}) : await execute(ctx.db);
         const text = typeof out === "string" ? out : JSON.stringify(out, null, 1);
         return { content: [{ type: "text" as const, text: clampOutput(text) }], details: undefined };
       } catch (err) {

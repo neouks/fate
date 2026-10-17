@@ -26,12 +26,25 @@ const DEADLOCK_RETRY_DELAYS_MS = [100, 250, 500, 1000];
 export class Database {
   readonly pool: pg.Pool;
 
-  constructor(pool: pg.Pool) {
+  constructor(pool: pg.Pool, readonly transactionClient?: pg.PoolClient) {
     this.pool = pool;
   }
 
   query<T extends Record<string, unknown> = Record<string, unknown>>(text: string, values?: unknown[]) {
-    return this.pool.query<T>(text, values);
+    return (this.transactionClient ?? this.pool).query<T>(text, values);
+  }
+
+  /** Domain operations share one connection; nested stores must not commit independently. */
+  async transaction<T>(fn: (db: Database) => Promise<T>): Promise<T> {
+    if (this.transactionClient) return fn(this);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await fn(new Database(this.pool, client));
+      await client.query("COMMIT");
+      return result;
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
   }
 
   /** 建一个新探索图根并返回 id（Go: CreateExploration）。 */
@@ -50,7 +63,7 @@ export class Database {
 
   /** 全局资产图 store（Go: AssetStore）。 */
   assets(): AssetStore {
-    return new AssetStore(this);
+    return new AssetStore(this, this.transactionClient ?? null);
   }
 
   /** 任务注册表 store（Go: TaskStore）。 */
@@ -60,7 +73,7 @@ export class Database {
 
   /** 任务侧范围/授权/覆盖度 store（Go: TaskScopeStore）。 */
   taskScope(): TaskScopeStore {
-    return new TaskScopeStore(this);
+    return new TaskScopeStore(this, this.transactionClient);
   }
 
   /** 设置/提示词/工具目录/MCP/LLM profile store（Go: PlatformStore）。 */

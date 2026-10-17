@@ -1,3 +1,4 @@
+import { rootDomain } from "./assets.js";
 // 任务侧资产授权/范围/覆盖度 store。
 // 平移自 Go 版 db/task_scope.go（AddAutoScope/AddAgentScope/covTargetCTE/TaskCoverage/
 // ListUntestedAssets）、db/task_assets.go（Validate*/TaskAssetApprovalStates/Approve/Revoke/
@@ -94,15 +95,7 @@ const SECOND_LEVEL_SUFFIXES = new Set([
  * IP 字面量 / publicsuffix 无法归类的主机（localhost、内部域、非 ICANN TLD）
  * 原样返回且 isApex=true——与 Go 的 best-effort 边界一致。
  */
-export function rootDomain(host: string): { root: string; isApex: boolean } {
-  const h = domainKey(host);
-  if (h === "" || parseCanonicalIP(h) !== null) return { root: h, isApex: true };
-  const labels = h.split(".");
-  if (labels.length < 2) return { root: h, isApex: true };
-  const last2 = labels.slice(-2).join(".");
-  const root = labels.length >= 3 && SECOND_LEVEL_SUFFIXES.has(last2) ? labels.slice(-3).join(".") : last2;
-  return { root, isApex: h === root };
-}
+export { rootDomain } from "./assets.js";
 
 /** 规范化 IP 字面量（Go net.ParseIP + ip.String()）；非法返回 null。IPv6 输出压缩形。 */
 export function parseCanonicalIP(v: string): string | null {

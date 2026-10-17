@@ -501,7 +501,7 @@ export class TaskStore {
   async applyTaskPause(id: number): Promise<{ queueMode: string }> {
     const res = await this.db.query<{ mode: string }>(
       `UPDATE tasks
-          SET paused=true, queued=false, queued_at=NULL
+          SET paused=true, paused_at=COALESCE(paused_at,now()), queued=false, queued_at=NULL
         WHERE id=$1 AND deleted_at IS NULL AND paused=false
           AND status NOT IN ('done','failed','timeout')
         RETURNING COALESCE(queue_mode,'') AS mode`,

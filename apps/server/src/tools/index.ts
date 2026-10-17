@@ -1,3 +1,5 @@
+import {httpRequestTool,trafficBodyTool,readAttachmentTool} from "./evidence.js";
+import { graphIndexTool, expandDigestTool } from "./graph_read.js";
 // 角色工具装配：每次 run 构造 ToolRunContext 后按角色产出工具集。
 // 本地文件/命令工具不在领域层——由 pi 内置 bash/read/write/edit 承担（引擎层并入 allowlist）。
 
@@ -13,8 +15,10 @@ import { graphOverviewTool } from "./overview.js";
 /** 共享读集：三类 agent 都可用；worker 视角不带 coverage（Go 语义：只看方向不看度量）。 */
 function sharedReadTools(ctx: ToolRunContext, forWorker = false): ToolDefinition[] {
   return [
+    readAttachmentTool(ctx),
     graphOverviewTool(ctx, { forWorker }),
     nodeDetailTool(ctx),
+    graphIndexTool(ctx), graphIndexTool(ctx,"list_facts","fact"), expandDigestTool(ctx),
     searchWorkerTracesTool(ctx),
     getWorkerTraceTool(ctx),
   ];
@@ -22,7 +26,7 @@ function sharedReadTools(ctx: ToolRunContext, forWorker = false): ToolDefinition
 
 /** worker：一条意图的执行者（三通道写回 + 查重 + 过程复用）。 */
 export function workerTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [
+  return [httpRequestTool(ctx), trafficBodyTool(ctx),
     ...sharedReadTools(ctx, true),
     recordFactTool(ctx),
     insertAssetsTool(ctx),

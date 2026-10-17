@@ -1,3 +1,7 @@
+import multipart from "@fastify/multipart";
+import {registerAttachmentRoutes} from "./routes/attachments.js";
+import {registerEvidenceRoutes} from "./routes/evidence.js";
+import { interceptorFor } from "../intercept/gate.js";
 // Fastify 应用：M5 HTTP API + SSE，对齐现有 Next.js 前端契约（保留模块）。
 // 路由按模块拆分在 ./routes/ 下；本文件负责骨架、装饰注入、CORS 与 JWT 鉴权钩子。
 
@@ -59,9 +63,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     bodyLimit: 64 * 1024 * 1024,
   });
 
+  app.register(multipart);
   app.decorate("db", deps.db);
   app.decorate("engine", deps.engine);
-  app.decorate("interceptor", new Interceptor(deps.db));
+  app.decorate("interceptor", interceptorFor(deps.db));
   app.decorate("pendingEvents", new EventEmitter());
   app.decorate("skillsRoot", deps.skillsRoot);
   app.decorate("dataDir", deps.dataDir);
@@ -135,6 +140,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerInterceptRoutes(app);
   registerAssetRoutes(app);
   registerConfigRoutes(app);
+  registerEvidenceRoutes(app);
+  registerAttachmentRoutes(app);
   registerRemovedRoutes(app);
   registerCompatRoutes(app);
   registerApprovalRoutes(app);

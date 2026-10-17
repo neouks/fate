@@ -8,11 +8,11 @@ AI 自主渗透测试系统 —— TypeScript / Node 22 + [pi SDK](https://githu
 
 ---
 
-> 本仓库已完成 Go/norma → TypeScript/pi 的深度重构（原 Go 后端已移除，历史见 git）。
-> 核心设计全部保留：**双图黑板架构**（全局资产图 + 每任务探索图）、**资产审批**、
-> **拦截审批**、**SKILL/MCP 配置**、**planner/worker/mainagent/goals 四角色**、事件驱动引擎、
-> 出口授权网关。按轻量化原则删除了 MITM 流量录制、LLM 池/录制、旁路提问、在线更新、
-> ScopeSentry 同步、复测、任务模板/归档等模块（详见 `apps/server/README.md`）。
+> 本仓库使用 TypeScript/pi 承接 ARTEX 的 Go/norma 后端。迁移基准是保留双图黑板、
+> 资产锚点、角色分工、审批和任务生命周期，不能以“配置页存在”代替运行时接线。
+> 已修复 worker 下发/领取、角色执行边界、会话恢复和流式活动链路，并接入 pi 原生
+> MCP/技能加载、自定义工具及冷图投影。旧模块仍有迁移缺口，当前不宣称与 Go 版完全等价。
+> 详见 [迁移复核、修复与缺口设计](docs/pi-core-reconciliation-20261017.md)。
 
 ## 快速开始
 
@@ -31,23 +31,23 @@ cd web && npm run dev                                          # 前端 :5173（
 ```
 
 配置：`SERIES_PG_DSN` 环境变量或 `config.json`（见 `config.example.json`）；LLM 在
-系统配置页填 profile（兼容任意 OpenAI 协议网关的 baseUrl）。
+系统配置页填 profile，按服务商选择 OpenAI Chat Completions、OpenAI Responses 或 Anthropic 协议。
 
 ## 仓库布局
 
 | 目录 | 说明 |
 | --- | --- |
-| `apps/server/` | TS 后端：db 六 store / pi 适配层 / 领域工具 / 引擎四角色 / REST+SSE / 出口网关（91 项测试，`pnpm test`） |
+| `apps/server/` | TS 后端：db 六 store / pi 适配层 / 领域工具 / 引擎四角色 / REST+SSE / 出口网关（`pnpm test`；集成测试默认使用独立 `series_test` 数据库） |
 | `web/` | Next.js 前端（独立 npm 工作流，`npm run build`） |
 | `skills/` | 技能目录（SKILL.md，热加载） |
-| `docs/` | 历史设计文档（部分对应已删模块） |
+| `docs/` | 迁移复核及历史设计文档；旧文档需结合当前复核确认实现状态 |
 
 ## 架构速览
 
 ```
 web (Next.js) ── REST/JWT/SSE ── Fastify ── Engine（事件驱动：debounce+心跳+worker池CAS领取）
                                               │
-                 planner(无状态轮+TodoStore) worker(system承载mandate+断点续跑) mainagent(steer)
+                 planner(无状态轮+持久化待办) worker(意图执行+断点续跑) mainagent(沟通/编排)
                                               │
                               ~20 领域工具（三通道写回：资产图/事实/漏洞）
                                               │

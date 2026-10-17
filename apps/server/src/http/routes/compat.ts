@@ -1,3 +1,4 @@
+import { resolveModelProfiles } from "../../pi/modelResolver.js";
 // 前端（Go 版契约）兼容层：task 寻址的探索端点 + findings 族 + goals/constraints/
 // coverage-graph + 意图控制别名 + stats/audit。响应形状对齐 web/src/lib/types.ts。
 // 高级端点（findings 分组/资产树/导出、traffic 绑定、retests）返回可渲染的空态。
@@ -636,13 +637,13 @@ export function registerCompatRoutes(app: FastifyInstance): void {
   app.patch("/api/tasks/:id/constraints/:cid", async (req) => {
     const p = req.params as Record<string, string>;
     const b = (req.body ?? {}) as Record<string, unknown>;
-    await db().query(`UPDATE task_constraints SET kind=$1, text=$2 WHERE id=$3`, [String(b["kind"] ?? "deny"), String(b["text"] ?? ""), Number(p["cid"])]);
+    await db().query(`UPDATE task_constraints SET kind=$1, text=$2 WHERE id=$3 AND exploration_id=$4`, [String(b["kind"] ?? "deny"), String(b["text"] ?? ""), Number(p["cid"]),await expOf(Number(p["id"]))]);
     return { id: p["cid"], ...b };
   });
 
   app.delete("/api/tasks/:id/constraints/:cid", async (req) => {
     const p = req.params as Record<string, string>;
-    await db().query(`DELETE FROM task_constraints WHERE id=$1`, [Number(p["cid"])]);
+    await db().query(`DELETE FROM task_constraints WHERE id=$1 AND exploration_id=$2`, [Number(p["cid"]),await expOf(Number(p["id"]))]);
     return { ok: true };
   });
 
@@ -701,29 +702,8 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const action = String(b["action"] ?? "");
     const taskID = Number(p["id"]);
     const intentID = Number(p["iid"]);
-    const s = db().exploration(await expOf(taskID));
-    const engine = app.engine;
-    if (action === "pause") {
-      await s.compareAndSetIntentState(intentID, "running", "paused");
-      await engine?.killWork(taskID, intentID, "用户暂停").catch(() => undefined);
-      return { id: p["iid"], status: "paused" };
-    }
-    if (action === "resume") {
-      await s.reopenIntent(intentID);
-      engine?.notify(taskID);
-      return { id: p["iid"], status: "open" };
-    }
-    if (action === "cancel") {
-      await s.setIntentState(intentID, "paused");
-      await db().query(
-        `UPDATE exploration_nodes SET payload=payload||jsonb_build_object('cancelled_by_user',true) WHERE id=$1`,
-        [intentID],
-      );
-      await engine?.killWork(taskID, intentID, `用户取消：${String(b["reason"] ?? "")}`).catch(() => undefined);
-      return { id: p["iid"], status: "paused" };
-    }
-    reply.code(400);
-    return { error: `未知 action: ${action}` };
+    if (!['pause','resume','cancel'].includes(action)) return reply.code(400).send({error:'未知 action'});
+    return app.engine.controlIntent(taskID,intentID,action as 'pause'|'resume'|'cancel',String(b['reason'] ?? ''));
   });
 
   app.post("/api/tasks/:id/intents/:iid/rerun", async (req) => {
@@ -746,15 +726,12 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const p = req.params as Record<string, string>;
     const b = (req.body ?? {}) as Record<string, unknown>;
     const ids = Array.isArray(b["intent_ids"]) ? (b["intent_ids"] as unknown[]).map(Number) : [];
-    const expID = await expOf(Number(p["id"]));
+    const results = [];
     for (const id of ids) {
-      await db().query(
-        `UPDATE exploration_nodes SET payload=payload||jsonb_build_object('dispatch_requested',true) WHERE id=$1 AND exploration_id=$2`,
-        [id, expID],
-      );
+      try { await app.engine.dispatchIntent(Number(p['id']),id); results.push({id,status:'dispatched'}); }
+      catch(error) { results.push({id,status:'error',error:String(error)}); }
     }
-    app.engine?.notify(Number(p["id"]));
-    return { results: ids.map((id) => ({ id, status: "dispatched" })) };
+    return { results };
   });
 
   app.patch("/api/tasks/:id/execution-mode", async (req) => {
@@ -767,20 +744,22 @@ export function registerCompatRoutes(app: FastifyInstance): void {
   });
 
   app.get("/api/tasks/:id/llm", async (req) => {
-    const p = req.params as Record<string, string>;
-    await expOf(Number(p["id"]));
-    const active = await db().platform().activeProfile().catch(() => null);
-    return {
-      profiles: active ? [{ id: active.id, position: 0, status: "ready", name: active.name ?? `profile-${active.id}` }] : [],
-      default_profile_id: active?.id ?? null,
-      failover_enabled: false,
-    };
+    const id=Number((req.params as {id:string}).id);
+    const result=await resolveModelProfiles(db(),id,'worker');
+    const task=await db().tasks().getTask(id);
+    const rows=await db().query(`SELECT p.id,p.name,p.model,p.format,c.position,c.status,c.last_error,c.exhausted_at FROM task_llm_profiles c JOIN llm_profiles p ON p.id=c.profile_id WHERE c.task_id=$1 ORDER BY c.position`,[id]);
+    return {profiles:rows.rows.map(r=>({...r,id:Number(r.id)})),default_profile_id:task?.llm_profile_id??null,
+      active_llm_profile_id:result.profiles[0]?.id??null,failover_enabled:rows.rows.length>1};
   });
-
   app.get("/api/tasks/:id/llm/resolution", async (req) => {
-    const p = req.params as Record<string, string>;
-    await expOf(Number(p["id"]));
-    return { resolutions: [] };
+    const id=Number((req.params as {id:string}).id);
+    const roles=['mainagent','planner','worker'];
+    return Object.fromEntries(await Promise.all(roles.map(async role=>[role,(await resolveModelProfiles(db(),id,role)).resolution])));
+  });
+  app.get("/api/tasks/:id/llm/attempts",async req=>{
+    const id=Number((req.params as {id:string}).id);await expOf(id);
+    const q=req.query as {before?:string};
+    return {attempts:(await db().query(`SELECT id,role,profile_id,model,status,error,usage,created_at,finished_at FROM llm_request_attempts WHERE task_id=$1 AND ($2::bigint=0 OR id<$2) ORDER BY id DESC LIMIT 100`,[id,Number(q.before)||0])).rows};
   });
 
   app.patch("/api/tasks/:id/category", async (req) => {
@@ -792,14 +771,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
 
   app.delete("/api/tasks/:id/intents/:iid", async (req) => {
     const p = req.params as Record<string, string>;
-    const expID = await expOf(Number(p["id"]));
-    const s = db().exploration(expID);
-    await db().query(
-      `UPDATE exploration_nodes SET payload=payload||jsonb_build_object('cancelled_by_user',true) WHERE id=$1 AND exploration_id=$2`,
-      [Number(p["iid"]), expID],
-    );
-    await s.setIntentState(Number(p["iid"]), "stopped");
-    return { id: p["iid"], deleted: true };
+    return app.engine.controlIntent(Number(p['id']),Number(p['iid']),'delete');
   });
 
   // findings 补真（findings-extra 的工厂注册，替代原空壳）

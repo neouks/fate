@@ -139,16 +139,16 @@ const NODE_COLS = `id, kind, payload, priority, state, COALESCE(origin,''), COAL
 // ─── 队列事务（worker_queue.go beginQueue：探索级 advisory xact lock）────────
 
 export class QueueTx {
-  constructor(private client: PoolClient) {}
+  constructor(private client: PoolClient, private ownsTransaction = true) {}
   query<T extends Record<string, unknown> = Record<string, unknown>>(text: string, values?: unknown[]) {
     return this.client.query<T>(text, values);
   }
   async commit(): Promise<void> {
-    await this.client.query("COMMIT");
+    if (this.ownsTransaction) await this.client.query("COMMIT");
   }
   async rollback(): Promise<void> {
     try {
-      await this.client.query("ROLLBACK");
+      if (this.ownsTransaction) await this.client.query("ROLLBACK");
     } catch {
       /* already aborted */
     }
@@ -172,6 +172,10 @@ export class ExplorationStore {
   }
 
   private async beginQueue(): Promise<{ tx: QueueTx; release: () => void }> {
+    if (this.db.transactionClient) {
+      await this.db.query("SELECT pg_advisory_xact_lock($1)", [-this.expID]);
+      return { tx: new QueueTx(this.db.transactionClient, false), release: () => {} };
+    }
     const client = await this.db.pool.connect();
     try {
       await client.query("BEGIN");
@@ -454,7 +458,7 @@ export class ExplorationStore {
     const n = await this.queueExec(
       `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
        WHERE id=$1 AND exploration_id=$2 AND kind='intent'
-         AND state IN ('blocked','exhausted','stopped') AND payload->>'cancelled_by_user' IS DISTINCT FROM 'true'`,
+         AND state IN ('paused','blocked','exhausted','stopped') AND payload->>'cancelled_by_user' IS DISTINCT FROM 'true'`,
       id, this.expID,
     );
     return n > 0;

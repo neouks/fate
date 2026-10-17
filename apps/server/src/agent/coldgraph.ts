@@ -53,7 +53,7 @@ export async function compactColdGraph(db: Database, expID: number): Promise<voi
   const tx = await db.pool.connect();
   try {
     await tx.query("BEGIN");
-    await tx.query("SELECT pg_advisory_xact_lock($1)", [expID]);
+    await tx.query("SELECT pg_advisory_xact_lock($1)", [-expID]);
     const rounds = await tx.query(`UPDATE explorations SET round_no=round_no+1 WHERE id=$1 RETURNING round_no`, [expID]);
     const round = Number(rounds.rows[0].round_no);
     const raw = await tx.query(`SELECT id,kind,state,payload,cold_since_round FROM exploration_nodes WHERE exploration_id=$1 AND kind<>'digest' ORDER BY id FOR UPDATE`, [expID]);

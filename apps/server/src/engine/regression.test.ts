@@ -71,6 +71,19 @@ describe("scheduler and graph regressions", () => {
     await until(async()=>(await s.listByKind("intent",10))[0]?.state==="done");
     expect(w.faux.state.callCount).toBe(1);await e.stop(t.id);
   });
+  it("stops an in-flight main response and clears the real running state", async () => {
+    const t=await task(), m=await model("reg-cancel-chat");
+    let entered=false;
+    m.faux.setResponses([async(_context,options)=>{
+      entered=true;
+      await new Promise<void>((resolve)=>{ if(options?.signal?.aborted) resolve(); else options?.signal?.addEventListener("abort",()=>resolve(),{once:true}); });
+      return fauxAssistantMessage("",{stopReason:"aborted"});
+    }]);
+    const e=new Engine(db,defaultEngineConfig(),async()=>m.source,dir);engines.push(e);
+    const pending=e.mainChat(t.id,"wait");
+    await until(async()=>entered);expect(e.mainChatRunning(t.id)).toBe(true);
+    await e.stopMainChat(t.id);await pending;expect(e.mainChatRunning(t.id)).toBe(false);
+  });
   it("cold digests preserve original nodes, edges, anchors and invalidate on revival", async () => {
     const t=await task(), s=db.exploration(t.exploration_id);
     const asset=await db.assets().upsertRootDomain({domain:`cold-${t.id}.test`,taskID:t.id});
@@ -82,8 +95,13 @@ describe("scheduler and graph regressions", () => {
     const digest=digests.find((n)=>n.state==="active")!;
     expect(digest.payload.member_ids).toEqual([intent,fact]);expect(await s.anchorAssetIDs(digest.id)).toContain(asset);
     expect(await s.getNode(fact)).not.toBeNull();
-    await s.setIntentState(intent,"open");
+    await db.query("DELETE FROM exploration_anchors WHERE node_id=$1 AND asset_id=$2",[fact,asset]);
     expect((await s.getNode(digest.id))?.state).toBe("superseded");
+    await compactColdGraph(db,t.exploration_id);
+    const refreshed=(await s.listByKind("digest",10)).find((n)=>n.state==="active")!;
+    expect(refreshed).toBeDefined();
+    await s.setIntentState(intent,"open");
+    expect((await s.getNode(refreshed.id))?.state).toBe("superseded");
     await db.query("DELETE FROM assets WHERE id=$1",[asset]);
   });
   it("MCP visibility is role scoped and refreshed between sessions", async () => {

@@ -143,19 +143,19 @@ describe.skipIf(!haveDB)("批次A：主对话链", () => {
     let runCalls = 0;
     engine.mainChat = async (id, message) => {
       calls.push([id, message]);
-      if (calls.length === 1) throw new Error(`任务 #${String(id)} 未在引擎中运行`);
+
       return "这是主对话回复";
     };
     engine.run = async () => {
       runCalls += 1;
     };
     try {
-      // 首次调用模拟"任务不在引擎"：装载（run 桩）后重试成功。
+      // 对话不得隐式启动调度。
       const r1 = await authed("POST", `/api/chat?task=${String(taskID)}`, { message: "进展如何？" });
       expect(r1.statusCode).toBe(200);
       expect(r1.json()).toEqual({ reply: "这是主对话回复", mode: "main" });
-      expect(calls).toEqual([[taskID, "进展如何？"], [taskID, "进展如何？"]]);
-      expect(runCalls).toBe(1);
+      expect(calls).toEqual([[taskID, "进展如何？"]]);
+      expect(runCalls).toBe(0);
 
       // 附件非空：reply 前附忽略提示。
       const r2 = await authed("POST", `/api/chat?task=${String(taskID)}`, {
@@ -163,11 +163,9 @@ describe.skipIf(!haveDB)("批次A：主对话链", () => {
         seg: 0,
         attachments: [{ name: "poc.py", path: "uploads/poc.py", size: 12 }],
       });
-      expect(r2.statusCode).toBe(200);
-      const body2 = r2.json() as { reply: string; mode: string };
-      expect(body2.reply.startsWith("[附件功能暂未支持，本次已忽略]")).toBe(true);
-      expect(body2.reply).toContain("这是主对话回复");
-      expect(body2.mode).toBe("main");
+      expect(r2.statusCode).toBe(400);
+      expect(r2.json().error).toContain("附件尚未接入");
+      expect(calls).toHaveLength(1);
 
       // 非"不在引擎"的真实错误（如模型缺失）不触发装载重试，按 500 透出。
       engine.mainChat = async () => {
@@ -176,7 +174,7 @@ describe.skipIf(!haveDB)("批次A：主对话链", () => {
       const r3 = await authed("POST", `/api/chat?task=${String(taskID)}`, { message: "再问一次" });
       expect(r3.statusCode).toBe(500);
       expect((r3.json() as { error: string }).error).toContain("LLM profile");
-      expect(runCalls).toBe(1);
+      expect(runCalls).toBe(0);
     } finally {
       delete (engine as unknown as Record<string, unknown>)["mainChat"];
       delete (engine as unknown as Record<string, unknown>)["run"];
@@ -185,19 +183,21 @@ describe.skipIf(!haveDB)("批次A：主对话链", () => {
     }
   });
 
-  it("chat/stop 记录活动 + chat/status 轮询位", async () => {
+  it("history main:N keeps conversation segments separate", async () => {
+    await db!.exploration(expID).appendActivity({ worker: "main", kind: "text", summary: "segment-one", main_seg: 1 });
+    await db!.exploration(expID).appendActivity({ worker: "main", kind: "text", summary: "segment-two", main_seg: 2 });
+    const result = await authed("GET", `/api/exploration/activity/history?task=${taskID}&session=main:1`);
+    expect(result.statusCode).toBe(200);
+    expect(result.json().items.map((r: { summary: string }) => r.summary)).toEqual(["segment-one"]);
+    expect(result.json().items[0].worker).toBe("mainagent");
+  });
+
+  it("chat/stop 真正结束回合 + chat/status 真实状态", async () => {
     const before = await authed("GET", `/api/exploration/activity?task=${String(taskID)}&limit=1000`);
     const cursorBefore = (before.json() as { cursor: number }).cursor;
     const stop = await authed("POST", `/api/tasks/${String(taskID)}/chat/stop`, {});
     expect(stop.statusCode).toBe(200);
-    expect(stop.json()).toMatchObject({ ok: true, status: "stopping" });
-    const after = await authed("GET", `/api/exploration/activity?task=${String(taskID)}&limit=1000`);
-    const items = (after.json() as { items: { seq: number; worker: string; summary: string }[] }).items;
-    const stopRow = items.find((i) => i.seq > cursorBefore);
-    expect(stopRow).toBeDefined();
-    expect(stopRow!.worker).toBe("main");
-    expect(stopRow!.summary).toContain("用户请求停止");
-
+    expect(stop.json()).toMatchObject({ ok: true, status: "stopped" });
     const status = await authed("GET", `/api/tasks/${String(taskID)}/chat/status`);
     expect(status.statusCode).toBe(200);
     expect((status.json() as { running: boolean }).running).toBe(false);

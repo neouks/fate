@@ -8,8 +8,6 @@ const REMOVED_MODULE = { error: "模块已在重构中移除" };
 
 const REMOVED_PATHS = [
   // traffic（流量证据库）
-  "/api/traffic",
-  "/api/traffic/*",
   // llm-records / 轮询池 / 全局重试策略
   "/api/llm/records",
   "/api/llm/records/*",

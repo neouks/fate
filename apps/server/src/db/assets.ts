@@ -2,8 +2,7 @@
 // 忠实平移自 Go 版 db/assets.go + db/companies.go + db/company_scope.go + db/nkey.go 的核心路径。
 // eTLD+1 解析：Go 用 golang.org/x/net/publicsuffix，TS 侧用 tldts（allowPrivateDomains 对齐
 // Go 列表含私有段的行为）；IDNA 转写用 node:url 的 domainToASCII（对齐 idna.Lookup.ToASCII）。
-// 未平移：Agent 发现链路（asset_templates.go 的 agentHost/agentURL/DNS 元数据/RegisterAgentAsset
-// 与 task_asset_links 审批），属任务资产子系统；task_ids 数组挂接与 Go 完全一致。
+// Agent 发现通过 registerAgentAsset 原子登记来源、审批模板与父资产。
 
 import { domainToASCII } from "node:url";
 import { parse as tldtsParse } from "tldts";
@@ -1224,6 +1223,24 @@ export class AssetStore {
     } finally {
       client.release();
     }
+  }
+
+  /** Discovery, side-effect parents, provenance and template reconciliation commit together. */
+  async registerAgentAsset(taskID: number, agent: string, owner: number | undefined, toolCallID: string | undefined,
+    write: (store: AssetStore) => Promise<number>): Promise<number> {
+    return this.withCompanyScopeMutation(async (store) => {
+      const tx = store.tx!;
+      await tx.query("SELECT set_config('series.agent_discovery','on',true),set_config('series.origin_task',$1,true),set_config('series.asset_origin',$2,true)",
+        [String(taskID), JSON.stringify({ agent_key: agent, node_id: owner ?? null, tool_use_id: toolCallID ?? null })]);
+      const id = await write(store);
+      await tx.query(`UPDATE assets a SET task_ids=array_remove(a.task_ids,$1)
+        WHERE $1=ANY(a.task_ids) AND EXISTS(SELECT 1 FROM task_asset_blocks b WHERE b.task_id=$1
+        AND b.block_kind='deleted' AND b.asset_type IN ('root_domain','subdomain','ip') AND task_asset_host(a)=b.host_key)`, [taskID]);
+      await tx.query(`UPDATE task_asset_links SET source='agent',source_summary=$3,source_node_id=$4
+        WHERE task_id=$1 AND asset_id=$2 AND source IN ('agent','system')`,
+        [taskID,id,owner ? `Worker 意图 #${owner} 通过 insert_assets 登记` : 'Agent 通过 insert_assets 登记',owner ?? null]);
+      return id;
+    });
   }
 
   private async resolveCompanyWithICP(rootDomain: string, ipStr: string, icp: string): Promise<number | null> {

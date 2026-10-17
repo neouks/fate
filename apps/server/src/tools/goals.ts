@@ -12,7 +12,7 @@ export function setGoalsTool(ctx: ToolRunContext) {
     {
       name: "set_goals",
       description:
-        "设定任务的可验证最终目标（整体替换）。目标 = 可独立核验的交付物（拿到什么权限/证明什么漏洞/" +
+        "登记任务的可验证最终目标（主 Agent 追加；初始分解阶段替换）。目标 = 可独立核验的交付物（拿到什么权限/证明什么漏洞/" +
         "覆盖什么范围）；信息收集、漏洞验证过程、攻击步骤都不是目标。每个目标给漏洞类别便于归类。",
       promptSnippet: "设定/替换任务目标",
       parameters: {
@@ -51,6 +51,7 @@ export function setGoalsTool(ctx: ToolRunContext) {
           if (originFact > 0) await s.link(originFact, RelSpawns, id);
           ids.push(id);
         }
+        if (c.role === "mainagent") await c.hooks.goalsChanged?.(c.expID);
         return { goals: ids };
       },
     },
@@ -58,7 +59,7 @@ export function setGoalsTool(ctx: ToolRunContext) {
   );
 }
 
-interface SetConstraintsArgs { constraints: { kind: "allow" | "deny"; text: string }[]; }
+interface SetConstraintsArgs { replace?: boolean; constraints: { kind: "allow" | "deny"; text: string }[]; }
 
 export function setConstraintsTool(ctx: ToolRunContext) {
   return domainTool<SetConstraintsArgs>(
@@ -71,6 +72,7 @@ export function setConstraintsTool(ctx: ToolRunContext) {
       parameters: {
         type: "object",
         properties: {
+          replace: { type: "boolean", description: "默认追加。仅当用户明确要求整体替换现有约束时设为 true。" },
           constraints: {
             type: "array",
             maxItems: 20,
@@ -87,13 +89,20 @@ export function setConstraintsTool(ctx: ToolRunContext) {
         required: ["constraints"],
       },
       async run(args, c) {
-        await c.db.query(`DELETE FROM task_constraints WHERE exploration_id=$1`, [c.expID]);
-        for (const k of args.constraints) {
-          await c.db.query(
-            `INSERT INTO task_constraints(exploration_id, kind, text, origin) VALUES ($1,$2,$3,$4)`,
-            [c.expID, k.kind, k.text, c.role],
-          );
-        }
+        const tx = await c.db.pool.connect();
+        try {
+          await tx.query("BEGIN");
+          await tx.query("SELECT pg_advisory_xact_lock($1)", [c.expID]);
+          if (args.replace) await tx.query(`DELETE FROM task_constraints WHERE exploration_id=$1`, [c.expID]);
+          for (const k of args.constraints) {
+            await tx.query(`INSERT INTO task_constraints(exploration_id,kind,text,origin)
+              SELECT $1,$2,$3,$4 WHERE NOT EXISTS (SELECT 1 FROM task_constraints WHERE exploration_id=$1 AND kind=$2 AND text=$3)`,
+              [c.expID,k.kind,k.text,c.role]);
+          }
+          await tx.query("COMMIT");
+        } catch (err) { await tx.query("ROLLBACK"); throw err; }
+        finally { tx.release(); }
+        c.hooks.constraintsChanged?.(c.expID);
         return { saved: args.constraints.length };
       },
     },

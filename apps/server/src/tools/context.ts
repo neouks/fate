@@ -12,24 +12,35 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed";
 }
 export class TodoStore {
+  constructor(private db?: Database) {}
+  async load(expID: number): Promise<void> {
+    if (!this.db) return;
+    const res = await this.db.query<{ planner_todos: TodoItem[] }>(`SELECT planner_todos FROM explorations WHERE id=$1`, [expID]);
+    this.byExp.set(expID, res.rows[0]?.planner_todos ?? []);
+  }
   private byExp = new Map<number, TodoItem[]>();
   get(expID: number): TodoItem[] {
     return this.byExp.get(expID) ?? [];
   }
-  set(expID: number, todos: TodoItem[]): void {
+  async set(expID: number, todos: TodoItem[]): Promise<void> {
     // 上限防御：planner 一次提交过多时只保留前 50 条。
-    this.byExp.set(expID, todos.slice(0, 50));
+    const bounded = todos.slice(0, 50);
+    if (this.db) await this.db.query(`UPDATE explorations SET planner_todos=$2::jsonb WHERE id=$1`, [expID, JSON.stringify(bounded)]);
+    this.byExp.set(expID, bounded);
   }
 }
 
 /** 引擎注入的回调面（M4 实装；M3 期由测试注入桩）。 */
 export interface EngineHooks {
+  assertOwnership?: (db:Database)=>Promise<void>;
   /** worker 报洞 → 立即唤醒 planner。 */
   notifyFinding?: (expID: number, findingNodeID: number) => void;
   /** 目标被证明 → 判定任务完成（取消在跑 worker）。 */
   notifyGoalMet?: (expID: number, goalNodeID: number) => void;
   /** mainagent 直投意图 → 自动下发。 */
   dispatchIntent?: (expID: number, intentID: number) => Promise<void>;
+  goalsChanged?: (expID: number) => Promise<void>;
+  constraintsChanged?: (expID: number) => void;
   notifyIntent?: (expID: number, intentID: number) => void;
   /** planner/mainagent 杀掉一条在跑意图。 */
   killWork?: (expID: number, intentID: number, reason: string) => Promise<void>;
@@ -38,6 +49,8 @@ export interface EngineHooks {
 }
 
 export interface ToolRunContext {
+  toolCallID?: string;
+  signal?: AbortSignal;
   db: Database;
   taskID: number;
   expID: number;

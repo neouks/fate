@@ -99,12 +99,7 @@ async function main(): Promise<void> {
     `SERIES ${VERSION} (pi refactor) listening on ${listenHost}:${listenPort} (data=${flags.dataDir}, workers=${workers}, egress=${flags.proxy || "disabled"})`,
   );
 
-  const recoverable = await db.tasks().listTasks();
-  for (const task of recoverable) {
-    if (task.status === "running" && !task.paused && !task.queued) {
-      void engine.run(task.id).catch((err) => console.error(`[engine] 恢复任务 #${task.id} 失败`, err));
-    }
-  }
+  engine.startScheduler();
 
   const shutdown = async (signal: string) => {
     console.log(`[shutdown] 收到 ${signal}，正在停止…`);

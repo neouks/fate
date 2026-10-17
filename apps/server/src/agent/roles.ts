@@ -3,7 +3,7 @@ import { roleResources } from "./resources.js";
 // 四角色装配：把提示词 + 领域工具 + 预算/guard 接到 AgentRunner 上。
 // 角色不感知引擎的调度细节，引擎不感知提示词内容——只经由本文件的四个入口函数交互。
 
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { AgentRunner, type RunnerActivity, type ToolGuard } from "../pi/runner.js";
 import { createBashToolDefinition, type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -19,12 +19,9 @@ import {
   rolePrompt, constraintBlock,
 } from "./prompts.js";
 
-/** 进程级 agent 运行环境（skills 目录 / MCP 服务器），boot 时配置一次，三个角色共享。 */
+/** 技能根目录在启动时配置；角色资源和模型配置在每次会话创建时读取。 */
 export interface AgentEnv {
   skillsDir?: string;
-  mcpEntries?: Array<{ name: string; config: Record<string, unknown> }>;
-  /** 全局思考档位（off/minimal/low/medium/high）；来自激活 profile 的 thinking_type。 */
-  thinkingLevel?: string;
 }
 let agentEnv: AgentEnv = {};
 export function configureAgentEnv(env: AgentEnv): void {
@@ -42,10 +39,11 @@ export interface AgentRunConfig {
 export async function agentRunConfig(db: import("../db/index.js").Database, key: string): Promise<AgentRunConfig> {
   try {
     const r = await db.query(
-      `SELECT max_turns, run_seconds, wrapup_prompt, wrapup_max_turns, COALESCE(llm_profile_id,0) llm_profile_id FROM agents WHERE key=$1`,
+      `SELECT enabled, max_turns, run_seconds, wrapup_prompt, wrapup_max_turns, COALESCE(llm_profile_id,0) llm_profile_id FROM agents WHERE key=$1`,
       [key],
     );
     const row = r.rows[0] as Record<string, unknown> | undefined;
+    if (row?.["enabled"] === false) throw new Error(`角色 ${key} 已禁用`);
     if (!row) return { maxTurns: 0, runSeconds: 0, wrapupPrompt: "", wrapupMaxTurns: 0, llmProfileID: 0 };
     return {
       maxTurns: Number(row["max_turns"] ?? 0),
@@ -54,7 +52,8 @@ export async function agentRunConfig(db: import("../db/index.js").Database, key:
       wrapupMaxTurns: Number(row["wrapup_max_turns"] ?? 0),
       llmProfileID: Number(row["llm_profile_id"] ?? 0),
     };
-  } catch {
+  } catch (error) {
+    throw error;
     return { maxTurns: 0, runSeconds: 0, wrapupPrompt: "", wrapupMaxTurns: 0, llmProfileID: 0 };
   }
 }
@@ -70,12 +69,16 @@ const SEEDED_TOOL_KEYS = new Set([
 async function applyToolBindings<T extends { name: string }>(db: import("../db/index.js").Database, role: string, tools: T[]): Promise<T[]> {
   let rows: Array<Record<string, unknown>> = [];
   try {
-    const res = await db.query(`SELECT key, agents, enabled FROM tools WHERE kind='builtin'`);
+    const res = await db.query(`SELECT key, agents, enabled, description FROM tools WHERE kind='builtin'`);
     rows = res.rows as Array<Record<string, unknown>>;
   } catch {
     return tools; // 目录不可用 → 代码默认
   }
   const byKey = new Map(rows.map((r) => [String(r["key"]), r]));
+  for(const tool of tools) {
+    const description=byKey.get(tool.name)?.description;
+    if(typeof description==='string' && description.trim()) Object.assign(tool,{description});
+  }
   return tools.filter((t) => {
     if (!SEEDED_TOOL_KEYS.has(t.name)) return true; // 非种子 key（新代码工具）→ 默认可用
     const row = byKey.get(t.name);
@@ -97,6 +100,7 @@ async function disabledBuiltinTools(db: import("../db/index.js").Database, role 
 }
 
 export interface ModelSource {
+  modelPolicy?: Parameters<typeof AgentRunner.create>[0]["modelPolicy"];
   modelRuntime: ModelRuntime;
   model: Parameters<typeof AgentRunner.create>[0]["model"];
   thinkingLevel?: Parameters<typeof AgentRunner.create>[0]["thinkingLevel"];
@@ -198,7 +202,7 @@ function withUsageCounter(
  * shell 能看到凭据但改 taskID/scope 后签名失效，无法借用其他任务的策略。
  * 未配置 egressAddr 时返回 undefined，保持内置 bash 原样。
  */
-function workerEgressBashTool(
+export function workerEgressBashTool(
   runDir: string,
   egressAddr: string | undefined,
   taskID: number,
@@ -239,7 +243,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   const disabledBuiltin = await disabledBuiltinTools(db);
   const rc = await agentRunConfig(db, "worker");
 
-  // 系统：角色正文 + 约束块 + 意图 mandate + 锚定资产 JSON（compaction 已关，system 常驻）。
+  // 角色正文、约束、意图 mandate 和锚定资产放入 system，独立于 pi 的对话压缩。
   const constraints = await loadConstraints(db, expID);
   const anchored = await db.exploration(expID).anchorAssetIDs(intent.id);
   const assetsJSON = anchored.length > 0 ? JSON.stringify(await db.assets().getByIDs(anchored)) : "[]";
@@ -284,6 +288,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     cwd: runDir,
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
+    modelPolicy: model.modelPolicy,
     model: model.model,
     thinkingLevel: model.thinkingLevel,
     systemPrompt: system,
@@ -307,7 +312,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
       }
       return undefined;
     },
-    maxWrapupTurns: 2,
+    maxWrapupTurns: rc.wrapupMaxTurns || 2,
     guard: async (g) => {
       // 1) steer 注入：有排队纠偏 → block 本调用，让模型先读指令再继续。
       const msgs = input.takeSteer(intent.id);
@@ -345,7 +350,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   try {
     const res = await runner.prompt(firstUser);
     return { ...res, usage: counter.usage() };
-  } finally { runner.dispose(); }
+  } finally { await runner.dispose(); }
 }
 
 export interface PlannerRoundInput {
@@ -378,6 +383,7 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
   const { db, taskID, expID, goal, model, dataDir, todos } = input;
   const ctx: ToolRunContext = runContext(db, taskID, expID, "planner", { todos, hooks: input.hooks });
   const tools = await applyToolBindings(db, "planner", plannerTools(ctx).filter((t) => !input.terminalOnly || !["add_intent", "add_task_scope", "steer_work", "kill_work"].includes(t.name)));
+  const disabled = await disabledBuiltinTools(db, "planner");
   const prc = await agentRunConfig(db, "planner");
   const plannerMaxTurns = prc.maxTurns > 0 ? prc.maxTurns : input.maxTurns;
   const constraints = await loadConstraints(db, expID);
@@ -399,19 +405,20 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
     cwd: workDir,
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
+    modelPolicy: model.modelPolicy,
     model: model.model,
     thinkingLevel: model.thinkingLevel,
     systemPrompt: system,
     customTools: tools,
     ...await roleResources(db, "planner", agentEnv.skillsDir),
     signal: input.signal, maxTurns: plannerMaxTurns, maxDurationMs: prc.runSeconds > 0 ? prc.runSeconds * 1000 : 120_000,
-    toolAllowlist: ["read", ...tools.map((t) => t.name)],
+    toolAllowlist: ["read", ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     inMemory: true,
     wrapup: () =>
       turns >= plannerMaxTurns
         ? { prompt: input.wrapupPromptOverride ?? (prc.wrapupPrompt !== "" ? prc.wrapupPrompt : PLANNER_WRAPUP) }
         : undefined,
-    maxWrapupTurns: 1,
+    maxWrapupTurns: prc.wrapupMaxTurns || 1,
     onRawEvent: (ev) => {
       if (ev.type === "turn_end") turns++;
     },
@@ -420,10 +427,11 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
   try {
     const res = await runner.prompt(firstUser);
     return { ...res, usage: plannerCounter.usage() };
-  } finally { runner.dispose(); }
+  } finally { await runner.dispose(); }
 }
 
 export interface MainChatInput {
+  images?: import("../evidence/attachments.js").ChatImage[];
   signal?: AbortSignal;
   segment?: number;
   db: Database;
@@ -443,13 +451,15 @@ export async function runMainChat(input: MainChatInput): Promise<WorkerRunResult
   const { db, taskID, expID, goal, model, dataDir } = input;
   const ctx: ToolRunContext = runContext(db, taskID, expID, "mainagent", { hooks: input.hooks });
   const tools = await applyToolBindings(db, "mainagent", mainTools(ctx));
+  const disabled = await disabledBuiltinTools(db, "mainagent");
   let system = await rolePrompt(db, "mainagent", MAIN_PROMPT, { Goal: goal });
   // Worker 回传（ARTEX 同款）：最近完成的意图总结注入主会话上下文，主 agent 据此回答进展/操舵。
   {
     const feedback = await db.query(
-      `SELECT node_id, summary FROM activity WHERE exploration_id=$1 AND kind='result' AND worker LIKE 'work#'
+      `SELECT node_id,COALESCE(NULLIF(detail,''),summary) AS summary FROM activity WHERE exploration_id=$1
+         AND ((metadata ? 'worker_feedback' AND main_seg=$2) OR (kind='result' AND worker LIKE 'work#%' AND NOT EXISTS(SELECT 1 FROM worker_feedback WHERE exploration_id=$1)))
          AND COALESCE(summary,'')<>'' ORDER BY id DESC LIMIT 10`,
-      [expID],
+      [expID,input.segment],
     );
     if (feedback.rows.length > 0) {
       const lines = feedback.rows
@@ -471,6 +481,7 @@ export async function runMainChat(input: MainChatInput): Promise<WorkerRunResult
     cwd: workDir,
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
+    modelPolicy: model.modelPolicy,
     model: model.model,
     thinkingLevel: model.thinkingLevel,
     systemPrompt: system,
@@ -478,20 +489,20 @@ export async function runMainChat(input: MainChatInput): Promise<WorkerRunResult
     ...await roleResources(db, "mainagent", agentEnv.skillsDir),
     signal: input.signal, maxTurns: rc.maxTurns > 0 ? rc.maxTurns : input.maxTurns,
     maxDurationMs: rc.runSeconds > 0 ? rc.runSeconds * 1000 : 120_000,
-    toolAllowlist: ["read", ...tools.map((t) => t.name)],
+    toolAllowlist: ["read", ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     resumeSessionPath: sessionPath,
     sessionDir: path.join(dataDir, "sessions"),
-    wrapup: () => (turns >= input.maxTurns ? { prompt: MAIN_WRAPUP } : undefined),
-    maxWrapupTurns: 1,
+    wrapup: () => (turns >= (rc.maxTurns || input.maxTurns) ? { prompt: rc.wrapupPrompt || MAIN_WRAPUP } : undefined),
+    maxWrapupTurns: rc.wrapupMaxTurns || 1,
     onRawEvent: (ev) => {
       if (ev.type === "turn_end") turns++;
     },
     onActivity: (a) => mainCounter.wrapped(a, { worker: "main" }),
   });
   try {
-    const res = await runner.prompt(input.message);
+    const res = await runner.prompt(input.message,input.images);
     return { ...res, usage: mainCounter.usage() };
-  } finally { runner.dispose(); }
+  } finally { await runner.dispose(); }
 }
 
 export interface GoalsRunInput {
@@ -508,6 +519,7 @@ export interface GoalsRunInput {
 /** goals：任务创建时的一次性目标分解（内存会话，无工具预算收尾）。 */
 export async function runGoalsDecompose(input: GoalsRunInput): Promise<WorkerRunResult> {
   const { db, taskID, expID, model, dataDir } = input;
+  await agentRunConfig(db, "goals");
   const ctx: ToolRunContext = runContext(db, taskID, expID, "goals", {});
   const tools = await applyToolBindings(db, "goals", goalsTools(ctx));
   const system = await rolePrompt(db, "goals", GOALS_PROMPT, {});
@@ -518,6 +530,7 @@ export async function runGoalsDecompose(input: GoalsRunInput): Promise<WorkerRun
     cwd: workDir,
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
+    modelPolicy: model.modelPolicy,
     model: model.model,
     thinkingLevel: model.thinkingLevel,
     systemPrompt: system,
@@ -532,7 +545,8 @@ export async function runGoalsDecompose(input: GoalsRunInput): Promise<WorkerRun
     },
   });
   try {
-  const res = await runner.prompt(`【任务描述】\n${input.description}\n\n请先抽取操作约束（如有），再分解目标并调用 set_goals 提交。`);
+  const taskGoal = (await db.tasks().getTask(taskID))?.goal ?? input.description;
+  const res = await runner.prompt(`【任务目标】\n${taskGoal}\n\n【任务描述】\n${input.description}\n\n请先抽取操作约束（如有），再分解目标并调用 set_goals 提交。`);
   return { ...res, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-  } finally { runner.dispose(); }
+  } finally { await runner.dispose(); }
 }

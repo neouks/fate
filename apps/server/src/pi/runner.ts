@@ -1,8 +1,9 @@
+import { createServerTransport } from "./mcpTransport.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 /**
- * pi SDK 适配层骨架（M2 spike 结论的落地形态）。
+ * pi SDK 会话生命周期、工具守卫、运行预算和事件适配。
  *
  * 基于 @earendil-works/pi-coding-agent 1.3.0 的真实 API 面（详见 src/pi/spike.ts 的验证结论）：
  * - 会话：createAgentSession({ model, modelRuntime, sessionManager, settingsManager, resourceLoader,
@@ -14,8 +15,7 @@ import path from 'node:path';
  * - resume：SessionManager.open(path) 恢复 JSONL 会话继续对话（spike T6 已验证）
  * - steer/abort：session.steer() / session.abort()（spike T7/T7b 已验证）
  *
- * 注意：pi-ai 是 pi-coding-agent 的传递依赖（pnpm 严格模式不可直接 import），因此模型对象
- * 类型从 pi-coding-agent 的导出反向推导。生产化时建议将 @earendil-works/pi-ai 提为直接依赖。
+ * 模型对象类型从 pi-coding-agent 的导出推导；pi-ai 与 coding-agent 版本保持一致。
  */
 
 import {
@@ -48,6 +48,7 @@ export interface ToolGuardDecision {
 
 /** 一次工具调用的门控上下文 */
 export interface ToolGuardContext {
+	signal?: AbortSignal;
 	toolCallId: string;
 	toolName: string;
 	args: Record<string, unknown>;
@@ -76,6 +77,7 @@ export type RunnerActivity =
 	| { kind: 'queue_update'; steering: readonly string[]; followUp: readonly string[] };
 
 export interface AgentRunnerOptions {
+	modelPolicy?: { onResponse(message: unknown): Promise<void>; retry(): Promise<boolean> };
 	signal?: AbortSignal;
 	maxTurns?: number;
 	maxDurationMs?: number;
@@ -158,15 +160,27 @@ export class AgentRunner {
 
 	static async create(opts: AgentRunnerOptions): Promise<AgentRunner> {
 		const settings = SettingsManager.inMemory({
-			// 服务端自管重试/压缩策略：先关闭，避免与 Go 侧调度冲突
+			// pi owns conversation compaction; graph compaction remains a separate domain projection.
 			retry: { enabled: false },
 			compaction: { enabled: true },
 		});
+		const modelPolicyExtension: ExtensionFactory = (pi) => {
+			pi.on('message_end', async event => {
+				if(event.message.role === 'assistant') await opts.modelPolicy?.onResponse(event.message);
+			});
+			pi.on('agent_before_settle', async (event) => {
+				if(event.outcome === 'error' && await opts.modelPolicy?.retry()) return {
+					continue:true, entries:[{type:'custom_message' as const,customType:'model_failover',display:false,
+					content:'模型请求失败后已由宿主切换或重试。依据已有消息和工具结果继续；已完成的工具操作无需重复。'}],
+				};
+			});
+		};
 
 		const guardExtension: ExtensionFactory | undefined = opts.guard
 			? (pi) => {
-					pi.on('tool_call', async (event): Promise<ToolCallEventResult | undefined> => {
+					pi.on('tool_call', async (event, context): Promise<ToolCallEventResult | undefined> => {
 						const decision = await opts.guard?.({
+							signal: context.signal,
 							toolCallId: event.toolCallId,
 							toolName: event.toolName,
 							args: event.input as Record<string, unknown>,
@@ -207,7 +221,10 @@ export class AgentRunner {
 				turns++;
 				if (!opts.maxTurns) return;
 				const grace = opts.wrapup ? (opts.maxWrapupTurns ?? 1) : 0;
-				if (turns >= opts.maxTurns + grace) { context.abort(); return; }
+				if (turns >= opts.maxTurns + grace) {
+					if (_event.message.role === 'assistant' && _event.message.content.some((block) => block.type === 'toolCall')) context.abort();
+					return;
+				}
 				if (turns === opts.maxTurns) {
 					const decision = await opts.wrapup?.();
 					return { continue: true, entries: [{ type: 'custom_message' as const, customType: 'server_budget',
@@ -219,6 +236,7 @@ export class AgentRunner {
 		const mcpFactory: ExtensionFactory | undefined =
 			opts.mcpEntries && opts.mcpEntries.length > 0
 				? createMcpExtension({
+              createTransport: (entry,cwd,auth) => createServerTransport(entry.config as unknown as Record<string,unknown>,cwd,auth),
 						loadConfig: () => ({
 							servers: opts.mcpEntries!.map((e) => ({
 								name: e.name,
@@ -235,7 +253,7 @@ export class AgentRunner {
 			agentDir: opts.agentDir,
 			settingsManager: settings,
 			noExtensions: true,
-			extensionFactories: [guardExtension, wrapupExtension, budgetExtension, mcpFactory].filter(
+			extensionFactories: [modelPolicyExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory].filter(
 				(e): e is ExtensionFactory => typeof e === 'function',
 			),
 			noSkills: !opts.skillsDir,
@@ -272,7 +290,11 @@ export class AgentRunner {
 			customTools: opts.customTools,
 		});
 
-		return new AgentRunner(session, opts);
+		const runner = new AgentRunner(session, opts);
+		try {
+			await session.bindExtensions({}); // Fires session_start: native MCP connects here.
+			return runner;
+		} catch (err) { await runner.dispose(); throw err; }
 	}
 
 	// -------------------------------------------------------------------------
@@ -299,7 +321,7 @@ export class AgentRunner {
 			}
 			case 'message_end':
 				if (event.message.role === 'assistant') {
-					if (event.message.stopReason === 'error') this.modelError = event.message.errorMessage ?? '模型调用失败';
+					this.modelError = event.message.stopReason === 'error' ? event.message.errorMessage ?? '模型调用失败' : undefined;
 					const thinking = assistantThinking(event.message);
 					if (thinking) {
 						this.opts.onActivity?.({ kind: 'assistant_message_end', text: thinking, isThinking: true });
@@ -347,7 +369,8 @@ export class AgentRunner {
 	// -------------------------------------------------------------------------
 
 	/** 发送一条用户消息并等待本次 run settle（含 wrapup 续跑轮） */
-	async prompt(text: string): Promise<RunResult> {
+	async prompt(text: string, images?: import("../evidence/attachments.js").ChatImage[]): Promise<RunResult> {
+		this.modelError = undefined;
 		this.opts.signal?.throwIfAborted();
 		const finished = this.settledPromise;
 		const abort = () => { void this.abort(); };
@@ -357,9 +380,9 @@ export class AgentRunner {
 			void this.abort();
 		}, this.opts.maxDurationMs) : undefined;
 		try {
-			await this.session.prompt(text);
+			await this.session.prompt(text,{images});
 			const result = await finished;
-			if (this.modelError && !this.budgetExceeded && !this.opts.signal?.aborted && !result.aborted) throw new Error(this.modelError);
+			if (this.modelError && !this.opts.signal?.aborted && !result.aborted) throw new Error(this.modelError);
 			return result;
 		} finally {
 			clearTimeout(timer);
@@ -411,8 +434,9 @@ export class AgentRunner {
 		});
 	}
 
-	dispose(): void {
-		this.session.dispose();
+	async dispose(): Promise<void> {
+		try { await this.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); }
+		finally { this.session.dispose(); }
 	}
 }
 

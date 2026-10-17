@@ -8,6 +8,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelSource } from "../agent/roles.js";
 
 export interface ProfileLike {
+  supportsImages?: boolean;
   id: number;
   name: string;
   model: string;
@@ -33,7 +34,7 @@ export function buildModelSource(profile: ProfileLike): Promise<ModelSource> {
     api,
     provider: providerId,
     baseUrl: profile.baseURL,
-    input: ["text"],
+    input: profile.supportsImages ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens: profile.maxTokens > 0 ? profile.maxTokens : 8192,

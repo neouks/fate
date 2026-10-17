@@ -215,7 +215,7 @@ export function todoWriteTool(ctx: ToolRunContext) {
       },
       async run(args, c) {
         if (!c.todos) throw new Error("todo_write 仅 planner 可用");
-        c.todos.set(c.expID, args.todos as TodoItem[]);
+        await c.todos.set(c.expID, args.todos as TodoItem[]);
         return { saved: args.todos.length };
       },
     },

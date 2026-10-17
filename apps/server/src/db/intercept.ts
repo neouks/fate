@@ -542,7 +542,7 @@ export class Interceptor {
   }
 
   private async ensureRules(): Promise<CompiledRule[]> {
-    if (this.rulesCache !== null) return this.rulesCache;
+    // Refresh at the authorization boundary, including updates from other processes.
     if (!this.loading) {
       this.loading = this.loadLocked().finally(() => {
         this.loading = null;
@@ -553,7 +553,7 @@ export class Interceptor {
   }
 
   private async ensureEnabledTools(): Promise<Set<string>> {
-    if (this.enabledToolsCache !== null) return this.enabledToolsCache;
+    // Enabled tools are policy, not a process-local configuration snapshot.
     if (!this.loading) {
       this.loading = this.loadLocked().finally(() => {
         this.loading = null;

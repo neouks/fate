@@ -684,7 +684,7 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
   const [ref, inView] = useInView();
   const [full, setFull] = React.useState<string | null>(null);
   React.useEffect(() => {
-    if (!inView) return; // fetch the full answer only when it nears view
+    if (!inView || step.detail || step.seq < 0) return; // fetch the full answer only when it nears view
     let live = true;
     getDetail(step.seq)
       .then((d) => {
@@ -696,7 +696,7 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
     return () => {
       live = false;
     };
-  }, [inView, step.seq, getDetail, step.summary]);
+  }, [inView, step.seq, getDetail, step.summary, step.detail]);
   return (
     <div ref={ref} data-activity-id={step.seq} className="mb-2 mt-1 flex min-w-0 flex-col gap-1">
       <div
@@ -706,9 +706,9 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
         }
       >
         {step.is_error && !step.metadata?.worker_feedback ? (
-          <span className="whitespace-pre-wrap">{full ?? step.summary}</span>
+          <span className="whitespace-pre-wrap">{step.detail ?? full ?? step.summary}</span>
         ) : (
-          <Markdown text={full ?? step.summary} />
+          <Markdown text={step.detail ?? full ?? step.summary} />
         )}
       </div>
       <ActivityTime ts={step.ts} />

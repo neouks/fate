@@ -59,12 +59,13 @@ export function insertAssetsTool(ctx: ToolRunContext) {
         required: ["items"],
       },
       async run(args, c) {
-        const store = c.db.assets();
+        const assets = c.db.assets();
         const scope = c.db.taskScope();
         const results: { type: string; key: string; asset_id: number }[] = [];
         for (const item of args.items.slice(0, 20)) {
           let assetID = 0;
           let key = "";
+          assetID = await assets.registerAgentAsset(c.taskID, c.workerName ?? c.role, c.intentID, c.toolCallID, async (store) => {
           switch (item.type) {
             case "root_domain":
               key = item.domain ?? "";
@@ -138,6 +139,8 @@ export function insertAssetsTool(ctx: ToolRunContext) {
             default:
               throw new Error(`未知资产类型: ${String(item.type)}`);
           }
+          return assetID;
+          });
           // 保守范围：worker 显式插入的顶层资产自动纳入覆盖度分母。
           await scope.addAutoScope(c.taskID, item.type, item.domain ?? "", item.url ?? "", item.ip ?? "");
           results.push({ type: item.type, key, asset_id: assetID });

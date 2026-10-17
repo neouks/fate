@@ -1,3 +1,5 @@
+import {bindEvidence} from "../evidence/store.js";
+import { resolveGraphNode } from "../db/graph_view.js";
 // 漏洞工具：report_finding（worker 三通道写回之一）、list_findings、prove_goal（收官）。
 
 import { domainTool } from "./define.js";
@@ -7,7 +9,7 @@ import { jsonbClean } from "../db/exploration.js";
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
 
-interface ReportFindingArgs { vulnclass: string; name?: string; severity: "critical" | "high" | "medium" | "low"; summary: string; evidence: string; asset_ids?: number[]; }
+interface ReportFindingArgs { traffic_refs?:Array<{traffic_id:string;role?:string;note?:string}>; vulnclass: string; name?: string; severity: "critical" | "high" | "medium" | "low"; summary: string; evidence: string; asset_ids?: number[]; }
 
 export function reportFindingTool(ctx: ToolRunContext) {
   return domainTool<ReportFindingArgs>(
@@ -20,6 +22,7 @@ export function reportFindingTool(ctx: ToolRunContext) {
       parameters: {
         type: "object",
         properties: {
+          traffic_refs:{type:"array",items:{type:"object",properties:{traffic_id:{type:"string"},role:{type:"string",enum:["baseline","proof","verification","supporting"]},note:{type:"string"}},required:["traffic_id"]}},
           vulnclass: { type: "string", description: "漏洞类别，如 SQL注入/XSS/SSRF/未授权访问" },
           name: { type: "string", description: "漏洞标题（可读）" },
           severity: { type: "string", enum: SEVERITIES },
@@ -30,16 +33,19 @@ export function reportFindingTool(ctx: ToolRunContext) {
         required: ["vulnclass", "severity", "summary", "evidence"],
       },
       async run(args, c) {
-        const s = c.db.exploration(c.expID);
+        const saved = await c.db.transaction(async db => {
+        await db.query('SELECT pg_advisory_xact_lock($1)', [-c.expID]);
+        if(c.toolCallID){const existing=await db.query("SELECT id,node_id FROM findings WHERE task_id=$1 AND tool_call_id=$2",[c.taskID,c.toolCallID]);if(existing.rowCount)return {finding_node_id:Number(existing.rows[0]!.node_id),finding_id:Number(existing.rows[0]!.id)};}
+        const s = db.exploration(c.expID);
         const intentID = c.intentID;
         if (!intentID) throw new Error("report_finding 仅在 worker 执行意图时可用");
         const intent = await s.getNode(intentID);
-        if (!intent || intent.kind !== "intent") throw new Error(`意图 #${intentID} 不存在`);
+        if (!intent || intent.kind !== "intent" || intent.payload.cancelled_by_user === true) throw new Error(`意图 #${intentID} 不存在`);
 
         const anchors =
           args.asset_ids && args.asset_ids.length > 0 ? args.asset_ids : await s.anchorAssetIDs(intentID);
         if (anchors.length > 0) {
-          await c.db.taskScope().validateIntentAssets(c.taskID, intent, anchors);
+          await db.taskScope().validateIntentAssets(c.taskID, intent, anchors);
         }
 
         const payload: Record<string, unknown> = {
@@ -51,7 +57,7 @@ export function reportFindingTool(ctx: ToolRunContext) {
         const nodeID = await s.addNode(KindFinding, payload, 0, "confirmed", c.workerName ?? c.role, anchors);
         await s.link(intentID, RelYields, nodeID);
 
-        const ins = await c.db.query<{ id: string }>(
+        const ins = await db.query<{ id: string }>(
           `INSERT INTO findings(task_id, node_id, vulnclass, name, severity, summary, evidence, worker, asset_ids, status)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,'pending') RETURNING id`,
           [
@@ -67,10 +73,15 @@ export function reportFindingTool(ctx: ToolRunContext) {
           ],
         );
         if (anchors.length > 0) {
-          await c.db.taskScope().markTaskAssetsTested(c.taskID, anchors, c.workerName ?? c.role);
+          await db.taskScope().markTaskAssetsTested(c.taskID, anchors, c.workerName ?? c.role);
         }
-        c.hooks.notifyFinding?.(c.expID, nodeID);
-        return { finding_node_id: nodeID, finding_id: Number(ins.rows[0]!.id) };
+        const findingID=Number(ins.rows[0]!.id);
+        await db.query("UPDATE findings SET tool_call_id=$2 WHERE id=$1",[findingID,c.toolCallID??null]);
+        if(args.traffic_refs?.length)await bindEvidence(db,findingID,args.traffic_refs,c.taskID);
+        return { finding_node_id: nodeID, finding_id: findingID };
+        });
+        c.hooks.notifyFinding?.(c.expID, saved.finding_node_id);
+        return saved;
       },
     },
     ctx,
@@ -149,15 +160,17 @@ export function proveGoalTool(ctx: ToolRunContext) {
         required: ["goal_id", "evidence_node_id"],
       },
       async run(args, c) {
+        await c.db.transaction(async db => {
+          await db.query('SELECT pg_advisory_xact_lock($1)', [-c.expID]);
+          const s = db.exploration(c.expID);
+          const goal = await s.getNode(args.goal_id);
+          if (!goal || goal.kind !== 'goal') throw new Error('目标不存在');
+          const { node: evidence } = await resolveGraphNode(db, c.taskID, c.expID, args.evidence_node_id);
+          if (!['fact','finding'].includes(evidence.kind)) throw new Error('证据必须为已授权的事实或漏洞');
+          await s.link(evidence.id, RelProves, goal.id);
+          await s.setNodeState(goal.id, 'met');
+        });
         const s = c.db.exploration(c.expID);
-        const goal = await s.getNode(args.goal_id);
-        if (!goal || goal.kind !== "goal") throw new Error(`目标 #${args.goal_id} 不存在`);
-        const evidence = await s.getNode(args.evidence_node_id);
-        if (!evidence || !["fact", "finding"].includes(evidence.kind)) {
-          throw new Error("证据必须是本任务产出的事实或漏洞节点");
-        }
-        await s.link(args.evidence_node_id, RelProves, args.goal_id);
-        await s.setNodeState(args.goal_id, "met");
         const counts = await s.executionCounts();
         const allMet = counts.goals > 0 && counts.met >= counts.goals;
         if (allMet) c.hooks.notifyGoalMet?.(c.expID, args.goal_id);

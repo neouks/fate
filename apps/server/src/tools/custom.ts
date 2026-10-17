@@ -1,3 +1,4 @@
+import {evidenceRequest} from "../evidence/http.js";
 import { defineTool, createBashToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ToolRunContext } from "./context.js";
 import type { ToolGuard } from "../pi/runner.js";
@@ -27,7 +28,7 @@ export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?:
         const timeout = Math.min(Math.max(Number(spec["timeout_ms"]) || 30_000, 100), 300_000);
         const check = async (toolName: string, input: Record<string, unknown>) => {
           signal?.throwIfAborted();
-          const decision = await guard?.({ toolName, toolCallId: callID, args: input });
+          const decision = await guard?.({ toolName, toolCallId: callID, args: input, signal });
           if (decision?.block) throw new Error(decision.reason ?? "工具执行被审批拦截");
         };
         if (tool.kind === "http") {
@@ -36,33 +37,8 @@ export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?:
           let method = String(spec["method"] ?? "GET").toUpperCase();
           let body = spec["body"] === undefined || spec["body"] === "" ? undefined : renderToolTemplate(typeof spec["body"] === "string" ? spec["body"] : JSON.stringify(spec["body"]), args);
           const combined = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
-          for (let redirects = 0; redirects < 6; redirects++) {
-            await ctx.db.taskScope().validateWorkerHosts(ctx.taskID, [url]);
-            await check(tool.key, { ...args, url, method, body });
-            const response = await fetch(url, { method, headers, body, signal: combined, redirect: "manual" });
-            const location = response.headers.get("location");
-            if ([301,302,303,307,308].includes(response.status) && location) {
-              await response.body?.cancel();
-              const next = new URL(location, url);
-              if (next.origin !== new URL(url).origin) {
-                for (const key of Object.keys(headers)) if (["authorization", "cookie", "proxy-authorization"].includes(key.toLowerCase())) delete headers[key];
-              }
-              if (response.status === 303 || ([301,302].includes(response.status) && method === "POST")) { method = "GET"; body = undefined; }
-              url = next.href; continue;
-            }
-            const reader = response.body?.getReader();
-            let text = "", bytes = 0;
-            const decoder = new TextDecoder();
-            try {
-              while (reader && bytes < 24_000) {
-                const chunk = await reader.read(); if (chunk.done) break;
-                const part = chunk.value.subarray(0, 24_000 - bytes); bytes += part.length; text += decoder.decode(part, { stream: true });
-              }
-              text += decoder.decode();
-            } finally { await reader?.cancel(); }
-            return { content: [{ type: "text" as const, text: clampOutput(`HTTP ${response.status}\n${text}`) }], isError: !response.ok, details: undefined };
-          }
-          throw new Error("HTTP 重定向次数超限");
+          const result=await evidenceRequest(ctx,{url,method,headers,body},combined,input=>check(tool.key,{...args,...input}));
+          return {content:[{type:'text' as const,text:JSON.stringify(result)}],isError:result.status>=400,details:undefined};
         }
         let command: string;
         if (tool.kind === "script") {

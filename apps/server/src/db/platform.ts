@@ -59,6 +59,7 @@ export interface RetryOverride {
 }
 
 export interface LLMProfile {
+  supportsImages?: boolean;
   id: number;
   name: string;
   format: string;
@@ -84,6 +85,7 @@ export interface LLMProfile {
 
 /** SaveProfile 入参；缺省字段按零值语义写入。id 为 0/缺省 = 插入。 */
 export interface LLMProfileInput {
+  supportsImages?: boolean;
   id?: number;
   name: string;
   format: string;
@@ -252,7 +254,7 @@ const PROFILE_RETRY_COLS =
   `COALESCE(retry_empty_interval_ms,0) AS retry_empty_interval_ms,` +
   `COALESCE(retry_stream_attempts,0) AS retry_stream_attempts,` +
   `COALESCE(retry_stream_interval_ms,0) AS retry_stream_interval_ms`;
-const PROFILE_COLS =
+const PROFILE_COLS = "supports_images," +
   `id,name,format,COALESCE(base_url,'') AS base_url,COALESCE(proxy,'') AS proxy,model,` +
   `COALESCE(api_key_hint,'') AS api_key_hint,` +
   `rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,'') AS reasoning_effort,is_default,` +
@@ -696,6 +698,7 @@ export class PlatformStore {
       ratePerSecond: Number(row["rate_per_second"] ?? 0),
       ratePerMinute: Number(row["rate_per_minute"] ?? 0),
       contextWindowK: Number(row["context_window_k"] ?? 0),
+      supportsImages: row["supports_images"]===true,
       reasoningEffort: String(row["reasoning_effort"] ?? ""),
       isDefault: row["is_default"] === true,
       priority: Number(row["priority"] ?? 0),
@@ -759,6 +762,11 @@ export class PlatformStore {
 
   /** 插入（无 id）或更新。更新时 apiKey 留空=保留现有 key。 */
   async saveProfile(p: LLMProfileInput): Promise<number> {
+    const id=await this.saveProfileBase(p);
+    if(p.supportsImages!==undefined)await this.db.query("UPDATE llm_profiles SET supports_images=$2 WHERE id=$1",[id,p.supportsImages]);
+    return id;
+  }
+  private async saveProfileBase(p: LLMProfileInput): Promise<number> {
     const sessionHeaderKey = (p.sessionHeaderKey ?? "").trim();
     let hint = p.apiKeyHint ?? "";
     if ((p.apiKey ?? "").length >= 4) hint = "…" + p.apiKey!.slice(-4);
