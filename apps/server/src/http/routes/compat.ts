@@ -1,4 +1,5 @@
 import {READABLE_FINDINGS} from "./finding-projection.js";
+import {modelTokenUsage} from '../model-token-usage.js';
 import {executionSnapshot} from '../../engine/coordinator.js';
 import { resolveModelProfiles } from "../../pi/modelResolver.js";
 import {authorizedNodes,resolveGraphNode,TASK_GRAPH_CTE} from '../../db/graph_view.js';
@@ -933,19 +934,11 @@ export function registerCompatRoutes(app: FastifyInstance): void {
 
   app.get("/api/llm/records/by-model", async (req) => {
     const q = req.query as Record<string, string>;
-    const active = await db().platform().activeProfile().catch(() => null);
-    const model = active?.model ?? "default";
-    let where = `kind='result' AND input_tokens IS NOT NULL`;
-    const params: unknown[] = [];
-    if (q["task"] && Number(q["task"]) > 0) {
-      params.push(await expOf(Number(q["task"])));
-      where += ` AND exploration_id=$1`;
+    const taskID=q.task===undefined?undefined:Number(q.task);
+    if(taskID!==undefined){
+      if(!Number.isSafeInteger(taskID)||taskID<1)throw Object.assign(new Error('任务 ID 无效'),{statusCode:400});
+      await expOf(taskID);
     }
-    const r = await db().query(
-      `SELECT COUNT(*) calls, COALESCE(SUM(input_tokens),0) i, COALESCE(SUM(output_tokens),0) o,
-              COALESCE(SUM(cache_read_tokens),0) cr, COALESCE(SUM(cache_write_tokens),0) cw
-       FROM activity WHERE ${where}`, params);
-    const row = r.rows[0] ?? {};
-    return [{ model, calls: Number(row["calls"]), input_tokens: Number(row["i"]), output_tokens: Number(row["o"]), cache_read_tokens: Number(row["cr"]), cache_write_tokens: Number(row["cw"]) }];
+    return modelTokenUsage(db(),taskID);
   });
 }

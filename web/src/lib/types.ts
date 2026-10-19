@@ -928,7 +928,14 @@ export interface UsageStats {
 // always-on llm_usage metering ledger. calls = number of LLM calls on this model.
 export interface ModelTokenStat {
   model: string;
-  calls: number;
+  calls: number | null;
+  source?: "request_audit" | "legacy_results";
+  input_semantics?: "inclusive_cache" | "unknown";
+  uncached_input_tokens?: number;
+  compaction_calls?: number;
+  failed_calls?: number;
+  pending_calls?: number;
+  unknown_usage_calls?: number;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;

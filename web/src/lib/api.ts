@@ -1,4 +1,5 @@
 import { entryAwareFetch } from "@/lib/http-auth";
+import { modelTokenStats } from "@/lib/model-token-stats";
 import { listItems } from "@/lib/api-list";
 // Real backend client. /api/* is proxied to the Go backend (next.config rewrites).
 // Returns the domain types in lib/types.ts. Shapes match the backend handlers;
@@ -1351,7 +1352,9 @@ export const api = {
   // 按模型聚合本任务的 token 用量（来自常开的 llm_usage 计量账本，逐次调用精确，
   // per-agent 绑定 / 轮询 / 中断消耗都覆盖）。
   tokensByModel: (task: string) =>
-    get<{ models: ModelTokenStat[] }>(`/llm/records/by-model?task=${encodeURIComponent(task)}`),
+    get<{ models?: ModelTokenStat[] | null } | ModelTokenStat[] | null>(
+      `/llm/records/by-model?task=${encodeURIComponent(task)}`,
+    ).then(modelTokenStats),
 
   // ---- 一键更新 ----
   // 检查以后端为准：下载是后端做的，浏览器能连 GitHub 而服务器连不上的情况很常见
