@@ -2,7 +2,7 @@ import {terminalExtension,TERMINAL_TOOLS} from '../pi/terminal.js';
 import {interceptGate} from '../intercept/gate.js';
 import { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
 export { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
-import { compactPlannerChanges } from './prompt-context.js';
+import { compactPlannerChanges, plannerRoundMessage, CONTEXT_LAYOUT_VERSION } from './prompt-context.js';
 import {createTrackedRunner} from '../engine/runtime-config.js';
 import {normalizeContract} from './intent-contract.js';
 import {workerLaunchContext} from '../tools/context-read.js';
@@ -249,13 +249,13 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   const disabledBuiltin = await disabledBuiltinTools(db);
   const rc = await agentRunConfig(db, "worker");
 
-  // 角色正文、约束、意图 mandate 和锚定资产放入 system，独立于 pi 的对话压缩。
-  const constraints = await loadConstraints(db, expID);
+  // Keep role/Skill/tool prefixes stable. The host supplies the immutable mandate
+  // at every request boundary, including after compaction and session recovery.
   const anchored = await db.exploration(expID).anchorAssetIDs(intent.id);
   const assets = anchored.length > 0 ? await db.assets().getByIDs(anchored) : [];
   const assetsJSON=clampOutput(JSON.stringify({total:assets.length,items:assets.slice(0,20).map(a=>({id:a.id,type:a.type,host:a.domain||a.ip||a.url||a.app_name})),detail_tool:'list_assets'}));
-  const system =
-    (await systemRolePrompt(db, "worker")) +
+  const system = await systemRolePrompt(db, "worker");
+  const taskContext =
     `\n\n【当前意图 #${intent.id} 执行约定】\n${JSON.stringify(contract)}` +
     `\n\n【锚定资产索引；访问仍须当前授权】\n${assetsJSON}`;
 
@@ -273,8 +273,10 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   const execution=await executionTools(ctx,runDir,input);
   tools.push(...execution.tools);
   const runner = await createTrackedRunner(db,taskID,"worker",{
+    contextLayout: CONTEXT_LAYOUT_VERSION,
+    taskContext,
     reserveSettlementTurns: 2,
-    boundaryContext: async()=>hostProtocol('worker')+constraintBlock(await loadConstraints(db,expID)),
+    boundaryContext: async()=>constraintBlock(await loadConstraints(db,expID)),
     intentID:intent.id,
     cwd: runDir,
     agentDir: path.join(dataDir, "pi-agent"),
@@ -392,19 +394,13 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
     plannerBudget.maxTurns=plannerBudget.maxTurns>0?Math.min(plannerBudget.maxTurns,input.maxTurns):input.maxTurns;
     plannerBudget.maxDurationMs=plannerBudget.maxDurationMs>0?Math.min(plannerBudget.maxDurationMs,120_000):120_000;
   }
-  const constraints = await loadConstraints(db, expID);
-  const system = (await systemRolePrompt(db, "planner", { Goal: goal }, input.terminalOnly, input.terminalOnly ? input.wrapupPromptOverride : undefined)) + constraintBlock(constraints);
+  const system = await systemRolePrompt(db, "planner", { Goal: goal }, input.terminalOnly, input.terminalOnly ? input.wrapupPromptOverride : undefined);
 
   const overview = await buildGraphOverview(ctx);
   // Todos are included once in their complete bounded block below.
   delete overview.todos;
   const changes = compactPlannerChanges(input.changes ?? [], overview, taskID);
-  const todoText = clampOutput(JSON.stringify(todos.get(expID)));
-  const firstUser =
-    `【本轮已交付通知】\n${JSON.stringify(input.events??[])}\n【本轮领域变化】\n${JSON.stringify(changes)}\n`+
-    `${input.triggersText.slice(0,6000)}\n\n【当前态势摘要，完整图按 context_search/context_get 查询】\n${clampOutput(JSON.stringify(overview))}\n\n` +
-    `【跨轮共享待办（串行利用链，用 todo_write 更新）】\n${todoText}\n\n` +
-    `开始本轮规划。`;
+  const firstUser = plannerRoundMessage(overview,todos.get(expID),changes,input.events??[],input.triggersText);
 
   const workDir = path.join(dataDir, "tasks", String(taskID));
   mkdirSync(workDir, { recursive: true });
@@ -413,11 +409,12 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
   let turns = 0;
   const plannerCounter = withUsageCounter(input.onActivity);
   const runner = await createTrackedRunner(db,taskID,"planner",{
+    contextLayout: CONTEXT_LAYOUT_VERSION,
     cwd: workDir,
     extensionFactories:input.terminalOnly?[]:execution.extensions,
     guard:roleExecutionGuard(ctx,input.extraGuard),
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
-    boundaryContext:async()=>hostProtocol("planner")+constraintBlock(await loadConstraints(db,expID)),
+    boundaryContext:async()=>constraintBlock(await loadConstraints(db,expID)),
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
     modelPolicy: model.modelPolicy,

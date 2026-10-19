@@ -1,7 +1,8 @@
 import {platformMcpExtension,hasDeferredMcp,MCP_RESOURCE_TOOLS} from './platform-mcp.js';
 import {domainCompactionExtension,type CompactionHealth} from './domain-compaction.js';
 import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
-import {requestSize,systemPromptSize} from '../agent/prompt-diagnostics.js';
+import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
+import {stableToolPayload,hostTaskContext} from './request-prefix.js';
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -94,6 +95,9 @@ export type RunnerActivity =
 	| { kind: 'queue_update'; steering: readonly string[]; followUp: readonly string[] };
 
 export interface AgentRunnerOptions {
+  contextLayout?: 'stable-prefix-v1';
+  /** Host mandate at the request tail; rebuilt on session restore, never compacted away. */
+  taskContext?: string;
   /** Host-owned durable completion; checked after paired tool results are saved. */
   stopWhen?: () => Promise<boolean>;
   reserveSettlementTurns?: number;
@@ -210,9 +214,13 @@ export class AgentRunner {
     let enterClosing = () => {closing.active=true;};
     if(opts.platform) validatePlatformRunner(opts.platform.role,opts,opts.platform.taskID);
     const diagnosticsExtension: ExtensionFactory = api => {
+      api.on('before_agent_start',event=>{
+        if(opts.contextLayout)event.systemPromptOptions.sections.cwd='实际工作目录见本次宿主执行上下文的 cwd；相对路径由工具在该目录解析。';
+      });
       api.on('context', async event => {
         // Keep legacy feedback in the audit session, never in Agent coordination.
         const messages=[...event.messages];
+        if(opts.contextLayout)messages.push({role:'custom',customType:'host_task_context',display:false,timestamp:Date.now(),content:hostTaskContext(opts.cwd,opts.taskContext)});
         const current=await opts.boundaryContext?.();
         if(current)messages.push({role:'custom',customType:'blackboard_boundary',content:current,display:false,timestamp:Date.now()});
         if(opts.settlementTools){
@@ -231,7 +239,12 @@ export class AgentRunner {
         const original=toolResultText(message),text=closingToolError(message.toolName,original,closing,opts.settlementTools);
         if(text!==original && text)return {message:{...message,content:[{type:'text' as const,text}]}};
       });
-      api.on('before_provider_request', async event => { if(closing.active)enterClosing();await opts.onRequestSize?.(requestSize(event.payload)); });
+      api.on('before_provider_request', async event => {
+        if(closing.active)enterClosing();
+        const payload=opts.contextLayout?stableToolPayload(event.payload):event.payload;
+        await opts.onRequestSize?.(requestSize(payload));
+        return payload;
+      });
     };
 		const settings = SettingsManager.inMemory({
 			// pi owns conversation compaction; graph compaction remains a separate domain projection.
@@ -343,7 +356,7 @@ export class AgentRunner {
 			skillsOverride: opts.skillsDir
 				? (base) => {
 						const loaded = loadSkillsFromDir({ dir: opts.skillsDir!, source: 'series' });
-						return { skills: loaded.skills.filter((skill) => !opts.allowedSkills || opts.allowedSkills.includes(skill.name)), diagnostics: [...base.diagnostics, ...loaded.diagnostics] };
+                        return { skills: loaded.skills.filter((skill) => !opts.allowedSkills || opts.allowedSkills.includes(skill.name)).sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0), diagnostics: [...base.diagnostics, ...loaded.diagnostics] };
 					}
 				: undefined,
 			noPromptTemplates: true,
@@ -564,7 +577,8 @@ export class AgentRunner {
   get promptDiagnostics() {
     const names = new Set(this.session.getActiveToolNames());
     const tools = this.session.getAllTools().filter(t => names.has(t.name)).map(t => ({name:t.name,description:t.description,parameters:t.parameters}));
-    return systemPromptSize(this.session.systemPrompt, tools);
+    return {...systemPromptSize(this.session.systemPrompt, tools),context_layout:this.opts.contextLayout??'legacy',
+      host_task_context:{...textSize(this.opts.contextLayout?hostTaskContext(this.opts.cwd,this.opts.taskContext):''),source:'host_request_tail'}};
   }
 
 	/** 在当前 runner 之外按路径恢复一个新 runner（同一 modelRuntime 可复用） */

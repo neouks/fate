@@ -16,6 +16,14 @@ async function fixture(){const task=await db.tasks().createTaskWithOptions('LOCA
 async function call(tool:ToolDefinition,args:unknown){const r=await tool.execute(randomUUID(),args as never,undefined,undefined,{} as never);const text=(r.content[0] as {text:string}).text;expect(r.isError,text).not.toBe(true);expect(Buffer.byteLength(text)).toBeLessThanOrEqual(20*1024);return JSON.parse(text);}
 
 describe('on-demand graph reads',()=>{
+ it('returns directly reusable field continuation without a relation cursor or repeated first page',async()=>{
+  const f=await fixture(),detail='合成😀证据'.repeat(900),id=await f.s.addNode('fact',{summary:'paged field',detail,evidence:'LOCAL'},0,'confirmed','test',[]);
+  const tool=contextGetTool(f.c);let item:any={ref:`node:${id}`,field:'/payload/detail'},text='',pages=0;
+  while(item){const p=(await call(tool,{items:[item],max_chars:1000})).items[0];expect(p.error).toBeUndefined();text+=p.content;pages++;
+   if(p.next_item){expect(p.next_item.offset).toBe(p.next_offset);expect(p.next_item.cursor).toBeUndefined();expect(p.next_item.version).toBe(0);}item=p.next_item;
+  }
+  expect(pages).toBe(5);expect(text).toBe(detail);
+ });
  it('pages long Chinese summaries at item boundaries without loading evidence or skipping IDs',async()=>{
   const f=await fixture(),ids:number[]=[];
   for(let i=0;i<61;i++)ids.push(await f.s.addNode('fact',{summary:`${i}发现`.repeat(200),evidence:'needle '+'PRIVATE BODY '.repeat(5000)},0,'confirmed','test',[]));
@@ -59,7 +67,7 @@ describe('on-demand graph reads',()=>{
   expect((await call(tool,{items:[{ref:`node:${intent}`,view:'parents',offset:256}]})).items[0].error).toContain('page_cursor');
   let result=p.content;const version=p.version,cursor=p.page_cursor;
   const late=await f.s.addNode('fact',{summary:'late member'},0,'confirmed','test',[]);await f.s.link(late,'derived_from',intent);
-  while(p.next_offset!==null){p=(await call(tool,{items:[{ref:`node:${intent}`,view:'parents',version,cursor,offset:p.next_offset}],max_chars:256})).items[0];expect(p.error).toBeUndefined();result+=p.content;}
+  while(p.next_offset!==null){expect(p.next_item.cursor).toBe(cursor);p=(await call(tool,{items:[p.next_item],max_chars:256})).items[0];expect(p.error).toBeUndefined();result+=p.content;}
   expect(JSON.parse(result).map((n:any)=>n.ref)).toEqual(ids.map(id=>`node:${id}`));expect(p.next_cursor).toBeNull();
   await db.query("UPDATE exploration_nodes SET payload=payload||'{\"summary\":\"changed member\"}' WHERE id=$1",[ids[0]]);
   expect((await call(tool,{items:[{ref:`node:${intent}`,view:'parents',cursor,version,offset:256}],max_chars:256})).items[0].error).toContain('本页成员');

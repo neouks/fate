@@ -173,7 +173,9 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
         const take=Math.min(Math.floor(budget/remaining),Math.floor(bytes/remaining/6));
         const content=chars.slice(offset,offset+take).join('');budget-=Array.from(content).length;bytes-=Buffer.byteLength(JSON.stringify(content));
         const nextOffset=offset+take<chars.length?offset+take:null;
-        items.push({ref:item.ref,view,field:item.field,version,source_task_id:sourceTask,inherited:sourceTask!==ctx.taskID,content,total_chars:chars.length,next_offset:nextOffset,...(view==='parents'||view==='members'?{page_cursor:pageCursor,next_cursor:nextOffset!==null?null:nextCursor}:{} )});
+        const nextItem=nextOffset!==null?{ref:item.ref,view,field:item.field,version,offset:nextOffset,...(pageCursor?{cursor:pageCursor}:{})}
+          :nextCursor?{ref:item.ref,view,field:item.field,version,offset:0,cursor:nextCursor}:undefined;
+        items.push({ref:item.ref,view,field:item.field,version,source_task_id:sourceTask,inherited:sourceTask!==ctx.taskID,content,total_chars:chars.length,next_offset:nextOffset,...(nextItem?{next_item:nextItem}:{}),...(view==='parents'||view==='members'?{page_cursor:pageCursor,next_cursor:nextOffset!==null?null:nextCursor}:{} )});
       }catch(error){items.push({ref:item.ref,error:error instanceof Error?error.message:String(error)});}
     }
     return {items};

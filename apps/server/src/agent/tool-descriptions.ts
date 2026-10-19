@@ -10,7 +10,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   insert_assets: '登记新资产及关系到资产图；登记不等于获准访问。探索结论使用 record_fact。',
   report_finding: '提交本次亲自验证且可复现的漏洞与真实证据，成功后立即入图。先 context_search 按 finding 类型 查重；疑似问题用 record_fact 记录并注明不确定性。',
   context_search: '检索授权节点及冷图原文；types 显式包含 activity 才查询 Worker 活动。返回摘要、稳定引用和快照游标；来源任务只读，按 next_cursor 续读。',
-  context_get: '按 items 批量读取引用。summary 只读索引，detail 读详情，output 读结果；field 选 JSON Pointer 字段。parents/members 每页最多 20 条；有 next_offset 时用 page_cursor 和 offset 读完本页，再用 next_cursor 翻页并重置 offset。沿用 version，冲突重新检索。',
+  context_get: '按 items 读取引用；summary 索引、detail 详情、output 结果，field 选择字段。续读优先将返回的 next_item 原样放入 items；缺省 offset 会重读首页。正文只需 offset=next_offset；仅 parents/members 还需 cursor=page_cursor，读完本页再按 next_cursor 翻页。沿用 version，冲突重新检索。',
   read_tool_output: '按返回引用与游标续读完整工具 JSON；未读取的内容不能当作已确认信息。',
   graph_overview: '默认只读目标与授权计数；view=recent 获取近期态势摘要。用 context_search 按类型、状态、资产、意图检索，再用 context_get 读取所需字段，避免展开整图。',
   node_detail: '读取指定授权节点的详情、来源和关联；按返回游标续读。',
@@ -31,6 +31,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   report_conversation_finding: '向当前绑定任务提交已复现漏洞及证据，先查重；疑似问题记录为事实。',
 };
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
+  const priorPagedDefault = '按 items 批量读取引用。summary 只读索引，detail 读详情，output 读结果；field 选 JSON Pointer 字段。parents/members 每页最多 20 条；有 next_offset 时用 page_cursor 和 offset 读完本页，再用 next_cursor 翻页并重置 offset。沿用 version，冲突重新检索。';
   const priorDefaults:Record<string,string>={
     context_get:'批量读取 items 中的 node:/activity: 引用。detail 读详情，output 读执行结果，parents 读上游，members 读摘要成员；field 选 JSON Pointer 字段，按返回的 Unicode next_offset 续读。版本冲突重新检索。',
     graph_overview:'读取有界态势摘要：目标、待执行和运行中意图、近期结果、覆盖及待办；详情按节点引用读取。',
@@ -39,7 +40,7 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
     steer_work:'给指定运行意图追加纠偏要求，在后续动作边界生效；不改变授权范围。',
   };
   const blackboardDefaults:Record<string,string>={record_fact:'Worker 暂存本意图的新事实或负面观察，最终 complete_intent 集中发布：summary 简述结论，evidence 保存真实证据，confidence 区分直接观察与推断。',report_finding:'提交本次已验证且可复现的漏洞和证据，Worker 先暂存，complete_intent 集中发布到探索图并连接资产。先 context_search 按 finding 类型 查重；疑似问题用事实记录。',checkpoint_intent:'阶段变化、连续操作或阻塞时保存当前意图进度、已尝试方法和下一步；进度不等于事实或完成。',complete_intent:'结束当前意图前保存逐项验收结果。criteria.index 从零开始，事实引用必须属于本意图；完整回答并有证据才 complete，否则 partial/blocked 并写 remaining。成功后停止操作。'};
-  const previous = stored===ARTEX_PREVIOUS_TOOL_DESCRIPTIONS[name] || stored===DIRECT_WRITE_PREVIOUS[name] || stored===priorDefaults[name] || stored===blackboardDefaults[name] || name === 'prove_goal' && stored === '用仍获授权的事实或漏洞证明目标；证据必须支持该目标，量化条件须核对实测值。';
+  const previous = name==='context_get' && stored===priorPagedDefault || stored===ARTEX_PREVIOUS_TOOL_DESCRIPTIONS[name] || stored===DIRECT_WRITE_PREVIOUS[name] || stored===priorDefaults[name] || stored===blackboardDefaults[name] || name === 'prove_goal' && stored === '用仍获授权的事实或漏洞证明目标；证据必须支持该目标，量化条件须核对实测值。';
   if (typeof stored === 'string' && stored.trim() && stored !== LEGACY_TOOL_DESCRIPTIONS[name] && stored !== TOOL_DESCRIPTIONS[name] && !previous)
     return { description: stored, source: 'custom' };
   return { description: TOOL_DESCRIPTIONS[name] ?? code, source: 'builtin' };

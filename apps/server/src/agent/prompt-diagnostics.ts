@@ -7,9 +7,10 @@ export function textSize(text: string) {
 export function requestSize(payload: unknown) {
   const raw = JSON.stringify(payload) ?? '';
   const body = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  const schemas=JSON.stringify(body.tools??[]);
   return { ...textSize(raw), sha256: createHash('sha256').update(raw).digest('hex'),
     messages: textSize(JSON.stringify(body.messages ?? body.input ?? [])),
-    tool_schemas: textSize(JSON.stringify(body.tools ?? [])) };
+    tool_schemas: {...textSize(schemas),sha256:createHash('sha256').update(schemas).digest('hex')} };
 }
 export function systemPromptSize(system: string, tools: unknown[]) {
   const skills = system.match(/<skills>[\s\S]*?<\/skills>/g)?.join('\n') ?? '';
