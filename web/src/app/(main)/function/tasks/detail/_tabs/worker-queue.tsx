@@ -53,6 +53,7 @@ function QueueRow({
   index,
   disabled,
   pending,
+  managed,
   selected,
   onSelect,
   onDispatch,
@@ -61,6 +62,7 @@ function QueueRow({
   index: number;
   disabled: boolean;
   pending: boolean;
+  managed: boolean;
   selected: boolean;
   onSelect: () => void;
   onDispatch: () => void;
@@ -103,7 +105,7 @@ function QueueRow({
           </span>
         </div>
         <p className="break-words text-sm">{titleOf(node)}</p>
-        <Badge variant="secondary">{pending ? "待下发" : "已下发·等待执行"}</Badge>
+        <Badge variant="secondary">{pending ? "待下发" : managed && !isDispatched(node) ? "待 Planner 评估" : "已准入·等待领取"}</Badge>
       </div>
       {pending && (
         <Button size="sm" variant="outline" disabled={disabled} onClick={onDispatch}>
@@ -224,7 +226,7 @@ export function WorkerQueue({ taskId, disabled }: { taskId: string; disabled: bo
           <SheetTitle>等待队列</SheetTitle>
           <SheetDescription>
             拖动手柄调整执行顺序；键盘按空格拾起，上下箭头移动，空格放下。手动排序后，新建及重新开启的 Worker
-            追加队尾。已运行的 Worker 不受影响。
+            追加队尾。自动模式下，待评估意图须经 Planner 根据最新图谱准入；图中历史意图数量不代表并发数。
           </SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
@@ -240,6 +242,13 @@ export function WorkerQueue({ taskId, disabled }: { taskId: string; disabled: bo
           {!queue && !error && <Spinner />}
           {queue && (
             <>
+              {queue.scheduling && <div className="flex flex-wrap gap-2" aria-label="Worker 调度状态">
+                <Badge variant="outline">全局执行 {queue.scheduling.global_active} / {queue.scheduling.limit}</Badge>
+                <Badge variant="secondary">本任务执行 {queue.scheduling.task_active}</Badge>
+                <Badge variant="secondary">退出中 {queue.scheduling.exiting}</Badge>
+                <Badge variant="secondary">待领取 {queue.scheduling.ready}</Badge>
+                <Badge variant="secondary">规划名额 {queue.scheduling.planning}</Badge>
+              </div>}
               <p className="text-muted-foreground text-xs">
                 {queue.manual ? "按用户顺序" : "按 Planner 优先级"} · {queue.items.length} 个等待项
               </p>
@@ -287,6 +296,7 @@ export function WorkerQueue({ taskId, disabled }: { taskId: string; disabled: bo
                         node={node}
                         index={index}
                         disabled={saving || disabled || !!error}
+                        managed={queue.execution_mode !== "manual"}
                         pending={queue.execution_mode === "manual" && !isDispatched(node)}
                         selected={selected.includes(node.id)}
                         onSelect={() =>

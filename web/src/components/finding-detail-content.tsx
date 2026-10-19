@@ -7,6 +7,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
+import {FindingEvidencePanel} from "@/components/finding-evidence-panel";
 import { FindingDeleteDialog } from "@/components/finding-delete-dialog";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
@@ -301,7 +302,7 @@ export function FindingDetailContent({
           </div>
         </CardContent>
       </Card>
-      {id ? null : (
+      {id ? <FindingEvidencePanel finding={finding} contextTask={contextTask} readOnly={readOnly} /> : (
         <Alert>
           <AlertDescription>
             此为历史探索节点，未关联持久化漏洞记录，仅展示已有证据；不提供流量绑定或复测操作。

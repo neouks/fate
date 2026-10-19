@@ -7,7 +7,19 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
+import {
+  PanelRightIcon,
+  ShieldCheckIcon,
+  FolderIcon,
+  Settings2Icon,
+  ArchiveIcon,
+  ArrowLeftIcon,
+  BrainIcon,
+  CheckIcon,
+  CircleAlertIcon,
+  PauseIcon,
+  PlayIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -41,29 +53,43 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { api } from "@/lib/api";
 import type { InterceptApprovalRow, LLMProfile, Stats, Task } from "@/lib/types";
 
+import { taskNavigation, taskViewURL } from "@/lib/task-navigation";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { SessionsTab } from "./_tabs/sessions-tab";
 
 // Secondary tabs (graphs and tables) are not on the session
 // startup path. Load their code only when the corresponding tab mounts.
-const AssetApprovalsTab = dynamic(() => import("./_tabs/asset-approvals-tab").then((m) => m.AssetApprovalsTab));
-const BroadcastTab = dynamic(() => import("./_tabs/broadcast-tab").then((m) => m.BroadcastTab));
-const AssetsTab = dynamic(() => import("./_tabs/assets-tab").then((m) => m.AssetsTab));
-const CoverageGraphTab = dynamic(() => import("./_tabs/coverage-graph-tab").then((m) => m.CoverageGraphTab));
-const FindingsTab = dynamic(() => import("./_tabs/findings-tab").then((m) => m.FindingsTab));
-const GraphTab = dynamic(() => import("./_tabs/graph-tab").then((m) => m.GraphTab));
-const InterceptTab = dynamic(() => import("./_tabs/intercept-tab").then((m) => m.InterceptTab));
-const OverviewTab = dynamic(() => import("./_tabs/overview-tab").then((m) => m.OverviewTab));
+const AssetApprovalsTab = dynamic(() => import("./_tabs/asset-approvals-tab").then((m) => m.AssetApprovalsTab), {
+  loading: TaskDetailLoading,
+});
+const BroadcastTab = dynamic(() => import("./_tabs/broadcast-tab").then((m) => m.BroadcastTab), {
+  loading: TaskDetailLoading,
+});
+const AssetsTab = dynamic(() => import("./_tabs/assets-tab").then((m) => m.AssetsTab), { loading: TaskDetailLoading });
+const CoverageGraphTab = dynamic(() => import("./_tabs/coverage-graph-tab").then((m) => m.CoverageGraphTab), {
+  loading: TaskDetailLoading,
+});
+const FindingsTab = dynamic(() => import("./_tabs/findings-tab").then((m) => m.FindingsTab), {
+  loading: TaskDetailLoading,
+});
+const GraphTab = dynamic(() => import("./_tabs/graph-tab").then((m) => m.GraphTab), { loading: TaskDetailLoading });
+const InterceptTab = dynamic(() => import("./_tabs/intercept-tab").then((m) => m.InterceptTab), {
+  loading: TaskDetailLoading,
+});
+const OverviewTab = dynamic(() => import("./_tabs/overview-tab").then((m) => m.OverviewTab), {
+  loading: TaskDetailLoading,
+});
 
+const FilesTab = dynamic(() => import("./_tabs/files-tab").then((m) => m.FilesTab), { loading: TaskDetailLoading });
+const TrafficTab = dynamic(() => import("./_tabs/traffic-tab").then((m) => m.TrafficTab), {
+  loading: TaskDetailLoading,
+});
 const TABS = [
-  { value: "sessions", label: "会话" },
-  { value: "overview", label: "总览" },
-  { value: "graph", label: "探索链路" },
-  { value: "broadcast", label: "播报板" },
+  { value: "sessions", label: "任务" },
   { value: "findings", label: "发现" },
-  { value: "assets", label: "测试资产" },
-  { value: "asset-approvals", label: "资产审批" },
-  { value: "coverage", label: "资产覆盖图" },
-  { value: "intercept", label: "拦截审批" },
+  { value: "graph", label: "探索" },
+  { value: "files", label: "文件" },
+  { value: "traffic", label: "流量" },
 ];
 
 function taskProfileIDs(task: Task): string[] {
@@ -75,14 +101,14 @@ function taskProfileIDs(task: Task): string[] {
 
 function mergeTaskStats(task: Task, stats: Stats | null): Task {
   const active = stats?.active_task;
-  if (!active) return task;
+  if (!active || String(active.id) !== String(task.id)) return task;
   return {
     ...task,
-    in_flight: active.in_flight,
-    goals_total: active.goals_total,
-    goals_met: active.goals_met,
+    in_flight: active.in_flight ?? task.in_flight,
+    goals_total: active.goals_total ?? task.goals_total,
+    goals_met: active.goals_met ?? task.goals_met,
     engine_mode: stats?.engine_mode ?? active.engine_mode,
-    paused: active.paused,
+    paused: active.paused ?? task.paused,
   };
 }
 
@@ -234,15 +260,61 @@ function TaskDetailInner() {
   const [task, setTask] = React.useState<Task | null>(null);
   const [paused, setPaused] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
-  const [tab, setTab] = React.useState(() =>
-    searchParams.get("tab") === "retests"
-      ? "findings"
-      : TABS.some((item) => item.value === searchParams.get("tab"))
-        ? searchParams.get("tab")!
-        : "sessions",
-  );
-  const activeTab = React.useRef(tab);
-  activeTab.current = tab;
+  const { view: tab, explore, panel, section } = taskNavigation(searchParams);
+  const navigate = (patch: Record<string, string | null>) => {
+    const next = taskViewURL(window.location.search, patch);
+    // Radix can select on pointer down and focus before React commits the new URL.
+    if (window.location.pathname + window.location.search !== next) window.history.pushState(null, "", next);
+  };
+  const setTab = (value: string) => navigate({ tab: value, panel: null });
+  const [visited, setVisited] = React.useState<string[]>(["sessions", tab]);
+  React.useEffect(() => setVisited((v) => (v.includes(tab) ? v : [...v, tab])), [tab]);
+  const [visitedSections, setVisitedSections] = React.useState<string[]>([section]);
+  React.useEffect(() => setVisitedSections((v) => v.includes(section) ? v : [...v, section]), [section]);
+  const [processOpen, setProcessOpen] = React.useState(false);
+  React.useEffect(() => {
+    setProcessOpen(window.matchMedia("(min-width:1280px)").matches);
+  }, []);
+  const [findingCount, setFindingCount] = React.useState<number | null>(null);
+  const [pendingAssets, setPendingAssets] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    let live = true;
+    const load = () =>
+      api
+        .taskAssetApprovals(id)
+        .then((rows) => {
+          if (live)
+            setPendingAssets(rows.filter((r) => !r.inherited && r.approval_state === "pending" && !r.blocked).length);
+        })
+        .catch(() => {
+          if (live) setPendingAssets(null);
+        });
+    void load();
+    const timer = setInterval(load, 10000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [id]);
+  const [controlling, setControlling] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api
+        .taskFindingsPage(id, 1, 1, "desc")
+        .then((r) => {
+          if (alive) setFindingCount(r.total);
+        })
+        .catch(() => {
+          if (alive) setFindingCount(null);
+        });
+    void load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [id]);
   const [pendingIntercepts, setPendingIntercepts] = React.useState<InterceptApprovalRow[]>([]);
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [archiving, setArchiving] = React.useState(false);
@@ -317,7 +389,8 @@ function TaskDetailInner() {
         if (statsLoadInFlight.current !== request) return;
         latestStats.current = value;
         setTask((current) => (current ? mergeTaskStats(current, value) : current));
-        if (value.active_task?.paused !== undefined) setPaused(value.active_task.paused);
+        if (String(value.active_task?.id) === id && value.active_task?.paused !== undefined)
+          setPaused(value.active_task.paused);
       })
       .catch(() => {
         // Keep the last live state during a transient statistics failure.
@@ -345,13 +418,17 @@ function TaskDetailInner() {
 
   async function togglePause() {
     if (task && ["done", "failed", "timeout"].includes(task.status)) return;
+    if (controlling) return;
+    setControlling(true);
     const next = !paused;
     try {
       await api.controlTask(id, next ? "pause" : "resume");
-      setPaused(next);
-      toast.success(next ? "已暂停探索" : "已恢复探索");
+      load();
+      toast.info(next ? "暂停请求已提交，等待执行器确认" : "恢复请求已提交");
     } catch (e) {
       toast.error(`操作失败：${(e as Error).message}`);
+    } finally {
+      setControlling(false);
     }
   }
 
@@ -404,6 +481,10 @@ function TaskDetailInner() {
     controlIcon = <PlayIcon data-icon="inline-start" />;
     controlLabel = "恢复";
   }
+  if (task.pause_pending) {
+    controlLabel = "等待停止确认";
+    controlIcon = <Spinner />;
+  }
   const archiveTrigger = (
     <Button
       size="icon-sm"
@@ -416,100 +497,202 @@ function TaskDetailInner() {
   );
 
   return (
-    <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
-      {/* Top fixed area */}
-      <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
-        <div className="flex items-center gap-2">
-          <SidebarTrigger className="-ml-1" />
-          <Button asChild variant="ghost" size="icon" className="size-7">
-            <Link href="/function/tasks">
-              <ArrowLeftIcon />
-            </Link>
-          </Button>
-          <h1 className="min-w-0 flex-1 truncate font-semibold text-sm" title={task.name || task.description}>
-            {task.name || task.description}
+    <div className="task-workspace flex min-w-0 flex-1 flex-col">
+      <header className="task-header shrink-0 border-b bg-card px-3 lg:px-5">
+        <div className="task-header-title flex min-w-0 items-center gap-2">
+          <SidebarTrigger />
+          <Link href="/function/tasks" aria-label="返回任务列表" className="shrink-0 text-muted-foreground">
+            <FolderIcon className="size-4" />
+          </Link>
+          <span className="text-muted-foreground">/</span>
+          <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={task.name || task.description}>
+            {task.name || task.description || `任务 #${id}`}
           </h1>
-          <code className="hidden rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs sm:inline">
-            {task.id}
-          </code>
-          <Separator orientation="vertical" className="mx-1 hidden h-4 sm:block" />
-          <ExecutionControl key={task.id} task={task} onUpdated={load} />
-          <TaskLLMControl task={task} profiles={profiles} onUpdated={load} />
-          <StatusBadge domain={terminal ? "task" : "engine"} value={terminal ? task.status : engineMode} dot />
-          {canArchive ? (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>{archiveTrigger}</AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>归档任务 #{task.id}？</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    任务图谱、关联记录、独占资产与流量、工作文件和 LLM
-                    历史将压缩到冷存储。归档完成后可在任务列表的“已归档”页还原。
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>取消</AlertDialogCancel>
-                  <AlertDialogAction onClick={() => void archiveTask()}>确认归档</AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-flex">{archiveTrigger}</span>
-              </TooltipTrigger>
-              <TooltipContent>{archiveDisabledReason}</TooltipContent>
-            </Tooltip>
-          )}
-          <Button size="sm" variant={controlVariant} onClick={togglePause} disabled={terminal}>
-            {controlIcon}
-            {controlLabel}
-          </Button>
         </div>
-        <p className="truncate text-muted-foreground text-xs">{task.goal}</p>
-        {/* Tabs */}
-        <div className="no-scrollbar min-w-0 overflow-x-auto">
-          <TabsList variant="default" className="min-w-max">
+        <Tabs value={tab} onValueChange={setTab} className="task-header-tabs min-w-0 overflow-x-auto">
+          <TabsList aria-label="任务导航" className="min-w-max">
             {TABS.map((t) => (
-              <TabsTrigger key={t.value} value={t.value}>
+              <TabsTrigger value={t.value} key={t.value}>
                 {t.label}
+                {t.value === "findings" && findingCount !== null && (
+                  <span className="ml-1 rounded-md bg-muted px-1.5 text-xs tabular-nums">{findingCount}</span>
+                )}
               </TabsTrigger>
             ))}
           </TabsList>
+        </Tabs>
+        <div className="task-header-actions flex shrink-0 items-center justify-end gap-1">
+          <span className="hidden sm:inline-flex">
+            <StatusBadge domain={terminal ? "task" : "engine"} value={terminal ? task.status : engineMode} dot />
+          </span>
+          <Button
+            size="sm"
+            variant={controlVariant}
+            aria-label={controlling ? "等待确认" : controlLabel}
+            onClick={togglePause}
+            disabled={terminal || controlling || task.pause_pending}
+          >
+            {controlling ? <Spinner /> : controlIcon}
+            <span className="hidden sm:inline">{controlling ? "等待确认" : controlLabel}</span>
+          </Button>
+          <Button variant="ghost" size="sm" aria-label="审批" onClick={() => navigate({ panel: "asset-approvals" })}>
+            <ShieldCheckIcon />
+            <span className="hidden sm:inline">审批</span>
+            {pendingAssets !== null && pendingAssets + pendingIntercepts.length > 0 && (
+              <span>{pendingAssets + pendingIntercepts.length}</span>
+            )}
+          </Button>
+          <Button variant="ghost" size="icon-sm" aria-label="任务设置" onClick={() => navigate({ panel: "settings" })}>
+            <Settings2Icon />
+          </Button>
+          <Button
+            variant={processOpen && tab === "sessions" && section === "chat" ? "secondary" : "ghost"}
+            size="icon-sm"
+            aria-label="执行过程"
+            aria-expanded={processOpen && tab === "sessions" && section === "chat"}
+            onClick={() => {
+              navigate({ tab: "sessions", section: "chat", panel: null });
+              setProcessOpen(!(processOpen && tab === "sessions" && section === "chat"));
+            }}
+          >
+            <PanelRightIcon />
+          </Button>
         </div>
       </header>
-
-      {/* Tab content */}
-        <div className="flex-1 p-4 lg:p-6">
-          <TabsContent value="sessions" className="mt-0">
-            <SessionsTab taskId={id} pendingIntercepts={pendingIntercepts} />
-          </TabsContent>
-          <TabsContent value="overview" className="mt-0">
-            <OverviewTab taskId={id} />
-          </TabsContent>
-          <TabsContent value="graph" className="mt-0">
-            <GraphTab taskId={id} />
-          </TabsContent>
-          <TabsContent value="broadcast" className="mt-0">
-            <BroadcastTab taskId={id} />
-          </TabsContent>
-          <TabsContent value="findings" className="mt-0">
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <section hidden={tab !== "sessions"} className="flex h-full min-h-0 flex-col">
+          <Tabs value={section} onValueChange={(value) => navigate({ tab: "sessions", section: value, panel: null })} className="shrink-0 border-b bg-card px-3 lg:px-5">
+            <TabsList variant="line" aria-label="任务内容">
+              <TabsTrigger value="chat">对话</TabsTrigger>
+              <TabsTrigger value="overview">任务详情</TabsTrigger>
+              <TabsTrigger value="broadcast">播报</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <div hidden={section !== "chat"} className="min-h-0 flex-1">
+          <SessionsTab
+            taskId={id}
+            pendingIntercepts={pendingIntercepts}
+            workerExecutionAllowed={!task.paused && !task.queued && !task.pause_pending && task.status === "running"}
+            processOpen={processOpen && tab === "sessions" && section === "chat"}
+            onProcessOpenChange={setProcessOpen}
+          />
+          </div>
+          {visitedSections.includes("overview") && <div hidden={section !== "overview"} className="task-scroll-panel min-h-0 flex-1"><OverviewTab taskId={id} /></div>}
+          {visitedSections.includes("broadcast") && <div hidden={section !== "broadcast"} className="task-scroll-panel min-h-0 flex-1"><BroadcastTab taskId={id} /></div>}
+        </section>
+        {visited.includes("findings") && (
+          <section hidden={tab !== "findings"} className="task-scroll-panel">
             <FindingsTab taskId={id} />
-          </TabsContent>
-          <TabsContent value="assets" className="mt-0">
-            <AssetsTab taskId={id} />
-          </TabsContent>
-          <TabsContent value="asset-approvals" className="mt-0">
-            <AssetApprovalsTab taskId={id} />
-          </TabsContent>
-          <TabsContent value="coverage" className="mt-0">
-            <CoverageGraphTab taskId={id} coverageEnabled={task?.coverage_enabled !== false} />
-          </TabsContent>
-          <TabsContent value="intercept" className="mt-0">
-            <InterceptTab taskId={id} />
-          </TabsContent>
-        </div>
-    </Tabs>
+          </section>
+        )}
+        {visited.includes("graph") && (
+          <section hidden={tab !== "graph"} className="task-scroll-panel">
+            <Tabs value={explore} onValueChange={(value) => navigate({ tab: "graph", explore: value })}>
+              <TabsList variant="line">
+                <TabsTrigger value="graph">探索图</TabsTrigger>
+                <TabsTrigger value="coverage">资产覆盖图</TabsTrigger>
+                <TabsTrigger value="assets">测试资产</TabsTrigger>
+              </TabsList>
+              <TabsContent value="graph" forceMount hidden={explore !== "graph"}>
+                <GraphTab taskId={id} />
+              </TabsContent>
+              <TabsContent value="coverage" forceMount hidden={explore !== "coverage"}>
+                <CoverageGraphTab taskId={id} coverageEnabled={task.coverage_enabled !== false} />
+              </TabsContent>
+              <TabsContent value="assets" forceMount hidden={explore !== "assets"}>
+                <AssetsTab taskId={id} />
+              </TabsContent>
+            </Tabs>
+          </section>
+        )}
+        {visited.includes("files") && (
+          <section hidden={tab !== "files"} className="task-scroll-panel">
+            <FilesTab taskId={id} />
+          </section>
+        )}
+        {visited.includes("traffic") && (
+          <section hidden={tab !== "traffic"} className="task-scroll-panel">
+            <TrafficTab taskId={id} />
+          </section>
+        )}
+      </div>
+      <Sheet
+        open={!!panel}
+        onOpenChange={(open) => {
+          if (!open) navigate({ tab, panel: null });
+        }}
+      >
+        <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">
+          <SheetHeader>
+            <SheetTitle>
+              {panel === "settings"
+                ? "任务设置"
+                : ["asset-approvals", "intercept"].includes(panel ?? "")
+                  ? "审批中心"
+                  : "任务详情"}
+            </SheetTitle>
+            <SheetDescription>
+              {task.name || task.description} · #{id}
+            </SheetDescription>
+          </SheetHeader>
+          <div className="min-w-0 p-5">
+            {panel === "settings" ? (
+              <div className="flex flex-col gap-6">
+                <div className="flex items-center justify-between">
+                  <span>执行模式</span>
+                  <ExecutionControl task={task} onUpdated={load} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>模型配置</span>
+                  <TaskLLMControl task={task} profiles={profiles} onUpdated={load} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>归档任务</span>
+                  {canArchive ? (
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>{archiveTrigger}</AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>归档任务 #{task.id}？</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            任务图谱、关联记录、独占资产与流量、工作文件和 LLM
+                            历史将压缩到冷存储。归档完成后可在任务列表的“已归档”页还原。
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>取消</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => void archiveTask()}>确认归档</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-flex">{archiveTrigger}</span>
+                      </TooltipTrigger>
+                      <TooltipContent>{archiveDisabledReason}</TooltipContent>
+                    </Tooltip>
+                  )}
+                </div>
+              </div>
+            ) : ["asset-approvals", "intercept"].includes(panel ?? "") ? (
+              <Tabs value={panel!} onValueChange={(value) => navigate({ tab, panel: value })}>
+                <TabsList>
+                  <TabsTrigger value="asset-approvals">资产审批</TabsTrigger>
+                  <TabsTrigger value="intercept">拦截审批 {pendingIntercepts.length || ""}</TabsTrigger>
+                </TabsList>
+                <TabsContent value="asset-approvals">
+                  <AssetApprovalsTab taskId={id} />
+                </TabsContent>
+                <TabsContent value="intercept">
+                  <InterceptTab taskId={id} />
+                </TabsContent>
+              </Tabs>
+            ) : null}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </div>
   );
 }
 
@@ -524,5 +707,5 @@ export default function TaskDetailPage() {
 
 function TaskDetailRoute() {
   const params = useSearchParams();
-  return <TaskDetailInner key={`${params.get("id") ?? ""}:${params.get("tab") ?? "sessions"}`} />;
+  return <TaskDetailInner key={params.get("id") ?? ""} />;
 }

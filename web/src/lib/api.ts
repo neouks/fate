@@ -1,4 +1,5 @@
 import { entryAwareFetch } from "@/lib/http-auth";
+import { listItems } from "@/lib/api-list";
 // Real backend client. /api/* is proxied to the Go backend (next.config rewrites).
 // Returns the domain types in lib/types.ts. Shapes match the backend handlers;
 // a few fields the backend serializes differently (e.g. created_at as a unix int)
@@ -156,31 +157,11 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 
-// sseUrl builds a URL for Server-Sent Events streams.
-//
-// Production (static export / Docker): the Go backend serves the web UI *and* the
-// SSE streams on the same port, so we default to a same-origin (relative) URL.
-// This is what makes reverse-proxy deploys work: a page loaded from
-// https://<domain>/ connects to https://<domain>/api/..., which the proxy forwards
-// to the backend — no need to expose :8787 publicly. Hardcoding :8787 here used to
-// break exactly that (https://<domain>:8787/... is unreachable when only 443 is open).
-//
-// Dev (next dev): SSE must NOT go through the Next.js `/api` rewrite — that proxy
-// buffers the streamed response, so event frames never reach the browser (the
-// EventSource opens but receives 0 messages). So in dev only we connect straight
-// to the Go backend on :8787, whose CORS is open.
-//
-// Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
-// Token is appended as ?token= because SSE can't carry cookies cross-origin.
+// Same origin as the API by default; explicit cross-origin deployments may override it.
 export function sseUrl(path: string): string {
-  const base =
-    process.env.NEXT_PUBLIC_SSE_BASE ??
-    (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
-      ? `${window.location.protocol}//${window.location.hostname}:8787`
-      : "");
-  const token = getToken();
-  const sep = path.includes("?") ? "&" : "?";
-  return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
+  const base=process.env.NEXT_PUBLIC_SSE_BASE??"";
+  const token=getToken();const sep=path.includes("?")?"&":"?";
+  return token?`${base}${path}${sep}token=${encodeURIComponent(token)}`:`${base}${path}`;
 }
 
 const get = <T>(p: string, init?: RequestInit) => http<T>(p, init);
@@ -218,7 +199,19 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
   return query.toString();
 }
 
+async function downloadWorkspaceResource(url:string,name:string){
+ const token=getToken(); const response=await entryAwareFetch(`/api${url}`,{headers:token?{'X-Series-Token':token}:{}});
+ if(!response.ok)throw new Error(`下载失败：${response.status}`);
+ const blob=await response.blob(),objectURL=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=objectURL;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(objectURL),1000);
+}
 export const api = {
+  taskFiles:(task:string,ref='',cursor='')=>get<{items:import('./types').TaskFileEntry[];next_cursor:string|null}>(`/tasks/${task}/files?${new URLSearchParams({ref,cursor})}`),
+  taskFileContent:(task:string,ref:string,offset=0,version='')=>get<import('./types').FileContentPage>(`/tasks/${task}/files/content?${new URLSearchParams({ref,offset:String(offset),version})}`),
+  downloadTaskFile:(task:string,ref:string,name:string)=>downloadWorkspaceResource(`/tasks/${task}/files/content?${new URLSearchParams({ref,download:'1'})}`,name),
+  taskTraffic:(task:string,filters:Record<string,string>)=>get<TrafficResp>(`/traffic?${new URLSearchParams({...filters,task})}`),
+  trafficBody:(task:string,id:string,side:'request'|'response',offset=0)=>get<import('./types').EvidenceContentPage>(`/traffic/exchange/${encodeURIComponent(id)}/body?${new URLSearchParams({task,side,offset:String(offset)})}`),
+  downloadTrafficBody:(task:string,id:string,side:'request'|'response')=>downloadWorkspaceResource(`/traffic/exchange/${encodeURIComponent(id)}/body?${new URLSearchParams({task,side,download:'1'})}`,`${side}.bin`),
   // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
   health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
 
@@ -298,7 +291,7 @@ export const api = {
     }),
   deleteTask: (id: string, options: DeleteTaskOptions) => del<DeleteTaskResult>(`/tasks/${id}`, options),
   controlTask: (id: string, action: "pause" | "resume" | "finish") =>
-    post<{ id: string; paused: boolean; queued: boolean; status: string }>(`/tasks/${id}/control`, { action }),
+    post<{ id: string; paused: boolean; queued: boolean; status: string; pause_pending?:boolean; execution_status?:string }>(`/tasks/${id}/control`, { action }),
   controlTasksBatch: (taskIds: string[], action: "pause" | "resume") =>
     post<{ items: BatchControlItem[] }>("/tasks/control/batch", { task_ids: taskIds, action }),
   taskArchives: (input?: { page?: number; size?: number; q?: string; state?: string }) => {
@@ -331,7 +324,7 @@ export const api = {
       intent_ids,
     }),
   workerQueue: (taskId: string) =>
-    get<{ items: TaskNode[]; version: number; manual: boolean; execution_mode?: "managed" | "manual" }>(
+    get<{ items: TaskNode[]; version: number; manual: boolean; scheduling?: {limit:number;global_active:number;task_active:number;exiting:number;ready:number;planning:number;available:number}; execution_mode?: "managed" | "manual" }>(
       `/tasks/${taskId}/worker-queue`,
     ),
   moveWorker: (taskId: string, id: string, beforeId: string | null, version: number) =>
@@ -346,19 +339,14 @@ export const api = {
   controlIntent: (taskId: string, intentId: string, action: "pause" | "resume" | "cancel", reason?: string) =>
     post<{
       id: number;
-      state: "paused" | "open" | "stopped";
+      state: "paused" | "open" | "running" | "stopped";
       cancelled_by_user: boolean;
       cancel_reason?: string;
       queued?: boolean;
+      status?:string;
+      execution_confirmed?:boolean;
       deleted?: { intents: number; facts: number; findings: number; activities: number };
     }>(`/tasks/${taskId}/intents/${intentId}/control`, { action, reason: reason ?? "" }),
-  sendWorkerMessage: (taskId: string, intentId: string, message: string, requestId: string) =>
-    post<{
-      id: number;
-      state: "running";
-      accepted: true;
-      request_id: string;
-    }>(`/tasks/${taskId}/intents/${intentId}/messages`, { message, request_id: requestId }),
   taskLLMResolution: (id: string) => get<TaskLLMResolutions>(`/tasks/${id}/llm/resolution`),
   // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：置回 open，worker 会重新认领、从头再跑。
   rerunIntent: (taskId: string, intentId: string) =>
@@ -554,12 +542,13 @@ export const api = {
 
   // ---- exploration (per task) ----
   frontier: (task?: string) => get<TaskNode[]>(`/exploration/frontier${tq(task)}`).then(arr),
-  findings: (task?: string) => get<Finding[]>(`/exploration/findings${tq(task)}`).then(arr),
+  findings: (task?: string) =>
+    get<{ items?: Finding[] | null } | Finding[] | null>(`/exploration/findings${tq(task)}`).then(listItems),
   taskLegacyFinding: (task: string, node: string) =>
     get<Finding>(`/exploration/findings?${new URLSearchParams({ context_task: task, legacy_node: node })}`),
-  taskFindingsPage: (task: string, page: number, pageSize: number, direction: "asc" | "desc") =>
+  taskFindingsPage: (task: string, page: number, pageSize: number, direction: "asc" | "desc", filters:Record<string,string>={}) =>
     get<FindingsPage>(
-      `/exploration/findings?${new URLSearchParams({ context_task: task, page: String(page), limit: String(pageSize), direction })}`,
+      `/exploration/findings?${new URLSearchParams({ ...filters, context_task: task, page: String(page), limit: String(pageSize), direction })}`,
     ),
   findingsPage: (q: FindingQuery) => {
     const p = findingFilterParams(q);
@@ -623,7 +612,7 @@ export const api = {
   },
   getFinding: (id: string, contextTaskId?: string) =>
     get<Finding>(
-      `/exploration/findings/${id}${contextTaskId ? `?context_task=${encodeURIComponent(contextTaskId)}` : ""}`,
+      `/exploration/findings/${id}?id_kind=record${contextTaskId ? `&context_task=${encodeURIComponent(contextTaskId)}` : ""}`,
     ),
   findingTraffic: (id: string, contextTask?: string) =>
     get<FindingTraffic>(
@@ -701,17 +690,17 @@ export const api = {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
   // 漏洞链路:该漏洞节点回溯到任务初始节点的子图(节点 + 关系)。
-  findingLineage: (id: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/findings/${id}/lineage`),
-  setFindingStatus: (id: string, status: FindingStatus) => patch<Finding>(`/exploration/findings/${id}`, { status }),
-  setFindingSeverity: (id: string, severity: Severity) => patch<Finding>(`/exploration/findings/${id}`, { severity }),
+  findingLineage: (id: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/findings/${id}/lineage?id_kind=record`),
+  setFindingStatus: (id: string, status: FindingStatus) => patch<Finding>(`/exploration/findings/${id}?id_kind=record`, { status }),
+  setFindingSeverity: (id: string, severity: Severity) => patch<Finding>(`/exploration/findings/${id}?id_kind=record`, { severity }),
   // 一次保存漏洞的名称/类别/严重等级(发现列表行内编辑用),只传出现的字段。
   updateFinding: (
     id: string,
     fields: { name?: string; vulnclass?: string; severity?: Severity; status?: FindingStatus },
-  ) => patch<Finding>(`/exploration/findings/${id}`, fields),
+  ) => patch<Finding>(`/exploration/findings/${id}?id_kind=record`, fields),
   // 删除漏洞:移除 findings 记录 + 来源探索节点(从发现列表/任务发现 Tab/探索图一并消失)。
   deleteFinding: (id: string, reason?: string) =>
-    del<{ deleted: boolean; id: number }>(`/exploration/findings/${id}`, reason === undefined ? undefined : { reason }),
+    del<{ deleted: boolean; id: number }>(`/exploration/findings/${id}?id_kind=record`, reason === undefined ? undefined : { reason }),
   findingRetests: (id: string) =>
     get<{ retests: FindingRetest[] }>(`/exploration/findings/${encodeURIComponent(id)}/retests`).then((r) =>
       arr(r.retests),
@@ -723,8 +712,10 @@ export const api = {
       notes,
     }),
   deepenFinding: (id: string, description: string) =>
-    post<FindingDeepenResponse>(`/exploration/findings/${id}/deepen`, { description }),
-  intents: (task?: string) => get<TaskNode[]>(`/exploration/intents${tq(task)}`).then(arr),
+    post<FindingDeepenResponse>(`/exploration/findings/${id}/deepen?id_kind=record`, { description }),
+  intents: (task?: string) =>
+    get<{ items?: TaskNode[] | null } | TaskNode[] | null>(`/exploration/intents${tq(task)}`)
+      .then(listItems),
   tokenStats: (task?: string) =>
     get<{ workers: TokenUsage[]; sessions: SessionTokenUsage[]; total: TokenTotal }>(
       `/exploration/tokens${tq(task)}`,
@@ -775,6 +766,7 @@ export const api = {
       cursor: r.cursor ?? 0,
     }));
   },
+  turnSummaries: (task:string|undefined,conversation:number|undefined,ids:string[]) => get<{items:import('./turn-summary').TurnSummary[]}>(`/${conversation?`conversations/${conversation}`:`tasks/${task}`}/turns?ids=${encodeURIComponent(ids.join(','))}`),
   activityDetail: (id: number, task?: string) => get<{ detail: string }>(`/exploration/activity/${id}${tq(task)}`),
   // Reverse-paginated session history. session = "main" | "plan" | "intent:<id>".
   // before=0 → latest page; before=<id> → the older page ending before that id.
@@ -867,7 +859,9 @@ export const api = {
         (opts.sort ? `&sort=${encodeURIComponent(opts.sort)}` : "") +
         (opts.order ? `&order=${encodeURIComponent(opts.order)}` : ""),
     ),
-  trafficExchange: (id: string) => get<TrafficDetail>(`/traffic/exchange?id=${encodeURIComponent(id)}`),
+  trafficForTask: (task:string) => get<TrafficResp>(`/traffic?task=${encodeURIComponent(task)}&size=200`),
+  stopRetestConversation: (id:number) => post<{status:string}>(`/conversations/${id}/stop`,{}),
+  trafficExchange: (id: string, task?:string) => get<TrafficDetail>(`/traffic/exchange?id=${encodeURIComponent(id)}${task?`&task=${encodeURIComponent(task)}`:""}`),
   trafficHosts: () => get<{ hosts: TrafficHost[] }>(`/traffic/hosts`),
   trafficDeleteHost: (host: string) => del<{ deleted: number }>(`/traffic?host=${encodeURIComponent(host)}`),
   trafficDeleteHosts: (hosts: string[]) => del<{ deleted: number }>(`/traffic/hosts`, { hosts }),
@@ -894,8 +888,8 @@ export const api = {
       `/chat/mentions?${new URLSearchParams({ kind, q: query, cursor })}`,
       { signal },
     ),
-  chat: (message: string, task?: string, attachments?: ChatAttachment[], seg?: number) =>
-    post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments, seg }),
+  chat: (message: string, task?: string, attachments?: ChatAttachment[], seg?: number, request_id?:string) =>
+    post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments, seg, request_id }),
   chatStatus: (taskId: string) => get<{ running: boolean }>(`/tasks/${taskId}/chat/status`),
   // 方式1 文件上传:落到会话/任务工作目录 uploads/，返回可供 agent Read 的相对路径。
   chatUpload: async (scope: "task" | "session" | "staging", id: string, files: File[]) => {
@@ -974,6 +968,7 @@ export const api = {
     }),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
   saveLLMProfile: (p: {
+    supports_images?: boolean;
     id?: number; // omit/0 = create; set = update that profile
     name: string;
     format: string;
@@ -1021,8 +1016,9 @@ export const api = {
   deleteAgent: (key: string) => del<{ deleted: string }>(`/agents/${key}`),
 
   // ---- conversations (chat page) ----
-  createConversation: (agent_key: string, title = "", llm_profile_id?: number | null) =>
-    post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null }),
+  conversations: (task?: string) => get<{ conversations: Conversation[] }>(`/conversations${task ? `?${new URLSearchParams({task})}` : ""}`).then((r) => arr(r.conversations)),
+  createConversation: (agent_key: string, title = "", llm_profile_id?: number | null, task_id?: number | null) =>
+    post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null, task_id: task_id ?? null }),
   updateConversation: (id: number, input: { title?: string; pinned?: boolean }) =>
     patch<Conversation>(`/conversations/${id}`, input),
   renameConversation: (id: number, title: string) => patch<Conversation>(`/conversations/${id}`, { title }),
@@ -1048,8 +1044,8 @@ export const api = {
   },
   conversationMsgDetail: (id: number, seq: number) =>
     get<{ detail: string }>(`/conversations/${id}/messages/${seq}`).then((r) => r.detail ?? ""),
-  sendConversationMessage: (id: number, message: string, attachments?: ChatAttachment[]) =>
-    post<{ status: string }>(`/conversations/${id}/messages`, { message, attachments }),
+  sendConversationMessage: (id: number, message: string, attachments?: ChatAttachment[],request_id?:string) =>
+    post<{ status: string }>(`/conversations/${id}/messages`, { message, attachments, request_id }),
   saveAgentPrompt: (key: string, template: string, note = "") =>
     put<{ version: number }>(`/agents/${key}/prompt`, { template, note }),
   resetAgentPrompt: (key: string) => post<{ version: number }>(`/agents/${key}/prompt/reset`, {}),

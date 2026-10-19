@@ -23,6 +23,8 @@ export interface Task {
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)
   paused?: boolean;
+  pause_pending?: boolean;
+  execution_status?: string;
   queued?: boolean;
   active?: boolean;
   in_flight?: number;
@@ -475,6 +477,7 @@ export type HintState = "active" | "consumed";
 export type ExploreRel = "spawns" | "derived_from" | "yields" | "proves" | "covers";
 
 export interface TaskNode {
+  executor_active?: boolean;
   id: string;
   type: ExploreKind;
   payload?: string;
@@ -688,8 +691,10 @@ export type ActivityKind =
   | "tool_use"
   | "tool_result"
   | "text"
+  | "assistant"
   | "thinking"
   | "result"
+  | "status"
   | "user"
   | "intent" // LLM-generated exploration objective leading a worker session (UI-synthesized)
   | "round" // planner round boundary marker (engine-emitted)
@@ -707,6 +712,11 @@ export interface ChatAttachment {
 }
 
 export interface Activity {
+  turn_id?: string;
+  stream_id?: string;
+  channel?: "text" | "thinking";
+  streaming?: boolean;
+  interrupted?: boolean;
   seq: number;
   intent_id?: string;
   worker: string; // session owner: planner | mainagent | work#1 ...
@@ -718,6 +728,13 @@ export interface Activity {
   summary: string;
   detail?: string;
   metadata?: {
+    turn_id?: string;
+    stream_id?: string;
+    channel?: "text" | "thinking";
+    event_type?: string;
+    response?: unknown;
+    status?: string;
+    attachments?: ChatAttachment[];
     llm_transition?: LLMTransition;
     worker_feedback?: { id: number; intent_id: number; state: string; source_activity_id?: number };
   };
@@ -809,6 +826,8 @@ export interface Conversation {
   id: number;
   running?: boolean; // live server state, returned with the conversation list
   agent_key: string;
+  agent_name?: string;
+  task_id?: number | null;
   title: string;
   llm_profile_id?: number;
   pinned?: boolean;
@@ -1036,6 +1055,7 @@ export interface GlobalProxyProbeResult {
 
 // ---- LLM config ----
 export interface LLMProfile {
+  supports_images?: boolean;
   id: string;
   name: string;
   format: "openai" | "anthropic" | "openai-responses";
@@ -1627,3 +1647,7 @@ export interface NotificationSummary {
   unread: number;
   counts: { findings: number; assets: number; intercepts: number };
 }
+
+export interface TaskFileEntry { ref:string; name:string; kind:'file'|'directory'; size:number; modified_at:string; version:string; origin:'attachment'|'work'; intent_id?:string }
+export interface FileContentPage { ref:string; version:string; offset:number; next_offset:number; total:number; has_more:boolean; binary:boolean; content:string }
+export interface EvidenceContentPage { content:string; offset:number; next_offset:number; total:number; truncated:boolean; binary:boolean; encoding:'base64'|'utf8' }

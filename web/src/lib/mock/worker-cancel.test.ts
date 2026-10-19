@@ -3,7 +3,7 @@ import test from "node:test";
 import type { TaskNode } from "../types";
 import { mockHandle } from "./handler";
 
-test("等待 Worker 取消保留记录、重复取消幂等、手动重新开启解除标记", async () => {
+test("等待 Worker 取消保留记录、重复取消幂等，恢复按钮不能重开取消项", async () => {
   const rows = await mockHandle<TaskNode[]>("GET", "/exploration/intents");
   const waiting = rows.find((row) => row.state === "open" && !row.inherited);
   assert.ok(waiting);
@@ -25,14 +25,13 @@ test("等待 Worker 取消保留记录、重复取消幂等、手动重新开启
     JSON.stringify({ action: "cancel", reason: "duplicate" }),
   );
   assert.deepEqual(again, cancel);
-  const resumed = await mockHandle<{ state: string; cancelled_by_user: boolean }>(
+  await assert.rejects(mockHandle(
     "POST",
     path,
     JSON.stringify({ action: "resume" }),
-  );
-  assert.equal(resumed.state, "open");
-  assert.equal(resumed.cancelled_by_user, false);
-  assert.equal(JSON.parse(retained.payload || "{}").cancelled_by_user, false);
+  ));
+  assert.equal(retained.state, "stopped");
+  assert.equal(JSON.parse(retained.payload || "{}").cancelled_by_user, true);
 });
 
 test("取消运行中 Worker 保留原因，用户重跑解除取消状态", async () => {
@@ -40,6 +39,13 @@ test("取消运行中 Worker 保留原因，用户重跑解除取消状态", asy
   const running = rows.find((row) => row.state === "running" && !row.inherited);
   assert.ok(running);
   const base = `/tasks/t-acme-api/intents/${running.id}`;
+  await mockHandle("POST", `${base}/control`, JSON.stringify({ action: "pause" }));
+  assert.equal(running.state, "paused");
+  await assert.rejects(mockHandle("POST", `${base}/messages`, JSON.stringify({ message: "resume", request_id: "old-api" })), { status: 410 });
+  assert.equal(running.state, "paused");
+  await mockHandle("POST", `${base}/control`, JSON.stringify({ action: "resume" }));
+  await mockHandle("POST", `${base}/control`, JSON.stringify({ action: "resume" }));
+  assert.equal(running.state, "running");
   await mockHandle("POST", `${base}/control`, JSON.stringify({ action: "cancel", reason: "用户指定原因" }));
   assert.equal(JSON.parse(running.payload || "{}").cancel_reason, "用户指定原因");
   await mockHandle("POST", `${base}/rerun`);

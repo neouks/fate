@@ -1,6 +1,10 @@
 "use client";
 
 import * as React from "react";
+import {useWorkspaceState} from "@/hooks/use-workspace-state";
+import { Input } from "@/components/ui/input";
+import { Select,SelectTrigger,SelectValue,SelectContent,SelectItem } from "@/components/ui/select";
+import { PageHeading, WorkspaceToolbar } from "@/components/workspace";
 
 import { FindingWorkspaceDetail } from "@/components/finding-detail-content";
 import { FindingLayoutToggle, FindingPresentation, useFindingPresentation } from "@/components/finding-presentation";
@@ -22,6 +26,9 @@ export function FindingsTab({ taskId }: { taskId: string }) {
 function TaskFindings({ taskId }: { taskId: string }) {
   const presentation = useFindingPresentation("series_task_findings_layout");
   const [sort, setSort] = useStoredSortPreference("series_task_findings_sort", FIELDS, "time", "desc");
+  const [query,setQuery]=useWorkspaceState(`task:${taskId}`,"finding-query","");
+  const [severity,setSeverity]=useWorkspaceState(`task:${taskId}`,"finding-severity","all");
+  const [status,setStatus]=useWorkspaceState(`task:${taskId}`,"finding-status","all");
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
   const [data, setData] = React.useState<FindingsPage | null>(null);
@@ -34,7 +41,7 @@ function TaskFindings({ taskId }: { taskId: string }) {
     let timer: ReturnType<typeof setTimeout>;
     async function load() {
       try {
-        const value = await api.taskFindingsPage(taskId, page, pageSize, sort.direction);
+        const value = await api.taskFindingsPage(taskId, page, pageSize, sort.direction,{...(query?{q:query}:{}),...(severity!=="all"?{severity}:{}),...(status!=="all"?{status}:{})});
         if (!active) return;
         if (page > Math.max(1, Math.ceil(value.total / pageSize))) {
           setPage(Math.max(1, Math.ceil(value.total / pageSize)));
@@ -57,10 +64,13 @@ function TaskFindings({ taskId }: { taskId: string }) {
       active = false;
       clearTimeout(timer);
     };
-  }, [taskId, page, pageSize, sort.direction, revision]);
+  }, [taskId, page, pageSize, sort.direction, revision,query,severity,status]);
   const selected = data ? selectFinding(data.items, selectedKey) : null;
-  return (
-    <FindingPresentation
+  return (<div className="flex flex-col gap-6"><PageHeading title="发现" description="已发布的漏洞、完整证据与复测结论。"/>
+    <WorkspaceToolbar><Input aria-label="搜索发现" placeholder="搜索名称、摘要或漏洞类型" className="min-w-48 flex-1" value={query} onChange={e=>{setQuery(e.target.value);setPage(1);}}/>
+      <Select value={severity} onValueChange={v=>{setSeverity(v);setPage(1);}}><SelectTrigger className="w-40"><SelectValue/></SelectTrigger><SelectContent>{[['all','所有严重性'],['critical','严重'],['high','高危'],['medium','中危'],['low','低危']].map(([v,t])=><SelectItem value={v} key={v}>{t}</SelectItem>)}</SelectContent></Select>
+      <Select value={status} onValueChange={v=>{setStatus(v);setPage(1);}}><SelectTrigger className="w-40"><SelectValue/></SelectTrigger><SelectContent>{[['all','所有状态'],['pending','待处理'],['in_progress','处理中'],['confirmed','已确认'],['resolved','已处理'],['fixed','已修复'],['false_positive','误报'],['ignored','忽略'],['duplicate','重复'],['risk_accepted','风险接受']].map(([v,t])=><SelectItem value={v} key={v}>{t}</SelectItem>)}</SelectContent></Select>
+    </WorkspaceToolbar><FindingPresentation
       {...presentation}
       onOpenChange={presentation.setDetailOpen}
       detail={
@@ -143,6 +153,6 @@ function TaskFindings({ taskId }: { taskId: string }) {
           )}
         </CardContent>
       </Card>
-    </FindingPresentation>
+    </FindingPresentation></div>
   );
 }

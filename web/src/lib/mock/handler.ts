@@ -1292,16 +1292,6 @@ function bodyIDs(value: unknown): string[] {
 }
 
 type MockIntentControlResult = { ok: boolean; state?: string; error?: string };
-type MockWorkerMessage = {
-  intentId: string;
-  message: string;
-  state: "open" | "running";
-  activitySeq: number;
-};
-
-const mockWorkerMessages = new Map<string, MockWorkerMessage>();
-let nextMockWorkerMessageActivitySeq = mockActivity.reduce((maximum, item) => Math.max(maximum, item.seq), 0) + 1;
-
 const mockDeletedWorkers = new Set<string>();
 const mockQueueStates = new Map<string, { version: number; manual: boolean; order: string[]; signature: string }>();
 function mockWorkerQueue(taskId: string) {
@@ -1339,81 +1329,18 @@ function syncMockQueues() {
   for (const key of mockQueueStates.keys()) mockWorkerQueue(key);
 }
 
-function controlMockIntent(id: string, action: "pause" | "resume"): MockIntentControlResult {
+function controlMockIntent(taskId: string, id: string, action: "pause" | "resume"): MockIntentControlResult {
+  const task = mockTasks.find((item) => item.id === taskId);
   const intent = mockIntents.find((item) => item.id === id);
-  if (!intent) return { ok: false, error: "意图不存在" };
-  const requiredState = action === "pause" ? "running" : "paused";
+  if (!intent || !task) return { ok: false, error: "意图或任务不存在" };
+  if (action === "resume" && (task.paused || task.queued || task.status !== "running"))
+    return { ok: false, error: "任务暂停、排队或结束时不能续跑 Worker" };
   const payload = JSON.parse(intent.payload || "{}");
-  const cancelled = intent.state === "stopped" && payload.cancelled_by_user === true;
-  if (
-    intent.inherited ||
-    (intent.state !== requiredState && !(action === "resume" && (cancelled || intent.state === "open")))
-  ) {
+  if (intent.inherited || payload.cancelled_by_user || !["running", "paused"].includes(intent.state))
     return { ok: false, state: intent.state, error: "Worker 状态已变化" };
-  }
-  intent.state = action === "pause" ? "paused" : "open";
-  if (action === "resume") intent.payload = JSON.stringify({ ...payload, cancelled_by_user: false });
+  intent.state = action === "pause" ? "paused" : "running";
   syncMockQueues();
   return { ok: true, state: intent.state };
-}
-
-function sendMockWorkerMessage(
-  id: string,
-  message: string,
-  requestId: string,
-): MockIntentControlResult & { activitySeq?: number; requestId?: string } {
-  const normalizedMessage = message.trim();
-  const normalizedRequestId = requestId.trim();
-  if (!normalizedRequestId) return { ok: false, error: "request_id 不能为空" };
-  const previous = mockWorkerMessages.get(normalizedRequestId);
-  if (previous) {
-    if (previous.intentId !== id || previous.message !== normalizedMessage) {
-      return { ok: false, error: "request_id 已用于其他 Worker 消息" };
-    }
-    return {
-      ok: true,
-      state: previous.state,
-      activitySeq: previous.activitySeq,
-      requestId: normalizedRequestId,
-    };
-  }
-  const intent = mockIntents.find((item) => item.id === id);
-  if (!intent) return { ok: false, error: "意图不存在" };
-  if (intent.inherited || intent.state !== "paused") {
-    return { ok: false, state: intent.state, error: "仅已暂停的 Worker 可以发送消息，请先暂停" };
-  }
-  if (!normalizedMessage) return { ok: false, state: intent.state, error: "消息不能为空" };
-  if (Array.from(normalizedMessage).length > 4000) {
-    return { ok: false, state: intent.state, error: "消息不能超过 4000 个字符" };
-  }
-
-  // The real endpoint transitions the intent paused->running, records the user turn,
-  // and runs it in a dedicated goroutine outside the worker pool. Keep the mock in
-  // sync: flip to running immediately and emit the visible user activity.
-  intent.state = "running";
-  const activitySeq = nextMockWorkerMessageActivitySeq++;
-  const workerMessage: MockWorkerMessage = {
-    intentId: id,
-    message: normalizedMessage,
-    state: "running",
-    activitySeq,
-  };
-  mockWorkerMessages.set(normalizedRequestId, workerMessage);
-  mockActivity.push({
-    seq: activitySeq,
-    intent_id: id,
-    worker: "user",
-    ts: new Date().toISOString(),
-    kind: "user",
-    summary: normalizedMessage,
-    detail: normalizedMessage,
-  } satisfies Activity);
-  return {
-    ok: true,
-    state: workerMessage.state,
-    activitySeq: workerMessage.activitySeq,
-    requestId: normalizedRequestId,
-  };
 }
 
 function controlMockTask(id: string, action: "pause" | "resume"): BatchControlItem {
@@ -2200,7 +2127,6 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     mockDeletedWorkers.add(receipt);
     for (let i = mockActivity.length - 1; i >= 0; i--)
       if (mockActivity[i].intent_id === intent.id) mockActivity.splice(i, 1);
-    for (const [key, value] of mockWorkerMessages) if (value.intentId === intent.id) mockWorkerMessages.delete(key);
     syncMockQueues();
     return { id: intent.id, deleted: true };
   }
@@ -2240,20 +2166,12 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       };
     }
     const action = b.action === "resume" ? "resume" : "pause";
-    const result = controlMockIntent(id, action);
+    const result = controlMockIntent(seg[1], id, action);
     if (!result.ok) throw new Error(result.error ?? "Worker 状态已变化");
     return { id: Number(id.replace(/\D/g, "")) || 0, state: result.state, cancelled_by_user: false };
   }
   if (seg[0] === "tasks" && seg[2] === "intents" && seg[4] === "messages" && m === "POST") {
-    const id = seg[3];
-    const result = sendMockWorkerMessage(id, String(b.message ?? ""), String(b.request_id ?? ""));
-    if (!result.ok) throw new Error(result.error ?? "Worker 状态已变化");
-    return {
-      id: Number(id.replace(/\D/g, "")) || 0,
-      state: result.state ?? "running",
-      accepted: true,
-      request_id: result.requestId ?? "",
-    };
+    throw Object.assign(new Error("Worker 不支持直接对话，请使用暂停或恢复按钮"), { status: 410 });
   }
   if (seg[0] === "tasks" && seg.length === 3 && seg[2] === "control" && m === "POST") {
     if (b.action === "finish") {

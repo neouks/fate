@@ -25,7 +25,8 @@ test("队列手动排序、版本冲突、取消后重开追加队尾和物理�
   );
   await control(b, "cancel");
   assert.ok(!(await queue()).items.some((item) => item.id === b));
-  await control(b, "resume");
+  await assert.rejects(control(b, "resume"));
+  await mockHandle("POST", `${base}/intents/${b}/rerun`);
   assert.equal((await queue()).items.at(-1)?.id, b);
   await mockHandle("DELETE", `${base}/intents/${b}`);
   await mockHandle("DELETE", `${base}/intents/${b}`);

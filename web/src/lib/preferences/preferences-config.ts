@@ -71,7 +71,7 @@ export const PREFERENCE_DEFAULTS: PreferenceValueMap = {
   font: "geist",
   content_layout: "full-width",
   navbar_style: "sticky",
-  sidebar_variant: "floating",
+  sidebar_variant: "sidebar",
   sidebar_collapsible: "icon",
 };
 
