@@ -10,9 +10,9 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   insert_assets: '登记新资产及关系到资产图；登记不等于获准访问。探索结论使用 record_fact。',
   report_finding: '提交本次亲自验证且可复现的漏洞与真实证据，成功后立即入图。先 context_search 按 finding 类型 查重；疑似问题用 record_fact 记录并注明不确定性。',
   context_search: '检索授权节点及冷图原文；types 显式包含 activity 才查询 Worker 活动。返回摘要、稳定引用和快照游标；来源任务只读，按 next_cursor 续读。',
-  context_get: '批量读取 items 中的 node:/activity: 引用。detail 读详情，output 读执行结果，parents 读上游，members 读摘要成员；field 选 JSON Pointer 字段，按返回的 Unicode next_offset 续读。版本冲突重新检索。',
+  context_get: '按 items 批量读取引用。summary 只读索引，detail 读详情，output 读结果；field 选 JSON Pointer 字段。parents/members 每页最多 20 条；有 next_offset 时用 page_cursor 和 offset 读完本页，再用 next_cursor 翻页并重置 offset。沿用 version，冲突重新检索。',
   read_tool_output: '按返回引用与游标续读完整工具 JSON；未读取的内容不能当作已确认信息。',
-  graph_overview: '读取有界态势摘要：目标、待执行和运行中意图、近期结果、覆盖及待办；详情按节点引用读取。',
+  graph_overview: '默认只读目标与授权计数；view=recent 获取近期态势摘要。用 context_search 按类型、状态、资产、意图检索，再用 context_get 读取所需字段，避免展开整图。',
   node_detail: '读取指定授权节点的详情、来源和关联；按返回游标续读。',
   search_worker_traces: '按需检索 Worker 的历史执行过程；优先查事实与结果，定位阻塞时再读轨迹。',
   get_worker_trace: '读取指定意图的进度与执行轨迹；需要原始过程时启用 include_output，按返回游标续读。',
@@ -32,6 +32,8 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
 };
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
   const priorDefaults:Record<string,string>={
+    context_get:'批量读取 items 中的 node:/activity: 引用。detail 读详情，output 读执行结果，parents 读上游，members 读摘要成员；field 选 JSON Pointer 字段，按返回的 Unicode next_offset 续读。版本冲突重新检索。',
+    graph_overview:'读取有界态势摘要：目标、待执行和运行中意图、近期结果、覆盖及待办；详情按节点引用读取。',
     record_fact:'及时写回本意图的新事实或负面观察：summary 简述结论，evidence 保存真实证据，confidence 区分直接观察与推断。',
     report_finding:'提交本次已验证且可复现的漏洞和证据，写入探索图并连接资产。先 context_search 按 finding 类型 查重；疑似问题用事实记录。',
     steer_work:'给指定运行意图追加纠偏要求，在后续动作边界生效；不改变授权范围。',

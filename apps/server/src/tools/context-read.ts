@@ -1,3 +1,4 @@
+import {boundedContextPage,contextNode,contextRelations} from './context-pages.js';
 import {ownObservations} from '../db/worker-drafts.js';
 import {createHash} from 'node:crypto';
 import type {ToolRunContext} from './context.js';
@@ -24,7 +25,7 @@ export async function searchContext(c:ToolRunContext,args:Search) {
     if(parsed.signature!==signature||![parsed.after,parsed.upper].every(n=>Number.isSafeInteger(n)&&n>=0)||parsed.after>parsed.upper)throw new Error('游标不属于当前查询');
     after=parsed.after;upper=parsed.upper;
   }
-  const result=await c.db.query(`SELECT n.id,n.kind,n.state,n.payload,n.content_version,n.owner FROM exploration_nodes n
+  const result=await c.db.query(`SELECT n.id,n.kind,n.state,left(COALESCE(n.payload->>'summary',n.payload->>'text',''),300) summary,n.content_version,n.owner FROM exploration_nodes n
     WHERE n.exploration_id=$1 AND n.id>$2 AND n.id<=$3 AND n.kind=ANY($4::text[])
       AND ($5='' OR position(lower($5) in lower(n.payload::text))>0 OR EXISTS(
         SELECT 1 FROM findings f WHERE f.node_id=n.id AND position(lower($5) in lower(f.evidence||' '||f.report))>0))
@@ -32,10 +33,9 @@ export async function searchContext(c:ToolRunContext,args:Search) {
       AND ($7::bigint=0 OR EXISTS(SELECT 1 FROM exploration_anchors a WHERE a.node_id=n.id AND a.asset_id=$7))
       AND ($8::bigint=0 OR n.id=$8 OR EXISTS(SELECT 1 FROM exploration_edges e WHERE e.exploration_id=$1 AND e.src_id=$8 AND e.dst_id=n.id AND e.rel='yields'))
       AND exploration_node_readable($1,n.id,$9) ORDER BY n.id LIMIT $10`,[source.expID,after,upper,types,args.q??'',args.state??'',args.asset_id??0,args.intent_id??0,['worker','mainagent'].includes(c.role),limit+1]);
-  const rows=result.rows.slice(0,limit);
-  return {source_task_id:source.taskID,inherited:source.taskID!==c.taskID,read_only:true,
-    items:rows.map(n=>{const p=n.payload as Record<string,unknown>;return {ref:`node:${n.id}`,node_id:Number(n.id),version:Number(n.content_version),kind:n.kind,state:n.state,summary:String(p.summary??p.text??'').slice(0,300),owner:n.owner,progress:progressSummary(p.progress),result:resultSummary(p.execution_result),execution_stop:stopSummary(p.execution_stop)};}),
-    next_cursor:result.rows.length>limit?Buffer.from(JSON.stringify({signature,upper,after:Number(rows.at(-1)!.id)})).toString('base64url'):null,
+  const items=boundedContextPage(result.rows.slice(0,limit).map(n=>({ref:`node:${n.id}`,node_id:Number(n.id),version:Number(n.content_version),kind:n.kind,state:n.state,summary:n.summary,owner:String(n.owner??'').slice(0,100)})));
+  return {source_task_id:source.taskID,inherited:source.taskID!==c.taskID,read_only:true,items,
+    next_cursor:result.rows.length>items.length&&items.length?Buffer.from(JSON.stringify({signature,upper,after:items.at(-1)!.node_id})).toString('base64url'):null,
     detail_tool:'context_get'};
 }
 
@@ -94,17 +94,18 @@ async function searchActivitiesAndNodes(c:ToolRunContext,args:Search){
     SELECT a.id,'activity',a.kind,n.state,a.summary,COALESCE(a.detail,a.summary),a.node_id,n.content_version,a.worker,a.is_error
       FROM activity a JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
       WHERE a.exploration_id=$1 AND a.id<=$3 AND n.kind='intent' AND a.kind NOT IN ('usage','round','thinking')
-  ) SELECT * FROM candidates c WHERE (c.id,c.category)>($5::bigint,$6::text)
+  ) SELECT c.id,c.category,c.kind,c.state,left(c.summary,300) summary,c.node_id,c.version,left(c.worker,100) worker,c.is_error FROM candidates c WHERE (c.id,c.category)>($5::bigint,$6::text)
     AND ($7='' OR position(lower($7) in lower(COALESCE(c.body,'')||COALESCE(c.summary,'')))>0)
-    AND ($8='' OR c.state=$8) AND ($9::bigint=0 OR c.node_id=$9)
+    AND ($8='' OR c.state=$8) AND ($9::bigint=0 OR c.node_id=$9 OR c.category='node' AND EXISTS(
+      SELECT 1 FROM exploration_edges e WHERE e.exploration_id=$1 AND e.src_id=$9 AND e.dst_id=c.node_id AND e.rel='yields'))
     AND ($10::bigint=0 OR EXISTS(SELECT 1 FROM exploration_anchors a WHERE a.node_id=c.node_id AND a.asset_id=$10))
     AND exploration_node_readable($1,c.node_id,$11) ORDER BY c.id,c.category LIMIT $12`,
     [c.expID,cursor.nodes,cursor.activities,types,cursor.after,cursor.kind,args.q??'',args.state??'',args.intent_id??0,args.asset_id??0,['worker','mainagent'].includes(c.role),limit+1])).rows;
-  const page=rows.slice(0,limit),last=page.at(-1);
+  const page=boundedContextPage(rows.slice(0,limit)),last=page.at(-1);
   return {source_task_id:c.taskID,read_only:true,items:page.map(r=>({ref:`${r.category}:${r.id}`,kind:r.category==='activity'?'activity':r.kind,activity_kind:r.category==='activity'?r.kind:undefined,intent_id:r.category==='activity'?Number(r.node_id):undefined,state:r.state,version:Number(r.version),summary:Array.from(String(r.summary??'')).slice(0,300).join(''),is_error:r.is_error,worker:r.worker})),
-    next_cursor:rows.length>limit&&last?Buffer.from(JSON.stringify({...cursor,after:Number(last.id),kind:last.category})).toString('base64url'):null};
+    next_cursor:rows.length>page.length&&last?Buffer.from(JSON.stringify({...cursor,after:Number(last.id),kind:last.category})).toString('base64url'):null};
 }
-interface RecallItem {ref:string;view?:'detail'|'output'|'parents'|'members';field?:string;offset?:number;version?:number;}
+interface RecallItem {ref:string;view?:'summary'|'detail'|'output'|'parents'|'members';field?:string;offset?:number;version?:number;cursor?:string;}
 interface RecallArgs {items?:RecallItem[];max_chars?:number;ref?:string;version?:number;offset?:number;after_edge?:number;anchor_offset?:number;}
 function pointer(value:unknown,field?:string):unknown{
   if(!field)return value;
@@ -117,7 +118,7 @@ function pointer(value:unknown,field?:string):unknown{
 }
 export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({name:'context_get',readOnly:true,
   description:'批量读取 node:ID 或 activity:ID；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
-  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^(node|activity):[1-9][0-9]*$'},view:{type:'string',enum:['detail','output','parents','members']},field:{type:'string'},offset:{type:'integer',minimum:0},version:{type:'integer',minimum:0}},required:['ref']}},max_chars:{type:'integer',minimum:256,maximum:24000}},required:['items']},
+  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^(node|activity):[1-9][0-9]*$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string'},offset:{type:'integer',minimum:0},version:{type:'integer',minimum:0},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref']}},max_chars:{type:'integer',minimum:256,maximum:24000}},required:['items']},
   async run(args,ctx){
     if(!args.items&&args.ref){const result=await legacyContextGetTool(ctx).execute(ctx.toolCallID??'legacy-read',args as never,ctx.signal,undefined,{} as never);if(result.isError)throw new Error((result.content[0] as {text:string}).text);return JSON.parse((result.content[0] as {text:string}).text);}
     if(!args.items?.length||args.items.length>5)throw new Error('items 需要 1–5 个引用');
@@ -127,8 +128,10 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
       const item=args.items[i]!,view=item.view??'detail';
       try{
         await recallPermission(ctx,'context_get');
+        if((view==='parents'||view==='members')&&(item.offset??0)>0&&!item.cursor)
+          throw new Error('关系分页请从 offset 0 重新读取，再沿用 page_cursor 和 next_offset 续读');
         const match=/^(node|activity):([1-9][0-9]*)$/.exec(item.ref);if(!match)throw new Error('无效引用');
-        const id=Number(match[2]);let data:unknown,version:number|undefined,sourceTask=ctx.taskID;
+        const id=Number(match[2]);let data:unknown,version:number|undefined,sourceTask=ctx.taskID,nextCursor:string|null=null,pageCursor:string|undefined;
         if(match[1]==='activity'){
           await recallPermission(ctx,'get_worker_trace');
           const a=(await ctx.db.query("SELECT * FROM activity WHERE id=$1 AND node_id IS NOT NULL AND kind NOT IN ('thinking','usage','round')",[id])).rows[0];
@@ -142,21 +145,26 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
           const draft=(await ownObservations(ctx,id))[0];
           if(draft){data={staged:true,published:false,payload:draft.payload};version=Number(draft.draft_version);}
           else{
+            const meta=await contextNode(ctx,id);
+            sourceTask=meta.taskID;version=meta.version;
+            if(item.version!==undefined&&item.version!==version)throw new Error('节点版本已变化，请重新检索');
+            if(view==='summary'){
+              data={ref:item.ref,kind:meta.kind,state:meta.state,summary:meta.summary,version};
+            }else if(view==='parents'||view==='members'){
+              await recallPermission(ctx,view==='members'?'expand_digest':'node_detail');
+              const page=await contextRelations(ctx,meta,view,item.cursor);data=page.items;nextCursor=page.next_cursor;pageCursor=page.page_cursor;
+            }else {
             const r=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,id,['worker','mainagent'].includes(ctx.role));
-            sourceTask=r.taskID;version=r.node.content_version;
+            version=r.node.content_version;
             if(view==='output'){
               await recallPermission(ctx,'get_worker_trace');
               if(r.node.kind!=='intent')throw new Error('output 仅支持意图');
               data={execution_stop:r.node.payload.execution_stop,execution_result:r.node.payload.execution_result,
                 activity:(await ctx.db.query("SELECT id,kind,summary,detail,is_error,metadata FROM activity WHERE exploration_id=$1 AND node_id=$2 AND kind='result' AND (metadata->>'event_type'='outcome' OR metadata->>'event_type' IS NULL) ORDER BY id DESC LIMIT 1",[r.expID,id])).rows[0]??null};
-            }else if(view==='parents'||view==='members'){
-              await recallPermission(ctx,view==='members'?'expand_digest':'node_detail');
-              if(view==='members'&&r.node.kind!=='digest')throw new Error('members 仅支持摘要');
-              const ids=view==='members'?(r.node.payload.member_ids as number[]??[]):(await ctx.db.query("SELECT src_id FROM exploration_edges WHERE exploration_id=$1 AND dst_id=$2 AND rel='derived_from' ORDER BY id",[r.expID,id])).rows.map(e=>Number(e.src_id));
-              data=(await authorizedNodes(ctx.db,r.taskID,r.expID,await ctx.db.exploration(r.expID).nodesByIDs(ids),['worker','mainagent'].includes(ctx.role))).map(n=>({ref:`node:${n.id}`,kind:n.kind,version:n.content_version,state:n.state,summary:n.payload.summary}));
             }else if(view==='detail'){
               data={...r.node,anchors:await ctx.db.exploration(r.expID).anchorAssetIDs(id),...(r.node.kind==='finding'?{finding_detail:(await ctx.db.query('SELECT id,name,severity,summary,evidence,report,status,evidence_version,report_evidence_version FROM findings WHERE node_id=$1',[id])).rows[0]??null}:{})};
             }else throw new Error('未知视图');
+            }
           }
         }
         if(item.version!==undefined&&item.version!==version)throw new Error('节点版本已变化，请重新检索');
@@ -164,7 +172,8 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
         const offset=Math.max(0,item.offset??0),remaining=args.items.length-i;
         const take=Math.min(Math.floor(budget/remaining),Math.floor(bytes/remaining/6));
         const content=chars.slice(offset,offset+take).join('');budget-=Array.from(content).length;bytes-=Buffer.byteLength(JSON.stringify(content));
-        items.push({ref:item.ref,view,field:item.field,version,source_task_id:sourceTask,inherited:sourceTask!==ctx.taskID,content,total_chars:chars.length,next_offset:offset+take<chars.length?offset+take:null});
+        const nextOffset=offset+take<chars.length?offset+take:null;
+        items.push({ref:item.ref,view,field:item.field,version,source_task_id:sourceTask,inherited:sourceTask!==ctx.taskID,content,total_chars:chars.length,next_offset:nextOffset,...(view==='parents'||view==='members'?{page_cursor:pageCursor,next_cursor:nextOffset!==null?null:nextCursor}:{} )});
       }catch(error){items.push({ref:item.ref,error:error instanceof Error?error.message:String(error)});}
     }
     return {items};
