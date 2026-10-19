@@ -4,7 +4,7 @@
 
 import type { Database } from "../db/index.js";
 
-export type AgentRole = "planner" | "worker" | "mainagent" | "goals" | "chat";
+export type AgentRole = "planner" | "worker" | "mainagent" | "goals" | "chat" | "auto" | "pentest" | "reporter" | "retester";
 
 /** planner 跨唤醒共享的规划待办（按任务保留，内存态；引擎 M4 持有实例）。 */
 export interface TodoItem {
@@ -38,17 +38,21 @@ export interface EngineHooks {
   /** 目标被证明 → 判定任务完成（取消在跑 worker）。 */
   notifyGoalMet?: (expID: number, goalNodeID: number) => void;
   /** mainagent 直投意图 → 自动下发。 */
-  dispatchIntent?: (expID: number, intentID: number) => Promise<void>;
+  dispatchIntent?: (expID: number, intentID: number) => Promise<unknown>;
   goalsChanged?: (expID: number) => Promise<void>;
   constraintsChanged?: (expID: number) => void;
   notifyIntent?: (expID: number, intentID: number) => void;
   /** planner/mainagent 杀掉一条在跑意图。 */
-  killWork?: (expID: number, intentID: number, reason: string) => Promise<void>;
-  /** 对在跑 worker 的下一次工具调用前注入纠偏消息（不打断）。 */
-  steerWork?: (expID: number, intentID: number, message: string) => Promise<void>;
+  killWork?: (expID: number, intentID: number, reason: string, source?:string) => Promise<void>;
+  /** Native pi steering delivered at the next model boundary, without blocking writeback. */
+  steerWork?: (expID: number, intentID: number, message: string, source?:string) => Promise<void>;
 }
 
 export interface ToolRunContext {
+  collaborationPolicy?: "blackboard-v1";
+  planningRoundID?: string;
+  conversationID?: number;
+  mainSegment?: number;
   toolCallID?: string;
   signal?: AbortSignal;
   db: Database;
@@ -59,6 +63,8 @@ export interface ToolRunContext {
   workerName?: string;
   /** worker 绑定的意图 id（写通道纪律：只能写回自己的意图）。 */
   intentID?: number;
+  /** Fixed per-session network scope, used by a directed retest on every redirect. */
+  networkTargets?: ReadonlyArray<{host:string;port:number|null}>;
   /** planner 跨唤醒 TodoStore（todo_write 与态势渲染用）。 */
   todos?: TodoStore;
   hooks: EngineHooks;

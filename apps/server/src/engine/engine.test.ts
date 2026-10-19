@@ -23,6 +23,8 @@ let runtime: ModelRuntime;
 let runtimeP: ModelRuntime;
 let model: ModelSource["model"];
 let modelP: ModelSource["model"];
+const engines: Engine[] = [];
+const ownedTasks: Array<{ taskID: number; expID: number }> = [];
 
 beforeAll(async () => {
   process.env.SERIES_PG_DSN = TEST_DSN;
@@ -44,6 +46,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const engine of engines) await engine.shutdown();
+  if (db) for (const task of ownedTasks) await cleanupTask(db, task.taskID, task.expID);
   await db?.close().catch(() => undefined);
   rmSync(dataDir, { recursive: true, force: true });
 });
@@ -68,7 +72,9 @@ async function seedRunningTask(db: Database, description: string): Promise<{ tas
      VALUES ($1,$2,$3,$4,'running',3600) RETURNING id`,
     [expID, description, description, description],
   );
-  return { taskID: Number(res.rows[0]!.id), expID };
+  const task = { taskID: Number(res.rows[0]!.id), expID };
+  ownedTasks.push(task);
+  return task;
 }
 
 async function cleanupTask(db: Database, taskID: number, expID: number): Promise<void> {
@@ -88,16 +94,25 @@ describe.skipIf(!haveDB)("engine 端到端（faux 模型）", () => {
       async (_t, role) => (role === "worker" ? { modelRuntime: runtime, model } : { modelRuntime: runtimeP, model: modelP }),
       dataDir,
     );
+    engines.push(engine);
 
     // 双队列：planner/goals 消费 fauxP，worker 消费 faux——并发唤醒下时序确定。
     fauxP.setResponses([
       fauxAssistantMessage([fauxToolCall("set_goals", { goals: [{ text: "证明 example.com 存在高危漏洞", vulnclass: "SQL注入" }] })]),
-      fauxAssistantMessage("目标已登记。"),
-      fauxAssistantMessage([fauxToolCall("add_intent", { intents: [{ summary: "对 example.com 登录口做注入探测", priority: 7 }] })]),
-      fauxAssistantMessage("已派发初始意图。"),
+      fauxAssistantMessage([fauxToolCall("add_intent", { intents: [{ summary: "对 example.com 登录口做注入探测", priority: 7,contract:{objective:'LOCAL fixture 验证',acceptance:['保存本地夹具结论'],work:{resource:'local:example-fixture',question_key:'fixture_result',method_class:'fixture',identity:'fixture'}} }] })]),
+      fauxAssistantMessage('LOCAL planning complete'),
+      // Queue the next round before Worker settlement can wake Planner. Resolve
+      // graph identities lazily from the committed blackboard at consumption.
+      async () => {
+        const goal = (await s.listByKind("goal", 10))[0]!;
+        const fact = (await s.listByKind("fact", 50)).find(n => n.state === "confirmed")!;
+        return fauxAssistantMessage([fauxToolCall("prove_goal", { goal_id: goal.id, evidence_node_id: fact.id })]);
+      },
+      fauxAssistantMessage('LOCAL planning complete'),
     ]);
     faux.setResponses([
       fauxAssistantMessage([fauxToolCall("record_fact", { summary: "登录口存在注入", evidence: "curl ' OR 1=1 -- → 200", confidence: "high" })]),
+      fauxAssistantMessage('LOCAL observations saved; execution finished.'),
       fauxAssistantMessage("意图执行完成：发现注入并已写回 fact。"),
     ]);
 
@@ -114,15 +129,9 @@ describe.skipIf(!haveDB)("engine 端到端（faux 模型）", () => {
       "worker 写回 fact",
     );
 
-    // 4) 用真实 goal/fact id 追加终局响应并触发一轮规划。
+    await waitUntil(async()=>(await s.listByKind("intent",50)).some(n=>n.state==="done"),20_000,"worker 结果通过验收");
+    // 4) Worker settlement triggers the already queued terminal round.
     const goals = await s.listByKind("goal", 10);
-    const fact = (await s.listByKind("fact", 50)).find((n) => n.state === "confirmed")!;
-    fauxP.appendResponses([
-      fauxAssistantMessage([fauxToolCall("prove_goal", { goal_id: goals[0]!.id, evidence_node_id: fact.id })]),
-      fauxAssistantMessage("目标已证明。"),
-    ]);
-    engine.notify(taskID, "测试触发终局判定");
-
     await waitUntil(
       async () => (await db!.query<{ status: string }>(`SELECT status FROM tasks WHERE id=$1`, [taskID])).rows[0]?.["status"] === "done",
       60_000,
@@ -142,7 +151,7 @@ describe.skipIf(!haveDB)("engine 端到端（faux 模型）", () => {
 
     await engine.stop(taskID).catch((e) => console.log("[T]stop err", e)); await cleanupTask(db!, taskID, expID); });
 
-  it("steer：纠偏消息经 guard 注入（角色层直测：block+reason 后重试成功）", { timeout: 90_000 }, async () => {
+  it("旧 steering 不注入意图，恢复后保留每次已写回的结果", { timeout: 90_000 }, async () => {
     const { runWorkerIntent } = await import("../agent/roles.js");
     const { taskDB, seedIntent } = { taskDB: db!, seedIntent: async () => 0 };
     const expID = await db!.createExploration("steer 直测", "steer 直测");
@@ -154,7 +163,9 @@ describe.skipIf(!haveDB)("engine 端到端（faux 模型）", () => {
     );
     const tr = await db!.query<{ id: string }>(`SELECT id FROM tasks WHERE exploration_id=$1`, [expID]);
     const taskID = Number(tr.rows[0]!.id);
+    ownedTasks.push({ taskID, expID });
     const intent = await s.addIntent({ summary: "方向 A" }, 5, [], "planner");
+    await s.claimNextWorker("work#1");
     const node = (await s.getNode(intent))!;
 
     const steerQueue = new Map<number, string[]>();
@@ -163,6 +174,7 @@ describe.skipIf(!haveDB)("engine 端到端（faux 模型）", () => {
     faux.setResponses([
       fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1 && echo ready" })]),
       fauxAssistantMessage([fauxToolCall("record_fact", { summary: "初次", evidence: "x" })]),
+      fauxAssistantMessage('first pass saved'),
       fauxAssistantMessage("done"),
     ]);
     const res = await runWorkerIntent({
@@ -181,20 +193,24 @@ describe.skipIf(!haveDB)("engine 端到端（faux 模型）", () => {
       },
     });
     void res; void acts; void seedIntent; void taskDB;
-    // 无 steer 时正常写回
+    // 第一轮观察已立即写回。
     expect(factWritten).toBe(true);
+    expect((await s.listByKind("fact")).filter(n=>n.payload.from_intent===intent)).toHaveLength(1);
 
-    // 第二轮：注入 steer，验证 block 后重试成功
+    // 第二轮恢复同一意图；旧 steering 不进入模型上下文。
     faux.setResponses([
       fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })]),
-      fauxAssistantMessage([fauxToolCall("record_fact", { summary: "被挡", evidence: "x" })]),
-      fauxAssistantMessage([fauxToolCall("record_fact", { summary: "steer 后继续", evidence: "ok" })]),
+      context=>{expect(JSON.stringify(context.messages)).not.toContain("聚焦登录接口");return fauxAssistantMessage([fauxToolCall("record_fact", { summary: "阶段草稿", evidence: "x" })]);},
+      fauxAssistantMessage([fauxToolCall("record_fact", { summary: "最终验证结论", evidence: "ok" })]),
+      fauxAssistantMessage('LOCAL observations saved; execution finished.'),
       fauxAssistantMessage("完成"),
     ]);
     steerQueue.set(intent, ["聚焦登录接口"]);
     factWritten = false;
     const intent2 = await s.getNode(intent);
-    await s.setIntentState(intent, "open");
+    await s.setIntentState(intent,"exhausted");
+    await s.reopenIntent(intent);
+    await s.claimNextWorker("work#1");
     const res2 = await runWorkerIntent({
       db: db!, taskID, expID, intent: intent2 as never, workerName: "work#1",
       model: { modelRuntime: runtime, model },
@@ -211,6 +227,8 @@ describe.skipIf(!haveDB)("engine 端到端（faux 模型）", () => {
     });
     void res2;
     expect(factWritten).toBe(true);
+    expect((await s.listByKind("fact")).filter(n=>n.payload.from_intent===intent).map(n=>n.payload.summary)).toEqual(["最终验证结论","阶段草稿","初次"]);
+    expect(steerQueue.get(intent)).toEqual(["聚焦登录接口"]);
     await db!.query(`DELETE FROM tasks WHERE id=$1`, [taskID]);
     await db!.query(`DELETE FROM explorations WHERE id=$1`, [expID]);
   });

@@ -1,3 +1,4 @@
+import {startRecordingGateway} from './recording.js';
 // 出口网关装配（M6）：startEgressGateway(db, addr) → { server, addr, proxyURL, close }。
 // -proxy 非空时由 apps/server/src/index.ts 接线；worker 侧用 proxyURL() +
 // taskCredentials 拼出带签名的 http://user:pass@addr/ 注入 HTTP(S)_PROXY（见 agent/roles.ts）。
@@ -12,6 +13,7 @@ export { authorizeTaskRequest, createEgressServer } from "./gateway.js";
 export interface EgressGateway {
   /** 底层 http 服务器（已监听）。 */
   server: http.Server;
+  caFile?: string;
   /** 客户端应使用的网关地址（host:port；全接口绑定时映射为 127.0.0.1）。 */
   addr: string;
   /** worker 环境注入用的代理 URL（http://<addr>/）。 */
@@ -37,8 +39,9 @@ function clientHost(bindHost: string): string {
 }
 
 /** 启动出口网关：授权校验用 db.taskScope()（worker 口径，pending 可放行）。 */
-export async function startEgressGateway(db: Database, addr: string): Promise<EgressGateway> {
+export async function startEgressGateway(db: Database, addr: string, dataDir?: string): Promise<EgressGateway> {
   const { host, port } = parseListenAddr(addr);
+  if(dataDir)return startRecordingGateway(db,host,port,dataDir);
   const server = createEgressServer(db);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

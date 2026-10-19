@@ -34,23 +34,20 @@ export function setGoalsTool(ctx: ToolRunContext) {
         },
         required: ["goals"],
       },
+      // Notify the running scheduler only after the replacement/append is committed.
+      transactional: false,
       async run(args, c) {
-        const s = c.db.exploration(c.expID);
-        const originFact = await s.originFactID();
-        // goals 阶段（分解）为整体替换；mainagent 运行时追加（保留既有目标）。
-        if (c.role === "goals") {
-          const existing = await s.listByKind("goal", 100);
-          for (const g of existing) await s.deleteGoal(g.id);
-        }
-        const ids: number[] = [];
-        for (const g of args.goals) {
-          const id = await s.addGoal(
-            { text: g.text, ...(g.vulnclass ? { vulnclass: g.vulnclass } : {}) },
-            c.role === "goals" ? "goals" : "user",
-          );
-          if (originFact > 0) await s.link(originFact, RelSpawns, id);
-          ids.push(id);
-        }
+        const ids = await c.db.transaction(async db=>{
+          await c.hooks.assertOwnership?.(db);
+          const s=db.exploration(c.expID),originFact=await s.originFactID();
+          if(c.role==='goals')for(const g of await s.listByKind('goal',100))await s.deleteGoal(g.id);
+          const created:number[]=[];
+          for(const g of args.goals){
+            const id=await s.addGoal({text:g.text,...(g.vulnclass?{vulnclass:g.vulnclass}:{})},c.role==='goals'?'goals':'user');
+            if(originFact>0)await s.link(originFact,RelSpawns,id);created.push(id);
+          }
+          return created;
+        });
         if (c.role === "mainagent") await c.hooks.goalsChanged?.(c.expID);
         return { goals: ids };
       },
@@ -88,10 +85,10 @@ export function setConstraintsTool(ctx: ToolRunContext) {
         },
         required: ["constraints"],
       },
+      transactional: false,
       async run(args, c) {
-        const tx = await c.db.pool.connect();
-        try {
-          await tx.query("BEGIN");
+        await c.db.transaction(async tx=>{
+          await c.hooks.assertOwnership?.(tx);
           await tx.query("SELECT pg_advisory_xact_lock($1)", [c.expID]);
           if (args.replace) await tx.query(`DELETE FROM task_constraints WHERE exploration_id=$1`, [c.expID]);
           for (const k of args.constraints) {
@@ -99,9 +96,7 @@ export function setConstraintsTool(ctx: ToolRunContext) {
               SELECT $1,$2,$3,$4 WHERE NOT EXISTS (SELECT 1 FROM task_constraints WHERE exploration_id=$1 AND kind=$2 AND text=$3)`,
               [c.expID,k.kind,k.text,c.role]);
           }
-          await tx.query("COMMIT");
-        } catch (err) { await tx.query("ROLLBACK"); throw err; }
-        finally { tx.release(); }
+        });
         c.hooks.constraintsChanged?.(c.expID);
         return { saved: args.constraints.length };
       },

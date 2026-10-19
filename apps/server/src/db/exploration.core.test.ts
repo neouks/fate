@@ -51,10 +51,11 @@ describe.skipIf(!haveDB)("exploration store core", () => {
     expect(dup.created).toBe(false);
     expect(dup.id).toBe(first.id);
 
-    // 终态后同方向可重开
+    // 终态保留去重记录，重试必须带明确依据。
     await s.setIntentState(first.id, "done");
     const reopened = await s.addIntentDeduplicated({ summary: "test example.com 登录口" }, 5, [], "planner");
-    expect(reopened.created).toBe(true);
+    expect(reopened.created).toBe(false);
+    expect(reopened.id).toBe(first.id);
   });
 
   it("claimNextWorker CAS 领取：两个并发领取者只有一个成功", async () => {

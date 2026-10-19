@@ -25,10 +25,28 @@ type GateDecision = { allowed: true } | { allowed: false; status: number; messag
  * strip 端口 → validateWorkerHosts（worker 口径：approved 或 pending 均放行）；
  * 校验失败 rememberTaskAssetDenials 记忆（忽略记忆错误本身）后抛出带文案的错误。
  */
-export async function authorizeTaskRequest(db: Database, taskID: number, host: string): Promise<void> {
+export async function authorizeTaskRequest(db: Database, taskID: number, host: string, port=443,scope=''): Promise<void> {
   const bare = stripHostPort(host);
   try {
-    await db.taskScope().validateWorkerHosts(taskID, [bare]);
+    const task=await db.tasks().getTask(taskID);
+    if(!task||task.paused||task.queued||['done','failed','stopped','timeout'].includes(task.status))throw new Error('任务已暂停、终止或不可执行');
+    const worker=/^worker:(\d+)(?::(.+))?$/.exec(scope);
+    if(worker){
+      const intent=await db.exploration(task.exploration_id).getNode(Number(worker[1]));
+      if(!intent||intent.kind!=='intent'||intent.state!=='running'||intent.payload.cancelled_by_user===true)throw new Error('意图已停止或不属于当前任务');
+      if(worker[2]&&!(await db.query('SELECT 1 FROM engine_task_leases WHERE task_id=$1 AND token=$2 AND expires_at>clock_timestamp()',[taskID,worker[2]])).rowCount)throw new Error('执行租约已失效');
+      await db.taskScope().validateIntentHostPort(taskID,intent,bare,port);
+    }else if(scope.startsWith('main:')){
+      const main=/^main:(\d+):(\d+):(.+)$/.exec(scope);
+      if(!main||Number(main[1])!==taskID||!(await db.query('SELECT 1 FROM runtime_session_leases WHERE key=$1 AND token=$2 AND expires_at>clock_timestamp() AND NOT stop_requested',[`main:${taskID}:${main[2]}`,main[3]])).rowCount)throw new Error('Main 会话租约已失效');
+      await db.taskScope().validateWorkerHostPort(taskID,bare,port);
+    }else{
+      const planner=/^planner:(.+)$/.exec(scope);
+      if(planner&&!(await db.query('SELECT 1 FROM engine_task_leases WHERE task_id=$1 AND token=$2 AND expires_at>clock_timestamp()',[taskID,planner[1]])).rowCount)throw new Error('Planner 租约已失效');
+      const conversation=/^conversation:(\d+):(.+)$/.exec(scope);
+      if(conversation&&!(await db.query('SELECT 1 FROM runtime_session_leases WHERE key=$1 AND token=$2 AND expires_at>clock_timestamp() AND NOT stop_requested',[`conversation:${conversation[1]}`,conversation[2]])).rowCount)throw new Error('会话租约已失效');
+      await db.taskScope().validateTaskHostPort(taskID,bare,port);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await db
@@ -44,6 +62,7 @@ async function gateRequest(
   db: Database,
   proxyAuthorization: string | undefined,
   host: string,
+  port:number,
 ): Promise<GateDecision> {
   let parsed;
   try {
@@ -57,7 +76,7 @@ async function gateRequest(
     return { allowed: true };
   }
   try {
-    await authorizeTaskRequest(db, parsed.taskID, host);
+    await authorizeTaskRequest(db, parsed.taskID, host,port,parsed.scope);
     return { allowed: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -106,7 +125,7 @@ function handleConnect(db: Database, req: http.IncomingMessage, clientSocket: Du
     return;
   }
 
-  void gateRequest(db, req.headers["proxy-authorization"], target.host)
+  void gateRequest(db, req.headers["proxy-authorization"], target.host,target.port)
     .then((decision) => {
       if (!decision.allowed) {
         fail(decision.status, decision.message);
@@ -162,7 +181,7 @@ async function handlePlainHTTP(db: Database, req: http.IncomingMessage, res: htt
     return;
   }
 
-  const decision = await gateRequest(db, req.headers["proxy-authorization"], target.hostname);
+  const decision = await gateRequest(db, req.headers["proxy-authorization"], target.hostname,Number(target.port)||80);
   if (!decision.allowed) {
     fail(decision.status, decision.message);
     return;

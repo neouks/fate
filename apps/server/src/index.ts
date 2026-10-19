@@ -62,11 +62,11 @@ async function main(): Promise<void> {
   // 未打标流量（独立聊天/enrich/UI）原样放行。HTTPS 不解密。
   let gateway: EgressGateway | null = null;
   if (flags.proxy !== "") {
-    gateway = await startEgressGateway(db, flags.proxy);
+    gateway = await startEgressGateway(db, flags.proxy, flags.dataDir);
     console.log(`[egress] 出口网关 listening on ${gateway.addr}（worker 代理 ${gateway.proxyURL()}）`);
   }
 
-  configureAgentEnv({ skillsDir: skillsRoot });
+  configureAgentEnv({ skillsDir: skillsRoot, caFile: gateway?.caFile });
 
   const workers = await db.platform().workers().catch(() => 3);
   const engine = new Engine(

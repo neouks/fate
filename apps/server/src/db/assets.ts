@@ -1230,6 +1230,7 @@ export class AssetStore {
     write: (store: AssetStore) => Promise<number>): Promise<number> {
     return this.withCompanyScopeMutation(async (store) => {
       const tx = store.tx!;
+      if(owner){const row=await tx.query("SELECT n.id FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE t.id=$1 AND n.id=$2 AND n.kind='intent' AND n.payload->>'cancelled_by_user' IS DISTINCT FROM 'true'",[taskID,owner]);if(!row.rowCount)throw new Error('资产发现来源意图不存在或不属于本任务');}
       await tx.query("SELECT set_config('series.agent_discovery','on',true),set_config('series.origin_task',$1,true),set_config('series.asset_origin',$2,true)",
         [String(taskID), JSON.stringify({ agent_key: agent, node_id: owner ?? null, tool_use_id: toolCallID ?? null })]);
       const id = await write(store);

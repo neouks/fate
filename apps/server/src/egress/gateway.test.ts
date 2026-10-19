@@ -106,12 +106,20 @@ interface UpstreamRecord {
 function stubDB(opts: { deny?: (host: string) => boolean }) {
   const remembered: { taskID: number; hosts: string[] }[] = [];
   const db = {
+    tasks:()=>({getTask:async()=>({exploration_id:42,status:'running',paused:false,queued:false})}),
+    exploration:()=>({getNode:async()=>({kind:'intent',state:'running',payload:{}})}),
     taskScope: () => ({
+      validateIntentHostPort:async(_taskID:number,_intent:unknown,host:string)=>{if(opts.deny?.(host))throw new Error('目标已被主动限制 (revoked)');},
+      validateTaskHostPort:async(_taskID:number,host:string)=>{if(opts.deny?.(host))throw new Error('目标已被主动限制 (revoked)');},
       validateWorkerHosts: async (_taskID: number, hosts: string[]) => {
         const denied = hosts.find((h) => opts.deny?.(h) === true);
         if (denied !== undefined) {
           throw new Error(`task asset is not approved: host ${denied} 已被主动限制或任务无效 (revoked)`);
         }
+      },
+      validateWorkerHostPort: async (_taskID:number,host:string,_port:number) => {
+        const denied=opts.deny?.(host)===true;
+        if(denied)throw new Error(`task asset is not approved: host ${host} 已被主动限制或任务无效 (revoked)`);
       },
       rememberTaskAssetDenials: async (taskID: number, hosts: string[], _ids: number[], _scopes: string[]) => {
         remembered.push({ taskID, hosts });

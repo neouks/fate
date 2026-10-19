@@ -1,6 +1,18 @@
 import {randomUUID} from 'node:crypto';
 import type {Database} from '../db/index.js';
 const ADMISSION_LOCK=4_200_000_001, WORKER_LOCK=4_200_000_002;
+export async function executionSnapshot(db:Database,taskID:number) {
+  const limit=Math.min(128,Math.max(1,Number(await db.platform().getSetting('workers'))||3));
+  const rows=(await db.query(`SELECT s.task_id,s.phase,s.manual,n.payload ? 'execution_result' committed FROM engine_worker_slots s
+    JOIN engine_task_leases l ON l.task_id=s.task_id AND l.token=s.token AND l.expires_at>clock_timestamp()
+    LEFT JOIN exploration_nodes n ON n.id=s.intent_id`)).rows;
+  const retests=Number((await db.query("SELECT count(*) n FROM finding_retests WHERE status='running' AND lease_until>clock_timestamp()")).rows[0]?.n);
+  const own=rows.filter(r=>Number(r.task_id)===taskID);
+  return {policy:'blackboard-v1',limit,global_active:rows.filter(r=>r.phase==='running'&&!r.manual).length+retests,
+    task_active:own.filter(r=>r.phase==='running').length,exiting:own.filter(r=>r.phase==='running'&&r.committed).length,
+    ready:own.filter(r=>r.phase==='ready').length,planning:own.filter(r=>r.phase==='planning').length,
+    available:Math.max(0,limit-rows.filter(r=>!r.manual).length-retests)};
+}
 export class Coordinator {
   readonly owner=randomUUID();
   constructor(private db:Database,private defaultWorkers:number){}
@@ -20,7 +32,12 @@ export class Coordinator {
     await tx.query(`UPDATE tasks SET status='running',paused=false,queued=$2,queued_at=CASE WHEN $2 THEN COALESCE(queued_at,now()) ELSE NULL END,
       queue_mode=CASE WHEN $3 THEN 'bootstrap' ELSE queue_mode END,completed_at=NULL,
       first_run_at=CASE WHEN status='timeout' THEN NULL ELSE first_run_at END,
-      deadline_at=CASE WHEN status='timeout' THEN NULL WHEN paused_at IS NOT NULL THEN deadline_at+(now()-paused_at) ELSE deadline_at END,paused_at=NULL WHERE id=$1`,[taskID,queued,bootstrap]);
+      deadline_at=CASE WHEN status='timeout' THEN NULL WHEN NOT $2 AND paused_at IS NOT NULL THEN deadline_at+(now()-paused_at) ELSE deadline_at END,paused_at=CASE WHEN $2 THEN COALESCE(paused_at,now()) ELSE NULL END WHERE id=$1`,[taskID,queued,bootstrap]);
+    // An explicit resume supersedes a pause that has not yet been acknowledged by
+    // its executor. Leaving it pending lets a later scheduler pass stop a session
+    // after the task has already resumed.
+    if(task.paused===true)await tx.query(`UPDATE runtime_task_commands SET status='acknowledged',acknowledged_at=now(),detail='superseded by explicit task resume'
+      WHERE task_id=$1 AND command='pause' AND status='pending'`,[taskID]);
     return !queued;
   }
   async promote(){
@@ -31,7 +48,7 @@ export class Coordinator {
       const limit=values.task_concurrency_enabled==='true'?Math.max(1,Number(values.task_concurrency_limit)||5):10000;
       const active=await tx.query(`SELECT count(*) n FROM tasks WHERE status='running' AND NOT paused AND NOT queued AND deleted_at IS NULL`);
       const count=Math.max(0,limit-Number(active.rows[0]?.n));
-      const rows=await tx.query(`UPDATE tasks SET queued=false,queued_at=NULL WHERE id IN (SELECT id FROM tasks WHERE queued AND NOT paused AND deleted_at IS NULL ORDER BY queued_at,id LIMIT $1 FOR UPDATE) RETURNING id`,[count]);
+      const rows=await tx.query(`UPDATE tasks SET queued=false,queued_at=NULL,deadline_at=CASE WHEN paused_at IS NOT NULL THEN deadline_at+(now()-paused_at) ELSE deadline_at END,paused_at=NULL WHERE id IN (SELECT id FROM tasks WHERE queued AND NOT paused AND deleted_at IS NULL ORDER BY queued_at,id LIMIT $1 FOR UPDATE) RETURNING id`,[count]);
       return rows.rows.map(r=>Number(r.id));
     });
   }
@@ -51,14 +68,19 @@ export class Coordinator {
     if(!r.rowCount)throw new Error('任务执行租约已失效');
   }
   async release(taskID:number,token:string){await this.db.query('DELETE FROM engine_worker_slots WHERE task_id=$1 AND token=$2',[taskID,token]);await this.db.query('DELETE FROM engine_task_leases WHERE task_id=$1 AND owner=$2 AND token=$3',[taskID,this.owner,token]);}
+  /** Only actual executions consume capacity. Planning never reserves slots. */
   async workerSlot(taskID:number,token:string){
     return this.db.transaction(async tx=>{
       await tx.query('SELECT pg_advisory_xact_lock($1)',[WORKER_LOCK]);
       await this.assert(taskID,token,tx);
+      const task=await tx.tasks().getTask(taskID);
+      if(!task||task.status!=='running'||task.paused||task.queued)return undefined;
       await tx.query(`DELETE FROM engine_worker_slots s WHERE NOT EXISTS(SELECT 1 FROM engine_task_leases l WHERE l.task_id=s.task_id AND l.token=s.token AND l.expires_at>now())`);
-      const count=await tx.query("SELECT (SELECT count(*) FROM engine_worker_slots)+(SELECT count(*) FROM finding_retests WHERE status='running' AND lease_until>now()) n");
-      if(Number(count.rows[0]?.n)>=await this.workers())return undefined;
-      const id=randomUUID();await tx.query('INSERT INTO engine_worker_slots(id,task_id,token) VALUES($1,$2,$3)',[id,taskID,token]);return id;
+      const active=Number((await tx.query("SELECT (SELECT count(*) FROM engine_worker_slots WHERE phase='running' AND NOT manual)+(SELECT count(*) FROM finding_retests WHERE status='running' AND lease_until>now()) n")).rows[0]?.n);
+      if(active>=await this.workers())return undefined;
+      const id=randomUUID();
+      await tx.query("INSERT INTO engine_worker_slots(id,task_id,token,phase) VALUES($1,$2,$3,'running')",[id,taskID,token]);
+      return id;
     });
   }
   async releaseSlot(id:string){await this.db.query('DELETE FROM engine_worker_slots WHERE id=$1',[id]);}

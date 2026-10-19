@@ -1,4 +1,7 @@
-import { createServerTransport } from "./mcpTransport.js";
+import {platformMcpExtension,hasDeferredMcp,MCP_RESOURCE_TOOLS} from './platform-mcp.js';
+import {domainCompactionExtension,type CompactionHealth} from './domain-compaction.js';
+import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
+import {requestSize,systemPromptSize} from '../agent/prompt-diagnostics.js';
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -20,7 +23,6 @@ import path from 'node:path';
 
 import {
 	createAgentSession,
-	createMcpExtension,
 	DefaultResourceLoader,
 	loadSkillsFromDir,
 	ModelRuntime,
@@ -64,20 +66,46 @@ export interface WrapupDecision {
 }
 
 /** 外部预算函数：每次 agent 即将 settle 时询问。返回 undefined 表示正常运行结束 */
-export type WrapupBudget = () => WrapupDecision | undefined | Promise<WrapupDecision | undefined>;
+export interface WrapupContext {
+  reason: 'turn_limit' | 'duration_limit' | 'settled';
+  usedRequests: number;
+  remainingRequests?: number;
+}
+export type WrapupBudget = (context: WrapupContext) => WrapupDecision | undefined | Promise<WrapupDecision | undefined>;
+
+type ClosingState = { active: boolean; reason?: WrapupContext['reason'] };
+const CLOSING_RULE = '已进入收尾阶段，停止新探索。bash、外部请求、MCP 等探索工具已停用，不要重试或排查工具环境。仅读取已有证据、整理并提交本角色的最终结果；未完成的条件如实标记，不能继续探测来补齐。';
+function closingToolError(name: string, text: string | undefined, closing: ClosingState, tools?: readonly string[]) {
+  // pi resolves inactive tools before tool_call. Preserve the real failure but
+  // explain deliberate host deactivation in both the transcript and activity UI.
+  return closing.active && tools && !tools.includes(name) && text === `Tool ${name} not found`
+    ? `${CLOSING_RULE}\n原始工具错误：${text}` : text;
+}
 
 /** 归一化后的 activity 事件（对接 Go/norma 的 activity 流） */
 export type RunnerActivity =
+	| { kind: 'run_metadata'; runtimeID: string; role: string; mode: string; startedAt: string }
 	| { kind: 'assistant_delta'; text: string; streamID: string; isThinking?: boolean }
-	| { kind: 'assistant_message_end'; text: string; streamID?: string; isThinking?: boolean }
+	| { kind: 'assistant_message_end'; text: string; streamID?: string; isThinking?: boolean; final?: boolean; response?: { stop_reason: string; has_tools: boolean; model: string; provider: string; usage: { input: number; output: number; cacheRead: number; cacheWrite: number } } }
 	| { kind: 'tool_start'; toolCallId: string; toolName: string; args: unknown }
 	| { kind: 'tool_end'; toolCallId: string; toolName: string; isError: boolean; durationMs?: number; text?: string }
-	| { kind: 'settled'; aborted: boolean }
+	| { kind: 'settled'; aborted: boolean; stopReason?: string }
 	| { kind: 'usage'; input: number; output: number; cacheRead: number; cacheWrite: number }
 	| { kind: 'queue_update'; steering: readonly string[]; followUp: readonly string[] };
 
 export interface AgentRunnerOptions {
-	modelPolicy?: { onResponse(message: unknown): Promise<void>; retry(): Promise<boolean> };
+  /** Host-owned durable completion; checked after paired tool results are saved. */
+  stopWhen?: () => Promise<boolean>;
+  reserveSettlementTurns?: number;
+  boundaryContext?: () => Promise<string>;
+  platform?: {role:string;taskID:number;conversationID?:number;policy:PlatformPolicy};
+  /** Size-only provider boundary instrumentation; never stores request content/credentials. */
+  loadDomainState?: () => Promise<Record<string,unknown>>;
+  intentID?: number;
+  compactionSettings?: {reserveTokens?:number;keepRecentTokens?:number};
+  onRequestSize?: (size: ReturnType<typeof requestSize>,purpose?:'conversation'|'compaction') => void | Promise<void>;
+	mcpGuard?: (server:string,method:string,tool?:string)=>Promise<void>;
+	modelPolicy?: { onResponse(message: unknown): Promise<void>; retry(signal?:AbortSignal): Promise<boolean>; setPurpose?(purpose: 'conversation'|'compaction'):void; setRuntimeID?(id:string):void; finish?():Promise<void> };
 	signal?: AbortSignal;
 	maxTurns?: number;
 	maxDurationMs?: number;
@@ -93,18 +121,21 @@ export interface AgentRunnerOptions {
 	/** 模型对象 */
 	model: PiModel;
 	thinkingLevel?: PiThinkingLevel;
-	/** 系统 prompt（服务端全权控制） */
+	/** 替换 SDK 默认角色正文；SDK 仍追加允许的 Skill 索引和工作目录。 */
 	systemPrompt?: string;
 	/** 允许启用的工具名（内置 + customTools；缺省 ['read','bash','edit','write']） */
 	toolAllowlist?: string[];
 	/** 服务端自定义工具 */
 	customTools?: ToolDefinition[];
+  extensionFactories?: ExtensionFactory[];
 	/** 工具门控（等价 norma 的 guard） */
 	guard?: ToolGuard;
 	/** 收尾预算（等价 norma 的 settlement wrapup） */
 	wrapup?: WrapupBudget;
 	/** wrapup 最大续跑轮数（防止预算函数一直返回续跑导致死循环） */
 	maxWrapupTurns?: number;
+	/** Once closing begins only these tools may run; domain authorization still applies. */
+	settlementTools?: readonly string[];
 	/** 恢复既有会话文件（JSONL 路径）；给出时忽略 sessionDir 的新建语义 */
 	resumeSessionPath?: string;
 	/** 内存会话（不落盘）：planner 每轮无状态、goals 一次性 run 用 */
@@ -113,8 +144,11 @@ export interface AgentRunnerOptions {
 	skillsDir?: string;
 	/** MCP 服务器配置（DB mcp_servers 映射）；非空时挂 pi 的 MCP 扩展 */
 	mcpEntries?: Array<{ name: string; config: Record<string, unknown> }>;
+  mcpResourceTools?: string[];
 	/** 原始 AgentSessionEvent 透传（调试 / 持久化用） */
 	onRawEvent?: (event: AgentSessionEvent) => void;
+	/** Hide incremental text events when the selected model profile disables visible streaming. */
+	streaming?: boolean;
 	/** 归一化 activity 流（对接 Go 侧 activity 映射） */
 	onActivity?: (activity: RunnerActivity) => void;
 }
@@ -125,6 +159,7 @@ export interface RunResult {
 	/** 最后一条助手文本（若有） */
 	lastAssistantText: string | undefined;
 	stopReason?: "completed" | "aborted" | "budget";
+	budgetReason?: "turn_limit" | "duration_limit";
 }
 
 /**
@@ -137,7 +172,12 @@ export class AgentRunner {
 	private turns = 0;
 	private streamID = randomUUID();
 	private budgetExceeded = false;
+	private closing: ClosingState = { active: false };
+  private wrapupContext!: (reason: WrapupContext['reason']) => WrapupContext;
+	private budgetReason: RunResult['budgetReason'];
+  private compactionHealth:CompactionHealth={requests:0,completed:0,failed:0};
 	private modelError: string | undefined;
+  private domainCompletion = {done:false};
 	private settled!: (result: RunResult) => void;
 	private settledPromise!: Promise<RunResult>;
 
@@ -159,34 +199,72 @@ export class AgentRunner {
 	// -------------------------------------------------------------------------
 
 	static async create(opts: AgentRunnerOptions): Promise<AgentRunner> {
+    const closing: ClosingState = { active: false };
+    const domainCompletion = {done:false};
+    let turns = 0;
+    const wrapupContext = (reason: WrapupContext['reason']): WrapupContext => ({reason,
+      usedRequests: turns + compactionHealth.requests,
+      remainingRequests: opts.maxTurns ? Math.max(0, opts.maxTurns + (opts.wrapup ? (opts.maxWrapupTurns ?? 1) : 0) - turns - compactionHealth.requests) : undefined,
+    });
+    const closingPrompt = (prompt: string) => opts.settlementTools ? `${CLOSING_RULE}\n${prompt}` : prompt;
+    let enterClosing = () => {closing.active=true;};
+    if(opts.platform) validatePlatformRunner(opts.platform.role,opts,opts.platform.taskID);
+    const diagnosticsExtension: ExtensionFactory = api => {
+      api.on('context', async event => {
+        // Keep legacy feedback in the audit session, never in Agent coordination.
+        const messages=[...event.messages];
+        const current=await opts.boundaryContext?.();
+        if(current)messages.push({role:'custom',customType:'blackboard_boundary',content:current,display:false,timestamp:Date.now()});
+        if(opts.settlementTools){
+          const budget=wrapupContext(closing.reason??'settled');
+          // Current host state takes precedence over old budget notices on resume.
+          // This projection does not grow the persisted conversation each turn.
+          messages.push({role:'custom',customType:'execution_budget',display:false,timestamp:Date.now(),content:
+            '【本次执行预算，以此为准】'+(budget.remainingRequests===undefined?'配置为不限模型请求轮数；时间限制、暂停和授权仍生效。':`已用 ${budget.usedRequests} 次，剩余最多 ${budget.remainingRequests} 次模型请求（含收尾和压缩）；工具失败后的重试也占用轮数。`)+
+            (closing.active ? CLOSING_RULE : '当前仍在执行阶段；完成本意图即可提交，不必用满预算。')});
+        }
+        return {messages};
+      });
+      api.on('message_end', event => {
+        const message=event.message;
+        if(message.role!=='toolResult'||!message.isError)return;
+        const original=toolResultText(message),text=closingToolError(message.toolName,original,closing,opts.settlementTools);
+        if(text!==original && text)return {message:{...message,content:[{type:'text' as const,text}]}};
+      });
+      api.on('before_provider_request', async event => { if(closing.active)enterClosing();await opts.onRequestSize?.(requestSize(event.payload)); });
+    };
 		const settings = SettingsManager.inMemory({
 			// pi owns conversation compaction; graph compaction remains a separate domain projection.
 			retry: { enabled: false },
-			compaction: { enabled: true },
+			compaction: { enabled: true,...opts.compactionSettings },
 		});
 		const modelPolicyExtension: ExtensionFactory = (pi) => {
 			pi.on('message_end', async event => {
 				if(event.message.role === 'assistant') await opts.modelPolicy?.onResponse(event.message);
 			});
-			pi.on('agent_before_settle', async (event) => {
-				if(event.outcome === 'error' && await opts.modelPolicy?.retry()) return {
+			pi.on('agent_before_settle', async (event,context) => {
+        const signal=opts.signal&&context.signal?AbortSignal.any([opts.signal,context.signal]):opts.signal??context.signal;
+				if(event.outcome === 'error' && !signal?.aborted && await opts.modelPolicy?.retry(signal)) return {
 					continue:true, entries:[{type:'custom_message' as const,customType:'model_failover',display:false,
 					content:'模型请求失败后已由宿主切换或重试。依据已有消息和工具结果继续；已完成的工具操作无需重复。'}],
 				};
 			});
 		};
 
-		const guardExtension: ExtensionFactory | undefined = opts.guard
+		const guardExtension: ExtensionFactory | undefined = opts.guard || opts.settlementTools || opts.stopWhen
 			? (pi) => {
 					pi.on('tool_call', async (event, context): Promise<ToolCallEventResult | undefined> => {
+            if(await opts.stopWhen?.())return {block:true,reason:'本角色的最终结果已提交，不能继续操作',terminate:false};
+            if (closing.active && opts.settlementTools && !opts.settlementTools.includes(event.toolName))
+              return {block:true,reason:CLOSING_RULE,terminate:false};
 						const decision = await opts.guard?.({
 							signal: context.signal,
 							toolCallId: event.toolCallId,
 							toolName: event.toolName,
 							args: event.input as Record<string, unknown>,
 						});
-						if (!decision?.block) return undefined;
-						return { block: true, reason: decision.reason ?? 'blocked by server guard', terminate: false };
+						if (decision?.block) return { block: true, reason: decision.reason ?? 'blocked by server guard', terminate: false };
+            return undefined;
 					});
 				}
 			: undefined;
@@ -197,8 +275,10 @@ export class AgentRunner {
 						if (event.outcome !== 'completed' || (opts.maxTurns && turns >= opts.maxTurns)) return undefined;
 						const maxTurns = opts.maxWrapupTurns ?? 1;
 						if (this_wrapupUsed(opts) >= maxTurns) return undefined;
-						const decision = await opts.wrapup?.();
+						const decision = await opts.wrapup?.(wrapupContext('settled'));
 						if (!decision) return undefined;
+            closing.reason ??= 'settled';
+						enterClosing();
 						incWrapup(opts);
 						return {
 							continue: true,
@@ -206,7 +286,7 @@ export class AgentRunner {
 								{
 									type: 'custom_message' as const,
 									customType: 'server_wrapup',
-									content: decision.prompt,
+									content: closingPrompt(decision.prompt),
 									display: true,
 								},
 							],
@@ -215,45 +295,48 @@ export class AgentRunner {
 				}
 			: undefined;
 
-		let turns = 0;
+    let budgetAnnounced = false;
 		const budgetExtension: ExtensionFactory = (pi) => {
+      enterClosing=()=>{closing.active=true;if(opts.settlementTools)pi.setActiveTools(pi.getActiveTools().filter(name=>opts.settlementTools!.includes(name)));};
+      pi.on('turn_start',(_event,context)=>{
+        const limit=opts.maxTurns?opts.maxTurns+(opts.wrapup?(opts.maxWrapupTurns??1):0):Infinity;
+        if(turns+compactionHealth.requests>=limit){closing.reason='turn_limit';context.abort();}
+      });
 			pi.on('turn_end', async (_event, context) => {
 				turns++;
+        if(await opts.stopWhen?.()){domainCompletion.done=true;context.abort();return;}
+        if(closing.active)enterClosing();
 				if (!opts.maxTurns) return;
+        // A natural final response needs no extra budget-closing model turn.
+        if (_event.message.role === 'assistant' && !_event.message.content.some(block => block.type === 'toolCall')) return;
 				const grace = opts.wrapup ? (opts.maxWrapupTurns ?? 1) : 0;
-				if (turns >= opts.maxTurns + grace) {
+				if (turns + compactionHealth.requests >= opts.maxTurns + grace) {
 					if (_event.message.role === 'assistant' && _event.message.content.some((block) => block.type === 'toolCall')) context.abort();
 					return;
 				}
-				if (turns === opts.maxTurns) {
-					const decision = await opts.wrapup?.();
+				if (turns + compactionHealth.requests >= Math.max(1,opts.maxTurns-(opts.reserveSettlementTurns??0)) && !budgetAnnounced) {
+          budgetAnnounced = true;
+					const decision = await opts.wrapup?.(wrapupContext('turn_limit'));
+          // A role whose required result is already committed needs no budget reminder.
+          if (opts.wrapup && !decision) return;
+          closing.reason = 'turn_limit';
+					enterClosing();
 					return { continue: true, entries: [{ type: 'custom_message' as const, customType: 'server_budget',
-						content: decision?.prompt ?? '本轮预算已用尽。停止发起新操作，保存已有结果并简洁总结。', display: true }] };
+						content: closingPrompt(decision?.prompt ?? '本轮预算已用尽。停止发起新操作，保存已有结果并简洁总结。'), display: true }] };
 				}
 			});
 		};
 
-		const mcpFactory: ExtensionFactory | undefined =
-			opts.mcpEntries && opts.mcpEntries.length > 0
-				? createMcpExtension({
-              createTransport: (entry,cwd,auth) => createServerTransport(entry.config as unknown as Record<string,unknown>,cwd,auth),
-						loadConfig: () => ({
-							servers: opts.mcpEntries!.map((e) => ({
-								name: e.name,
-								config: e.config as never,
-								source: 'series-db',
-								scope: 'extension' as const,
-							})),
-							errors: [],
-						}),
-					})
-				: undefined;
+		const mcpFactory=opts.mcpEntries?.length?platformMcpExtension(opts):undefined;
+
+		const compactionHealth:CompactionHealth={requests:0,completed:0,failed:0};
+    const compactionExtension=opts.platform?domainCompactionExtension(opts,compactionHealth,()=>opts.maxTurns?opts.maxTurns+(opts.wrapup?(opts.maxWrapupTurns??1):0)-turns-compactionHealth.requests:Infinity):undefined;
 		const loader = new DefaultResourceLoader({
 			cwd: opts.cwd,
 			agentDir: opts.agentDir,
 			settingsManager: settings,
 			noExtensions: true,
-			extensionFactories: [modelPolicyExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory].filter(
+			extensionFactories: [diagnosticsExtension, modelPolicyExtension, compactionExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory,...(opts.extensionFactories??[])].filter(
 				(e): e is ExtensionFactory => typeof e === 'function',
 			),
 			noSkills: !opts.skillsDir,
@@ -286,11 +369,18 @@ export class AgentRunner {
 			settingsManager: settings,
 			sessionManager,
 			resourceLoader: loader,
-			tools: opts.toolAllowlist,
+			tools: opts.toolAllowlist?[...new Set([...opts.toolAllowlist,
+        ...(hasDeferredMcp(opts)?['tool_search']:[]),
+        ...(opts.mcpEntries?.length&&opts.toolAllowlist.includes('mcp__*')?(opts.mcpResourceTools??MCP_RESOURCE_TOOLS):[]),
+      ])]:opts.toolAllowlist,
 			customTools: opts.customTools,
 		});
 
 		const runner = new AgentRunner(session, opts);
+    runner.domainCompletion=domainCompletion;
+    runner.closing = closing;
+    runner.wrapupContext = wrapupContext;
+    runner.compactionHealth=compactionHealth;
 		try {
 			await session.bindExtensions({}); // Fires session_start: native MCP connects here.
 			return runner;
@@ -307,14 +397,17 @@ export class AgentRunner {
 		switch (event.type) {
 			case 'turn_end':
 				this.turns++;
-				if (this.opts.maxTurns && this.turns >= this.opts.maxTurns) this.budgetExceeded = true;
+				if (this.opts.maxTurns && this.turns + this.compactionHealth.requests >= this.opts.maxTurns
+          && event.message.role === 'assistant' && event.message.content.some(block => block.type === 'toolCall')) {
+          this.budgetExceeded = true; this.budgetReason ??= 'turn_limit';
+        }
 				break;
 			case 'message_start':
 				if (event.message.role === 'assistant') this.streamID = randomUUID();
 				break;
 			case 'message_update': {
 				const update = event.assistantMessageEvent;
-				if (update.type === 'text_delta' || update.type === 'thinking_delta') {
+				if (this.opts.streaming !== false && (update.type === 'text_delta' || update.type === 'thinking_delta')) {
 					this.opts.onActivity?.({ kind: 'assistant_delta', text: update.delta, streamID: this.streamID, isThinking: update.type === 'thinking_delta' });
 				}
 				break;
@@ -324,9 +417,10 @@ export class AgentRunner {
 					this.modelError = event.message.stopReason === 'error' ? event.message.errorMessage ?? '模型调用失败' : undefined;
 					const thinking = assistantThinking(event.message);
 					if (thinking) {
-						this.opts.onActivity?.({ kind: 'assistant_message_end', text: thinking, isThinking: true });
+						this.opts.onActivity?.({ kind: 'assistant_message_end', text: thinking, streamID: this.streamID, isThinking: true });
 					}
-					this.opts.onActivity?.({ kind: 'assistant_message_end', text: assistantText(event.message), streamID: this.streamID });
+					this.opts.onActivity?.({ kind: 'assistant_message_end', text: assistantText(event.message), streamID: this.streamID,
+            ...(this.domainCompletion.done && event.message.stopReason==='aborted' && !event.message.content.length && !event.message.usage.totalTokens ? {} : {response: {stop_reason:event.message.stopReason,has_tools:event.message.content.some(b=>b.type==='toolCall'),model:event.message.model,provider:event.message.provider,usage:event.message.usage}}) });
 					const u = (event.message as { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } }).usage;
 					if (u) {
 						this.opts.onActivity?.({ kind: 'usage', input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite });
@@ -348,15 +442,15 @@ export class AgentRunner {
 					toolName: event.toolName,
 					isError: event.isError,
 					durationMs: event.durationMs,
-					text: toolResultText(event.result),
+					text: closingToolError(event.toolName,toolResultText(event.result),this.closing,this.opts.settlementTools),
 				});
 				break;
 			case 'queue_update':
 				this.opts.onActivity?.({ kind: 'queue_update', steering: event.steering, followUp: event.followUp });
 				break;
 			case 'agent_settled':
-				this.opts.onActivity?.({ kind: 'settled', aborted: event.aborted });
-				this.settled({ aborted: event.aborted, lastAssistantText: this.session.getLastAssistantText(), stopReason: this.budgetExceeded ? "budget" : event.aborted ? "aborted" : "completed" });
+				this.opts.onActivity?.({ kind: 'settled', aborted: this.domainCompletion.done?false:event.aborted, stopReason:this.domainCompletion.done?'completed':this.budgetExceeded||this.closing.reason==='turn_limit'||this.closing.reason==='duration_limit'?'budget':event.aborted?'aborted':'completed' });
+				this.settled({ aborted: this.domainCompletion.done?false:event.aborted, lastAssistantText: this.session.getLastAssistantText(), stopReason: this.domainCompletion.done?"completed":this.budgetExceeded || this.closing.reason==='turn_limit' || this.closing.reason==='duration_limit' ? "budget" : event.aborted ? "aborted" : "completed", budgetReason:this.domainCompletion.done?undefined:this.budgetReason??(this.closing.reason==='settled'?undefined:this.closing.reason) });
 				this.resetSettled();
 				break;
 			default:
@@ -371,21 +465,36 @@ export class AgentRunner {
 	/** 发送一条用户消息并等待本次 run settle（含 wrapup 续跑轮） */
 	async prompt(text: string, images?: import("../evidence/attachments.js").ChatImage[]): Promise<RunResult> {
 		this.modelError = undefined;
+    this.compactionHealth.error=undefined;
 		this.opts.signal?.throwIfAborted();
 		const finished = this.settledPromise;
 		const abort = () => { void this.abort(); };
 		this.opts.signal?.addEventListener('abort', abort, { once: true });
 		const timer = this.opts.maxDurationMs ? setTimeout(() => {
 			this.budgetExceeded = true;
+      this.budgetReason = 'duration_limit';
 			void this.abort();
 		}, this.opts.maxDurationMs) : undefined;
+    // Reserve time inside (never beyond) the run deadline for durable writeback.
+    let active = true;
+    const closingTimer = this.opts.maxDurationMs && this.opts.settlementTools && this.opts.wrapup ? setTimeout(() => {
+      void (async()=>{
+        const decision = await this.opts.wrapup?.(this.wrapupContext('duration_limit'));
+        if(!active || this.opts.signal?.aborted || !decision)return;
+        this.closing.active=true;this.closing.reason='duration_limit';
+        await this.steer('时间预算即将耗尽。'+CLOSING_RULE+'\n'+decision.prompt);
+      })().catch(()=>{ /* The hard deadline remains authoritative. */ });
+    }, this.opts.maxDurationMs - Math.min(30_000, this.opts.maxDurationMs * 0.1)) : undefined;
 		try {
 			await this.session.prompt(text,{images});
 			const result = await finished;
-			if (this.modelError && !this.opts.signal?.aborted && !result.aborted) throw new Error(this.modelError);
+      this.assertCompactionHealthy();
+			if (this.modelError && !this.domainCompletion.done && !this.opts.signal?.aborted && !result.aborted) throw new Error(this.modelError);
 			return result;
 		} finally {
+			active = false;
 			clearTimeout(timer);
+      clearTimeout(closingTimer);
 			this.opts.signal?.removeEventListener('abort', abort);
 		}
 	}
@@ -423,6 +532,41 @@ export class AgentRunner {
 		return this.session.messages;
 	}
 
+  contextKeys(prefix: string): string[] {
+    return this.session.sessionManager.getBranch().flatMap(e => {
+      if(e.type !== 'custom_message' || e.customType !== 'fate_context') return [];
+      const key = (e.details as {key?: string} | undefined)?.key;
+      return key?.startsWith(prefix) ? [key] : [];
+    });
+  }
+
+  /** A single durable custom message is both context and its delivery marker. Branch-aware. */
+  async appendContextOnce(key: string, content: string): Promise<boolean> {
+    const entries = this.session.sessionManager.getBranch();
+    if (entries.some(e => e.type === 'custom_message' && e.customType === 'fate_context' &&
+      (e.details as {key?: string} | undefined)?.key === key)) return false;
+    await this.session.sendCustomMessage({customType:'fate_context',content,display:false,details:{key}}, {triggerTurn:false});
+    return true;
+  }
+
+  private assertCompactionHealthy(){if(this.compactionHealth.error)throw new Error(`会话压缩失败，可恢复重试：${this.compactionHealth.error.message}`);}
+
+  async compact():Promise<void>{
+    this.compactionHealth.error=undefined;
+    try{await this.session.compact();}catch(error){throw this.compactionHealth.error??error;}
+    this.assertCompactionHealthy();
+  }
+
+  get compactionDiagnostics(){const {requests,completed,failed}=this.compactionHealth;return {requests,completed,failed};}
+
+  get activeToolNames(){return this.session.getActiveToolNames();}
+
+  get promptDiagnostics() {
+    const names = new Set(this.session.getActiveToolNames());
+    const tools = this.session.getAllTools().filter(t => names.has(t.name)).map(t => ({name:t.name,description:t.description,parameters:t.parameters}));
+    return systemPromptSize(this.session.systemPrompt, tools);
+  }
+
 	/** 在当前 runner 之外按路径恢复一个新 runner（同一 modelRuntime 可复用） */
 	async resume(options: Omit<AgentRunnerOptions, 'resumeSessionPath' | 'modelRuntime'> & { modelRuntime?: ModelRuntime }): Promise<AgentRunner> {
 		const path = this.sessionFile;
@@ -436,7 +580,7 @@ export class AgentRunner {
 
 	async dispose(): Promise<void> {
 		try { await this.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); }
-		finally { this.session.dispose(); }
+		finally { this.session.dispose();await this.opts.modelPolicy?.finish?.(); }
 	}
 }
 

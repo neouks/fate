@@ -158,8 +158,8 @@ export function listAssetsTool(ctx: ToolRunContext) {
   return domainTool<ListAssetsArgs>(
     {
       name: "list_assets",
-      description: "分页查询全局资产图（可按类型过滤）。返回资产 id/type/host 等轻量字段。",
-      promptSnippet: "查询资产库",
+      description: "分页查询本任务或直接来源任务中仍获授权的资产（可按类型过滤）。返回轻量字段；来源任务只读。",
+      promptSnippet: "查询本任务已授权资产",
       parameters: {
         type: "object",
         properties: {
@@ -171,18 +171,26 @@ export function listAssetsTool(ctx: ToolRunContext) {
       readOnly: true,
       async run(args, c) {
         const limit = Math.min(Math.max(args.limit ?? 20, 1), 50);
-        const assets = await c.db.assets().queryByType(args.type ?? "", limit, args.offset ?? 0);
+        if(c.taskID<=0)return {assets:[],offset:Math.max(0,args.offset??0),count:0};
+        const offset=Math.max(0,args.offset??0),pending=['worker','mainagent'].includes(c.role);
+        const assets=await c.db.query(`SELECT a.id,a.type,a.domain,a.ip,a.url,a.app_name,a.bundle_id,a.port,a.page_title,a.status_code
+          FROM assets a
+          WHERE ($2::text='' OR a.type=$2)
+            AND EXISTS(SELECT 1 FROM task_asset_links l WHERE l.asset_id=a.id AND
+              (l.task_id=$1 OR l.task_id IN (SELECT source_task_id FROM task_relations WHERE task_id=$1)))
+            AND (task_asset_effective_approval_state($1,a.id)='approved' OR ($3 AND task_asset_effective_approval_state($1,a.id)='pending'))
+          ORDER BY a.last_seen DESC,a.id DESC LIMIT $4 OFFSET $5`,[c.taskID,args.type??'',pending,limit,offset]);
         return {
-          assets: assets.map((a) => ({
-            id: a.id,
-            type: a.type,
+          assets: assets.rows.map((a) => ({
+            id: Number(a.id),
+            type: String(a.type),
             host: a.domain || a.ip || a.url || a.app_name || a.bundle_id,
-            port: a.port,
+            port: a.port===null?null:Number(a.port),
             title: a.page_title,
-            status: a.status_code,
+            status: a.status_code===null?null:Number(a.status_code),
           })),
-          offset: args.offset ?? 0,
-          count: assets.length,
+          offset,
+          count: assets.rows.length,
         };
       },
     },

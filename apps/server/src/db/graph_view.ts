@@ -1,6 +1,14 @@
 import type { Database } from './index.js';
 import type { Node } from './exploration.js';
 
+/** UI projection uses the same owning-task authorization as agent reads. */
+export const TASK_GRAPH_CTE = `visible AS (
+ SELECT n.*,t.id AS source_task_id,t.id<>$1 AS inherited
+ FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id
+ WHERE t.deleted_at IS NULL AND (t.id=$1 OR t.id IN (SELECT source_task_id FROM task_relations WHERE task_id=$1))
+ AND exploration_node_readable(n.exploration_id,n.id)
+)`;
+
 /** One-level, read-only inheritance. The owning task remains the authorization authority. */
 export async function graphSources(db: Database, taskID: number): Promise<Array<{ taskID: number; expID: number }>> {
   const r = await db.query(`SELECT t.id,t.exploration_id FROM task_relations r JOIN tasks t ON t.id=r.source_task_id
@@ -8,10 +16,10 @@ export async function graphSources(db: Database, taskID: number): Promise<Array<
   return r.rows.map(r => ({ taskID: Number(r.id), expID: Number(r.exploration_id) }));
 }
 export async function authorizedNodes(db: Database, taskID: number, expID: number, nodes: Node[], worker = false): Promise<Node[]> {
-  const anchors = await db.exploration(expID).lineageAnchorAssetIDsForNodes(nodes.map(n => n.id));
-  const ids = [...new Set([...anchors.values()].flat())];
-  const states = await db.taskScope().taskAssetApprovalStates(taskID, ids);
-  return nodes.filter(n => (anchors.get(n.id) ?? []).every(id => states.get(id) === 'approved' || (worker && states.get(id) === 'pending')));
+  if(!nodes.length)return [];
+  const result=await db.query('SELECT n.id FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE t.id=$1 AND n.exploration_id=$2 AND n.id=ANY($3::bigint[]) AND exploration_node_readable($2,n.id,$4)',[taskID,expID,nodes.map(n=>n.id),worker]);
+  const allowed=new Set(result.rows.map(r=>Number(r.id)));
+  return nodes.filter(n=>allowed.has(n.id));
 }
 export async function resolveGraphNode(db: Database, taskID: number, expID: number, nodeID: number, worker = false) {
   for (const owner of [{ taskID, expID }, ...await graphSources(db, taskID)]) {

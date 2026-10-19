@@ -1,0 +1,188 @@
+import {ownObservations} from '../db/worker-drafts.js';
+import {createHash} from 'node:crypto';
+import type {ToolRunContext} from './context.js';
+import {domainTool} from './define.js';
+import {graphSources,resolveGraphNode,authorizedNodes} from '../db/graph_view.js';
+import {nodeDetailTool} from './graph.js';
+import {progressSummary,resultSummary,stopSummary} from '../agent/context-projection.js';
+
+interface Search {q?:string;types?:string[];state?:string;asset_id?:number;intent_id?:number;task_id?:number;limit?:number;cursor?:string;}
+export async function searchContext(c:ToolRunContext,args:Search) {
+  await recallPermission(c,'context_search');
+  if(Array.from(args.q??'').length>200)throw new Error('q 最多 200 字符');
+  const source=args.task_id&&args.task_id!==c.taskID?(await graphSources(c.db,c.taskID)).find(s=>s.taskID===args.task_id):{taskID:c.taskID,expID:c.expID};
+  if(!source)throw new Error('仅可检索本任务及直接来源任务');
+  if(args.types?.includes('activity'))return searchActivitiesAndNodes(c,args);
+  const types=[...new Set(args.types??['fact','finding','intent','goal','hint','digest'])].sort();
+  if(types.some(t=>!['fact','finding','intent','goal','hint','digest'].includes(t)))throw new Error('未知上下文类型');
+  const limit=Math.min(50,Math.max(1,args.limit??10));
+  const signature=createHash('sha256').update(JSON.stringify([c.taskID,c.role,source.taskID,types,args.q??'',args.state??'',args.asset_id??0,args.intent_id??0,limit])).digest('hex');
+  let after=0,upper=Number((await c.db.query('SELECT COALESCE(max(id),0) n FROM exploration_nodes WHERE exploration_id=$1',[source.expID])).rows[0]!.n);
+  if(args.cursor){
+    let parsed:{signature:string;after:number;upper:number};
+    try{parsed=JSON.parse(Buffer.from(args.cursor,'base64url').toString('utf8'));}catch{throw new Error('无效上下文游标');}
+    if(parsed.signature!==signature||![parsed.after,parsed.upper].every(n=>Number.isSafeInteger(n)&&n>=0)||parsed.after>parsed.upper)throw new Error('游标不属于当前查询');
+    after=parsed.after;upper=parsed.upper;
+  }
+  const result=await c.db.query(`SELECT n.id,n.kind,n.state,n.payload,n.content_version,n.owner FROM exploration_nodes n
+    WHERE n.exploration_id=$1 AND n.id>$2 AND n.id<=$3 AND n.kind=ANY($4::text[])
+      AND ($5='' OR position(lower($5) in lower(n.payload::text))>0 OR EXISTS(
+        SELECT 1 FROM findings f WHERE f.node_id=n.id AND position(lower($5) in lower(f.evidence||' '||f.report))>0))
+      AND ($6='' OR n.state=$6)
+      AND ($7::bigint=0 OR EXISTS(SELECT 1 FROM exploration_anchors a WHERE a.node_id=n.id AND a.asset_id=$7))
+      AND ($8::bigint=0 OR n.id=$8 OR EXISTS(SELECT 1 FROM exploration_edges e WHERE e.exploration_id=$1 AND e.src_id=$8 AND e.dst_id=n.id AND e.rel='yields'))
+      AND exploration_node_readable($1,n.id,$9) ORDER BY n.id LIMIT $10`,[source.expID,after,upper,types,args.q??'',args.state??'',args.asset_id??0,args.intent_id??0,['worker','mainagent'].includes(c.role),limit+1]);
+  const rows=result.rows.slice(0,limit);
+  return {source_task_id:source.taskID,inherited:source.taskID!==c.taskID,read_only:true,
+    items:rows.map(n=>{const p=n.payload as Record<string,unknown>;return {ref:`node:${n.id}`,node_id:Number(n.id),version:Number(n.content_version),kind:n.kind,state:n.state,summary:String(p.summary??p.text??'').slice(0,300),owner:n.owner,progress:progressSummary(p.progress),result:resultSummary(p.execution_result),execution_stop:stopSummary(p.execution_stop)};}),
+    next_cursor:result.rows.length>limit?Buffer.from(JSON.stringify({signature,upper,after:Number(rows.at(-1)!.id)})).toString('base64url'):null,
+    detail_tool:'context_get'};
+}
+
+export function contextSearchTool(c:ToolRunContext){return domainTool<Search>({name:'context_search',description:'按全文、类型、资产、意图和状态检索授权探索图。包含冷图原始节点；返回稳定引用和内容版本。继续分页时保留原查询参数。来源任务只读。',readOnly:true,
+  parameters:{type:'object',properties:{q:{type:'string',maxLength:200},types:{type:'array',items:{type:'string',enum:['fact','finding','intent','goal','hint','digest','activity']}},state:{type:'string'},asset_id:{type:'integer',minimum:1},intent_id:{type:'integer',minimum:1},task_id:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:50},cursor:{type:'string'}}},run:(args,ctx)=>searchContext(ctx,args)},c);}
+
+function legacyContextGetTool(c:ToolRunContext){return domainTool<{ref:string;version?:number;offset?:number;after_edge?:number;anchor_offset?:number}>({name:'context_get',description:'读取 node:ID 的详情、证据和图关系。超过单页时继续 offset/after_edge/anchor_offset；version 可拒绝读取过程中被修改的节点。',readOnly:true,
+  parameters:{type:'object',properties:{ref:{type:'string',pattern:'^node:[1-9][0-9]*$'},version:{type:'integer',minimum:0},offset:{type:'integer',minimum:0},after_edge:{type:'integer',minimum:0},anchor_offset:{type:'integer',minimum:0}},required:['ref']},
+  async run(args,c){return c.db.transaction(async db=>{
+    const ctx={...c,db};
+    if(!/^node:[1-9][0-9]*$/.test(args.ref))throw new Error('无效节点引用');
+    const id=Number(args.ref.slice(5));
+    const draft=(await ownObservations(ctx,id))[0];
+    if(draft){if(args.version!==undefined&&args.version!==Number(draft.draft_version))throw new Error('私有记录版本已变化，请重新读取');const body=JSON.stringify(draft.payload),offset=args.offset??0;return {ref:args.ref,version:Number(draft.draft_version),staged:true,published:false,node:{id,kind:draft.kind,payload:body.length<6000?draft.payload:undefined},payload_json:body.length<6000?undefined:body.slice(offset,offset+1000),next_offset:body.length<6000||offset+1000>=body.length?null:offset+1000};}
+    await db.query('SELECT id FROM exploration_nodes WHERE id=$1 FOR SHARE',[id]);
+    const resolved=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,id,['worker','mainagent'].includes(ctx.role));
+    if(args.version!==undefined&&args.version!==resolved.node.content_version)throw new Error('节点版本已变化，请重新检索');
+    const result=await nodeDetailTool(ctx).execute(ctx.toolCallID??'context-get',{node_id:id,offset:args.offset,after_edge:args.after_edge,anchor_offset:args.anchor_offset} as never,ctx.signal,undefined,{} as never);
+    if(result.isError)throw new Error((result.content[0] as {text:string}).text);
+    const detail=JSON.parse((result.content[0] as {text:string}).text);
+    if(resolved.node.kind==='finding'){
+      const finding=(await db.query('SELECT id,name,severity,summary,evidence,report,status,evidence_version,report_evidence_version FROM findings WHERE node_id=$1',[id])).rows[0];
+      const payload={...resolved.node.payload,finding_detail:finding??null},serialized=JSON.stringify(payload),offset=args.offset??0;
+      const small=Buffer.byteLength(serialized)<8000;
+      detail.node.payload=small?payload:undefined;
+      detail.payload_json=small?undefined:serialized.slice(offset,offset+1000);
+      detail.next_offset=small||offset+1000>=serialized.length?null:offset+1000;
+    }
+    return {...detail,ref:args.ref,version:resolved.node.content_version};
+  });}},c);}
+
+
+async function recallPermission(c:ToolRunContext,key:string){
+  const row=(await c.db.query('SELECT enabled,agents FROM tools WHERE key=$1',[key])).rows[0];
+  if(row&&(row.enabled===false||!Array.isArray(row.agents)||!row.agents.includes(c.role)))throw new Error(`当前角色无 ${key} 读取权限`);
+}
+async function searchActivitiesAndNodes(c:ToolRunContext,args:Search){
+  await recallPermission(c,'search_worker_traces');
+  // The old trace search is local-only. Merging tools must not add cross-task search.
+  if(args.task_id&&args.task_id!==c.taskID)throw new Error('活动检索仅限本任务');
+  const types=[...new Set(args.types??[])].sort(),limit=Math.min(50,Math.max(1,args.limit??10));
+  if(types.some(t=>!['fact','finding','intent','goal','hint','digest','activity'].includes(t)))throw new Error('未知上下文类型');
+  const signature=createHash('sha256').update(JSON.stringify([c.taskID,c.role,types,args.q??'',args.state??'',args.asset_id??0,args.intent_id??0,limit])).digest('hex');
+  let cursor={signature,after:0,kind:'',nodes:0,activities:0};
+  if(args.cursor){
+    try{cursor=JSON.parse(Buffer.from(args.cursor,'base64url').toString());}catch{throw new Error('无效上下文游标');}
+    if(cursor.signature!==signature||![cursor.after,cursor.nodes,cursor.activities].every(n=>Number.isSafeInteger(n)&&n>=0)||!['','node','activity'].includes(cursor.kind))throw new Error('游标不属于当前查询');
+  }else{
+    const r=(await c.db.query('SELECT (SELECT COALESCE(max(id),0) FROM exploration_nodes WHERE exploration_id=$1) nodes,(SELECT COALESCE(max(id),0) FROM activity WHERE exploration_id=$1) activities',[c.expID])).rows[0]!;
+    cursor.nodes=Number(r.nodes);cursor.activities=Number(r.activities);
+  }
+  const rows=(await c.db.query(`WITH candidates AS (
+    SELECT n.id,'node'::text category,n.kind,n.state,n.payload->>'summary' summary,(n.payload::text||COALESCE((SELECT f.evidence||f.report FROM findings f WHERE f.node_id=n.id),'')) body,n.id node_id,n.content_version version,n.owner worker,false is_error
+      FROM exploration_nodes n WHERE n.exploration_id=$1 AND n.id<=$2 AND n.kind=ANY($4::text[])
+    UNION ALL
+    SELECT a.id,'activity',a.kind,n.state,a.summary,COALESCE(a.detail,a.summary),a.node_id,n.content_version,a.worker,a.is_error
+      FROM activity a JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id
+      WHERE a.exploration_id=$1 AND a.id<=$3 AND n.kind='intent' AND a.kind NOT IN ('usage','round','thinking')
+  ) SELECT * FROM candidates c WHERE (c.id,c.category)>($5::bigint,$6::text)
+    AND ($7='' OR position(lower($7) in lower(COALESCE(c.body,'')||COALESCE(c.summary,'')))>0)
+    AND ($8='' OR c.state=$8) AND ($9::bigint=0 OR c.node_id=$9)
+    AND ($10::bigint=0 OR EXISTS(SELECT 1 FROM exploration_anchors a WHERE a.node_id=c.node_id AND a.asset_id=$10))
+    AND exploration_node_readable($1,c.node_id,$11) ORDER BY c.id,c.category LIMIT $12`,
+    [c.expID,cursor.nodes,cursor.activities,types,cursor.after,cursor.kind,args.q??'',args.state??'',args.intent_id??0,args.asset_id??0,['worker','mainagent'].includes(c.role),limit+1])).rows;
+  const page=rows.slice(0,limit),last=page.at(-1);
+  return {source_task_id:c.taskID,read_only:true,items:page.map(r=>({ref:`${r.category}:${r.id}`,kind:r.category==='activity'?'activity':r.kind,activity_kind:r.category==='activity'?r.kind:undefined,intent_id:r.category==='activity'?Number(r.node_id):undefined,state:r.state,version:Number(r.version),summary:Array.from(String(r.summary??'')).slice(0,300).join(''),is_error:r.is_error,worker:r.worker})),
+    next_cursor:rows.length>limit&&last?Buffer.from(JSON.stringify({...cursor,after:Number(last.id),kind:last.category})).toString('base64url'):null};
+}
+interface RecallItem {ref:string;view?:'detail'|'output'|'parents'|'members';field?:string;offset?:number;version?:number;}
+interface RecallArgs {items?:RecallItem[];max_chars?:number;ref?:string;version?:number;offset?:number;after_edge?:number;anchor_offset?:number;}
+function pointer(value:unknown,field?:string):unknown{
+  if(!field)return value;
+  if(!field.startsWith('/'))throw new Error('field 必须是 JSON Pointer');
+  for(const token of field.slice(1).split('/').map(s=>s.replace(/~1/g,'/').replace(/~0/g,'~'))){
+    if(!value||typeof value!=='object'||!Object.hasOwn(value,token))throw new Error('field 不存在');
+    value=(value as Record<string,unknown>)[token];
+  }
+  return value;
+}
+export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({name:'context_get',readOnly:true,
+  description:'批量读取 node:ID 或 activity:ID；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
+  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^(node|activity):[1-9][0-9]*$'},view:{type:'string',enum:['detail','output','parents','members']},field:{type:'string'},offset:{type:'integer',minimum:0},version:{type:'integer',minimum:0}},required:['ref']}},max_chars:{type:'integer',minimum:256,maximum:24000}},required:['items']},
+  async run(args,ctx){
+    if(!args.items&&args.ref){const result=await legacyContextGetTool(ctx).execute(ctx.toolCallID??'legacy-read',args as never,ctx.signal,undefined,{} as never);if(result.isError)throw new Error((result.content[0] as {text:string}).text);return JSON.parse((result.content[0] as {text:string}).text);}
+    if(!args.items?.length||args.items.length>5)throw new Error('items 需要 1–5 个引用');
+    let budget=Math.min(24000,Math.max(256,args.max_chars??8000)),bytes=18000;
+    const items=[];
+    for(let i=0;i<args.items.length;i++){
+      const item=args.items[i]!,view=item.view??'detail';
+      try{
+        await recallPermission(ctx,'context_get');
+        const match=/^(node|activity):([1-9][0-9]*)$/.exec(item.ref);if(!match)throw new Error('无效引用');
+        const id=Number(match[2]);let data:unknown,version:number|undefined,sourceTask=ctx.taskID;
+        if(match[1]==='activity'){
+          await recallPermission(ctx,'get_worker_trace');
+          const a=(await ctx.db.query("SELECT * FROM activity WHERE id=$1 AND node_id IS NOT NULL AND kind NOT IN ('thinking','usage','round')",[id])).rows[0];
+          if(!a)throw new Error('活动不存在');
+          const resolved=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,Number(a.node_id),['worker','mainagent'].includes(ctx.role));
+          if(resolved.node.kind!=='intent')throw new Error('仅支持 Worker 活动');
+          if(!['detail','output'].includes(view))throw new Error('活动不支持该视图');
+          sourceTask=resolved.taskID;version=resolved.node.content_version;
+          data={ref:item.ref,intent_id:Number(a.node_id),kind:a.kind,is_error:a.is_error,summary:a.summary,detail:a.detail,output_type:a.is_error?'error':(a.metadata as Record<string,unknown>|undefined)?.event_type==='outcome'?'final':'progress'};
+        }else{
+          const draft=(await ownObservations(ctx,id))[0];
+          if(draft){data={staged:true,published:false,payload:draft.payload};version=Number(draft.draft_version);}
+          else{
+            const r=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,id,['worker','mainagent'].includes(ctx.role));
+            sourceTask=r.taskID;version=r.node.content_version;
+            if(view==='output'){
+              await recallPermission(ctx,'get_worker_trace');
+              if(r.node.kind!=='intent')throw new Error('output 仅支持意图');
+              data={execution_stop:r.node.payload.execution_stop,execution_result:r.node.payload.execution_result,
+                activity:(await ctx.db.query("SELECT id,kind,summary,detail,is_error,metadata FROM activity WHERE exploration_id=$1 AND node_id=$2 AND kind='result' AND (metadata->>'event_type'='outcome' OR metadata->>'event_type' IS NULL) ORDER BY id DESC LIMIT 1",[r.expID,id])).rows[0]??null};
+            }else if(view==='parents'||view==='members'){
+              await recallPermission(ctx,view==='members'?'expand_digest':'node_detail');
+              if(view==='members'&&r.node.kind!=='digest')throw new Error('members 仅支持摘要');
+              const ids=view==='members'?(r.node.payload.member_ids as number[]??[]):(await ctx.db.query("SELECT src_id FROM exploration_edges WHERE exploration_id=$1 AND dst_id=$2 AND rel='derived_from' ORDER BY id",[r.expID,id])).rows.map(e=>Number(e.src_id));
+              data=(await authorizedNodes(ctx.db,r.taskID,r.expID,await ctx.db.exploration(r.expID).nodesByIDs(ids),['worker','mainagent'].includes(ctx.role))).map(n=>({ref:`node:${n.id}`,kind:n.kind,version:n.content_version,state:n.state,summary:n.payload.summary}));
+            }else if(view==='detail'){
+              data={...r.node,anchors:await ctx.db.exploration(r.expID).anchorAssetIDs(id),...(r.node.kind==='finding'?{finding_detail:(await ctx.db.query('SELECT id,name,severity,summary,evidence,report,status,evidence_version,report_evidence_version FROM findings WHERE node_id=$1',[id])).rows[0]??null}:{})};
+            }else throw new Error('未知视图');
+          }
+        }
+        if(item.version!==undefined&&item.version!==version)throw new Error('节点版本已变化，请重新检索');
+        const value=pointer(data,item.field),chars=Array.from(typeof value==='string'?value:JSON.stringify(value??null));
+        const offset=Math.max(0,item.offset??0),remaining=args.items.length-i;
+        const take=Math.min(Math.floor(budget/remaining),Math.floor(bytes/remaining/6));
+        const content=chars.slice(offset,offset+take).join('');budget-=Array.from(content).length;bytes-=Buffer.byteLength(JSON.stringify(content));
+        items.push({ref:item.ref,view,field:item.field,version,source_task_id:sourceTask,inherited:sourceTask!==ctx.taskID,content,total_chars:chars.length,next_offset:offset+take<chars.length?offset+take:null});
+      }catch(error){items.push({ref:item.ref,error:error instanceof Error?error.message:String(error)});}
+    }
+    return {items};
+  }},c);}
+
+export async function workerLaunchContext(c:ToolRunContext,intentID:number){
+  const rows=await c.db.query(`SELECT src_id FROM exploration_edges WHERE exploration_id=$1 AND dst_id=$2 AND rel='derived_from' ORDER BY id LIMIT 21`,[c.expID,intentID]);
+  const parents=await authorizedNodes(c.db,c.taskID,c.expID,await c.db.exploration(c.expID).nodesByIDs(rows.rows.slice(0,20).map(r=>Number(r.src_id))),true);
+  const node=await c.db.exploration(c.expID).getNode(intentID);
+  const inherited=[];
+  const basis=(node?.payload.contract as {basis?:{node_id:number}[]}|undefined)?.basis??[];
+  for(const ref of basis){
+    if(parents.some(n=>n.id===ref.node_id))continue;
+    try{const source=await resolveGraphNode(c.db,c.taskID,c.expID,ref.node_id,true);inherited.push({ref:`node:${source.node.id}`,version:source.node.content_version,summary:String(source.node.payload.summary??'').slice(0,600),source_task_id:source.taskID});}catch{/* Revoked references are never injected. */}
+  }
+  const drafts=await ownObservations({...c,intentID});
+  return {intent_id:intentID,private_observations:drafts.map(d=>({ref:`node:${d.node_id}`,kind:d.kind,summary:String((d.payload as Record<string,unknown>).summary??'').slice(0,300),staged:true,version:Number(d.draft_version)})),upstream:[...parents.map(n=>({ref:`node:${n.id}`,version:n.content_version,summary:String(n.payload.summary??'').slice(0,600)})),...inherited],more_parents:rows.rows.length>20,
+    progress:progressSummary((await c.db.query('SELECT progress FROM worker_checkpoints WHERE intent_id=$1',[intentID])).rows[0]?.progress??node?.payload.progress),previous_result:resultSummary(node?.payload.previous_result),execution_stop:stopSummary(node?.payload.execution_stop),
+    own_findings:await searchContext(c,{intent_id:intentID,types:['fact','finding'],limit:10}),
+    graph_access:{search:'context_search',detail:'context_get',note:'只执行当前意图；边发现边用 record_fact/report_finding 直接写回，最后简洁总结。private_observations 和 progress 是旧版历史材料，须复核后重新写回，不自动发布。'}};
+}

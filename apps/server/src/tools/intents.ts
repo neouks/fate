@@ -4,8 +4,10 @@
 import { domainTool } from "./define.js";
 import type { ToolRunContext, TodoItem } from "./context.js";
 import { KindIntent, RelDerivedFrom, nodeCancelledByUser } from "../db/exploration.js";
+import { normalizeContract, type IntentContract } from '../agent/intent-contract.js';
+import {workerCapabilities, validateWorkerToolNames} from '../agent/worker-capabilities.js';
 
-interface AddIntentArgs { intents: { summary: string; parent_id?: number; asset_ids?: number[]; priority?: number }[]; }
+interface AddIntentArgs { intents: { summary: string; parent_id?: number; parent_ids?: number[]; asset_ids?: number[]; priority?: number; contract?:IntentContract; retry_of?:number;retry_kind?:string;retry_reason?:string }[]; }
 
 export function addIntentTool(ctx: ToolRunContext) {
   return domainTool<AddIntentArgs>(
@@ -28,9 +30,17 @@ export function addIntentTool(ctx: ToolRunContext) {
               type: "object",
               properties: {
                 summary: { type: "string", description: "自包含的方向描述（做什么/为什么/预期产出）" },
+                parent_ids: {type:"array",maxItems:20,items:{type:"integer"},description:"依据的事实或漏洞节点，宿主记录实际版本"},
                 parent_id: { type: "integer", description: "依据的 fact/finding 节点 id（顶层可省略，自动连任务根）" },
                 asset_ids: { type: "array", items: { type: "integer" }, description: "目标资产 id" },
                 priority: { type: "integer", minimum: 1, maximum: 10, description: "默认 5" },
+                contract: {type:'object',description:'执行约定。work 的 question_key/method_class 使用稳定类别键，重复表述应复用同一键；basis 使用 context_search/context_get 返回的版本。',properties:{
+                  objective:{type:'string'},acceptance:{type:'array',minItems:1,maxItems:10,items:{type:'string'}},out_of_scope:{type:'array',maxItems:20,items:{type:'string'}},
+                  basis:{type:'array',description:'仅引用已读取的 fact/finding 及其实际版本，可引用任务根 fact；goal、intent 不是事实依据。',maxItems:20,items:{type:'object',properties:{node_id:{type:'integer'},version:{type:'integer',minimum:0}},required:['node_id','version']}},
+                  work:{type:'object',properties:{resource:{type:'string'},question_key:{type:'string'},method_class:{type:'string'},identity:{type:'string'}},required:['resource','question_key','method_class','identity']},
+                  allowed_tools:{type:'array',items:{type:'string'},maxItems:50,description:'精确工具名，见 graph_overview.worker_capabilities；HTTP GET 使用 http_request，不能编造 http_get 等别名。内部事实/进度/结果写回不受此执行工具清单限制。'},
+                },required:['objective','acceptance']},
+                retry_of:{type:'integer',minimum:1},retry_kind:{type:'string',enum:['new_evidence','transient_failure']},retry_reason:{type:'string',maxLength:2000},
               },
               required: ["summary"],
             },
@@ -38,44 +48,50 @@ export function addIntentTool(ctx: ToolRunContext) {
         },
         required: ["intents"],
       },
+      // Main's direct-intent grant must run after the intent transaction commits;
+      // otherwise the host admission transaction cannot see the uncommitted node.
+      transactional: false,
       async run(args, c) {
-        const s = c.db.exploration(c.expID);
-        const originFact = await s.originFactID();
-        const results: { summary: string; intent_id: number; created: boolean; duplicate_of?: number }[] = [];
-
-        for (const item of args.intents) {
-          // parent 校验：必须是本任务的 fact/finding（发现驱动）。
-          let parentID = item.parent_id ?? 0;
-          if (parentID > 0) {
-            const parent = await s.getNode(parentID);
-            if (!parent || !["fact", "finding"].includes(parent.kind)) {
-              throw new Error(`parent_id #${parentID} 必须是本任务产出的事实或漏洞节点`);
+        const results = await c.db.transaction(async db => {
+          await c.hooks.assertOwnership?.(db);
+          const capabilities = await workerCapabilities({...c, db});
+          const s = db.exploration(c.expID), originFact = await s.originFactID();
+          const submitted: { summary: string; intent_id: number; created: boolean; duplicate_of?: number }[] = [];
+          for (const item of args.intents) {
+            const parentIDs=[...new Set(item.parent_ids??(item.parent_id?[item.parent_id]:[originFact]))].filter(id=>id>0);
+            const contract=normalizeContract(item.contract,item.summary);
+            validateWorkerToolNames(contract.allowed_tools, capabilities);
+            for(const parentID of parentIDs){
+              const parent=await s.getNode(parentID);
+              if(!parent||!['fact','finding'].includes(parent.kind)||!['confirmed','origin'].includes(parent.state))throw new Error(`parent #${parentID} 必须是已提交的事实或漏洞`);
+              const ref=contract.basis.find(ref=>ref.node_id===parentID);
+              if(!ref)contract.basis.push({node_id:parentID,version:parent.content_version??0});
             }
-          } else {
-            parentID = originFact; // 顶层意图挂任务根
+            const payload: Record<string, unknown> = { summary: item.summary,contract,
+              ...(item.retry_of?{retry_of:item.retry_of,retry_kind:item.retry_kind,retry_reason:item.retry_reason}:{}) };
+            payload.parent_ids=parentIDs;
+            if(parentIDs.length)payload.parent_id=parentIDs[0];
+            if(c.role==='planner')payload.dispatch_requested=true;
+            if(c.role==='mainagent'&&c.mainSegment!==undefined&&c.hooks.assertOwnership)payload.pending_asset_execution={issuer:'mainagent'};
+            const res = c.role === "planner"
+              ? await s.addPlannerIntentDeduplicated(payload, item.priority ?? 5, item.asset_ids ?? [], "planner")
+              : await s.addIntentDeduplicated(payload, item.priority ?? 5, item.asset_ids ?? [], c.role === "worker" ? "worker" : "user");
+            if(res.created)for(const ref of contract.basis)if(await s.getNode(ref.node_id))await s.link(ref.node_id,RelDerivedFrom,res.id);
+            // Historical inactive proposals must pass the same fresh basis check before requeue.
+            if(!res.created && c.role==='planner'){
+              const previous=await s.getNode(res.id);
+              const oldWork=(previous?.payload.contract as IntentContract|undefined)?.work;
+              if(oldWork&&!contract.work)contract.work=oldWork;
+              await db.query("UPDATE exploration_nodes SET payload=payload||$2::jsonb WHERE id=$1 AND state='open' AND payload->>'needs_replanning'='true'",[res.id,JSON.stringify({...payload,needs_replanning:false})]);
+            }
+            submitted.push({summary:item.summary,intent_id:res.id,created:res.created,...(!res.created?{duplicate_of:res.id}:{})});
           }
-          const anchors = item.asset_ids ?? [];
-          const payload: Record<string, unknown> = { summary: item.summary };
-          if (parentID > 0) payload["parent_id"] = parentID;
-
-          const useManaged = c.role === "planner";
-          const res = useManaged
-            ? await s.addPlannerIntentDeduplicated(payload, item.priority ?? 5, anchors, "planner")
-            : await s.addIntentDeduplicated(payload, item.priority ?? 5, anchors, c.role === "worker" ? "worker" : "user");
-          if (res.created && parentID > 0) {
-            await s.link(parentID, RelDerivedFrom, res.id);
-          }
-          if (res.created) c.hooks.notifyIntent?.(c.expID, res.id);
-          results.push({
-            summary: item.summary,
-            intent_id: res.id,
-            created: res.created,
-            ...(!res.created ? { duplicate_of: res.id } : {}),
-          });
-          // mainagent 直投：创建成功即下发（自动打 dispatch_requested 标记由引擎完成）。
-          if (res.created && c.role === "mainagent") {
-            await c.hooks.dispatchIntent?.(c.expID, res.id);
-          }
+          return submitted;
+        });
+        for (const result of results) if (result.created) {
+          c.hooks.notifyIntent?.(c.expID,result.intent_id);
+          // The host signs a one-intent grant after the node is committed.
+          if (c.role === "mainagent") await c.hooks.dispatchIntent?.(c.expID,result.intent_id);
         }
         return { submitted: results.filter((r) => r.created).length, intents: results };
       },
@@ -91,7 +107,7 @@ export function dispatchIntentsTool(ctx: ToolRunContext) {
     {
       name: "dispatch_intents",
       description:
-        "把本任务 frontier 中已有（待执行）的意图下发给 worker 开始执行。仅任务主 Agent 可用；" +
+        "把本任务待执行意图下发给 Worker；也可选择正在执行的意图订阅结果，不重复执行。仅任务主 Agent 可用；" +
         "手工执行模式下意图只有经此下发才会被执行。",
       promptSnippet: "下发待执行意图",
       parameters: {
@@ -101,10 +117,11 @@ export function dispatchIntentsTool(ctx: ToolRunContext) {
             type: "array",
             items: { type: "integer" },
             maxItems: 10,
-            description: "要下发的意图 id；省略则下发全部 open 意图",
+            description: "要下发或订阅的意图 id；省略则下发全部 open 意图",
           },
         },
       },
+      transactional:false,
       async run(args, c) {
         if (c.role !== "mainagent") throw new Error("仅任务主 Agent 可以下发意图");
         const s = c.db.exploration(c.expID);
@@ -116,7 +133,7 @@ export function dispatchIntentsTool(ctx: ToolRunContext) {
         let dispatched = 0;
         for (const id of ids) {
           const n = await s.getNode(id);
-          if (!n || n.kind !== KindIntent || n.state !== "open" || nodeCancelledByUser(n)) continue;
+          if (!n || n.kind !== KindIntent || !["open", "running"].includes(n.state) || nodeCancelledByUser(n)) continue;
           if (!c.hooks.dispatchIntent) throw new Error("当前运行环境不支持下发意图");
           await c.hooks.dispatchIntent(c.expID, id);
           dispatched++;
@@ -145,9 +162,10 @@ export function killWorkTool(ctx: ToolRunContext) {
         },
         required: ["intent_id", "reason"],
       },
+      transactional:false,
       async run(args, c) {
         if (!c.hooks.killWork) throw new Error("当前运行环境不支持 kill_work");
-        await c.hooks.killWork(c.expID, args.intent_id, args.reason);
+        await c.hooks.killWork(c.expID, args.intent_id, args.reason,c.role);
         return { killed: args.intent_id };
       },
     },
@@ -162,7 +180,7 @@ export function steerWorkTool(ctx: ToolRunContext) {
     {
       name: "steer_work",
       description:
-        "向一条在跑的意图注入纠偏指令：不打断执行，在其下一次工具调用前生效（阻塞该调用让它先读指令）。" +
+        "通过 pi steering 向运行意图追加纠偏，在当前工具回合完成后的模型边界交付，不阻断检查点或结果提交。" +
         "用于运行中调整打法、补充约束、纠正方向。",
       promptSnippet: "运行中纠偏（不打断）",
       parameters: {
@@ -173,9 +191,10 @@ export function steerWorkTool(ctx: ToolRunContext) {
         },
         required: ["intent_id", "message"],
       },
+      transactional:false,
       async run(args, c) {
         if (!c.hooks.steerWork) throw new Error("当前运行环境不支持 steer_work");
-        await c.hooks.steerWork(c.expID, args.intent_id, args.message);
+        await c.hooks.steerWork(c.expID, args.intent_id, args.message,c.role);
         return { steered: args.intent_id };
       },
     },

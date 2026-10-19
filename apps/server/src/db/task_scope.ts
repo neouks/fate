@@ -66,35 +66,6 @@ export function domainKey(fqdn: string): string {
 }
 
 /** 常见二级公共后缀（publicsuffix 的近似子集；Go 用完整 PSL）。 */
-const SECOND_LEVEL_SUFFIXES = new Set([
-  "co.uk", "org.uk", "ac.uk", "gov.uk", "ltd.uk", "plc.uk", "me.uk", "net.uk", "sch.uk",
-  "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn", "mil.cn",
-  "com.hk", "net.hk", "org.hk", "edu.hk", "gov.hk", "idv.hk",
-  "com.tw", "net.tw", "org.tw", "edu.tw", "gov.tw", "idv.tw",
-  "com.jp", "net.jp", "org.jp", "ac.jp", "go.jp", "ne.jp", "or.jp", "co.jp",
-  "co.kr", "or.kr", "re.kr", "pe.kr", "go.kr", "ne.kr",
-  "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
-  "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz",
-  "com.br", "net.br", "org.br", "gov.br", "edu.br",
-  "com.mx", "org.mx", "net.mx", "edu.mx", "gob.mx",
-  "com.ar", "net.ar", "org.ar", "edu.ar", "gob.ar",
-  "com.tr", "net.tr", "org.tr", "edu.tr", "gov.tr",
-  "com.vn", "net.vn", "org.vn", "edu.vn", "gov.vn",
-  "com.sg", "net.sg", "org.sg", "edu.sg", "gov.sg", "per.sg",
-  "com.my", "net.my", "org.my", "edu.my", "gov.my",
-  "co.id", "or.id", "web.id", "net.id", "go.id", "ac.id",
-  "co.in", "net.in", "org.in", "firm.in", "gen.in", "ind.in", "ac.in", "edu.in", "res.in", "gov.in",
-  "co.za", "org.za", "web.za", "net.za", "gov.za", "ac.za",
-  "com.ru", "net.ru", "org.ru", "edu.ru", "gov.ru",
-  "com.ua", "net.ua", "org.ua", "edu.ua", "gov.ua",
-  "com.pl", "net.pl", "org.pl", "edu.pl", "gov.pl",
-]);
-
-/**
- * 可注册域（eTLD+1）与是否自身即 apex（Go RootDomain 的近似实现）。
- * IP 字面量 / publicsuffix 无法归类的主机（localhost、内部域、非 ICANN TLD）
- * 原样返回且 isApex=true——与 Go 的 best-effort 边界一致。
- */
 export { rootDomain } from "./assets.js";
 
 /** 规范化 IP 字面量（Go net.ParseIP + ip.String()）；非法返回 null。IPv6 输出压缩形。 */
@@ -778,7 +749,7 @@ OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g'))=$1)`;
     if (taskID <= 0) return true;
     try {
       const res = await this.exec<{ coverage_enabled: boolean }>(
-        `SELECT COALESCE(coverage_enabled,true) FROM tasks WHERE id=$1`,
+        `SELECT COALESCE(coverage_enabled,true) AS coverage_enabled FROM tasks WHERE id=$1`,
         [taskID],
       );
       return res.rows[0]?.coverage_enabled !== false;
@@ -963,6 +934,39 @@ OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g'))=$1)`;
     }
   }
 
+  /**
+   * Network egress guard with port awareness. Legacy host scopes still allow
+   * any port when the task has no selected service asset for that host; once a
+   * service/endpoint asset is explicitly linked, only its approved ports pass.
+   */
+  private async validateHostPort(taskID: number, rawHost: string, port: number, allowPending: boolean): Promise<void> {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TaskAssetInvalidError("invalid target port");
+    const host = normalizeAgentHost(stripHostPort(rawHost), true);
+    if(allowPending)await this.validateWorkerHosts(taskID, [host]);else await this.validateTaskHostsApproved(taskID,[host]);
+    const linked = await this.exec<{id:string;type:string;domain:string;url:string;ip:string;port:number|null}>(
+      `SELECT DISTINCT a.id,a.type,COALESCE(a.domain,'') AS domain,COALESCE(a.url,'') AS url,
+              COALESCE(a.ip,'') AS ip,a.port
+       FROM task_asset_links l JOIN assets a ON a.id=l.asset_id
+       WHERE (l.task_id=$1 OR l.task_id IN (SELECT source_task_id FROM task_relations WHERE task_id=$1))
+         AND a.type IN ('service','endpoint')`, [taskID]);
+    const matching = linked.rows.filter(asset => {
+      const hosts = new Set<string>();
+      if (asset.domain) hosts.add(normalizeTaskAssetHost(asset.domain));
+      if (asset.ip) hosts.add(normalizeTaskAssetHost(asset.ip));
+      if (asset.url) { try { hosts.add(normalizeTaskAssetHost(new URL(asset.url).hostname)); } catch { /* malformed legacy URL */ } }
+      return hosts.has(host);
+    });
+    if (!matching.length) return;
+    const states = await this.taskAssetApprovalStates(taskID, matching.map(asset => Number(asset.id)));
+    const allowedStates=allowPending?[APPROVAL_APPROVED,APPROVAL_PENDING]:[APPROVAL_APPROVED];
+    const permitted = matching.some(asset => Number(asset.port) === port &&
+      allowedStates.includes(states.get(Number(asset.id)) ?? ""));
+    if (!permitted) throw new TaskAssetNotApprovedError(`task target port is not approved: ${host}:${port}`);
+  }
+
+  async validateWorkerHostPort(taskID:number,host:string,port:number):Promise<void>{return this.validateHostPort(taskID,host,port,true);}
+  async validateTaskHostPort(taskID:number,host:string,port:number):Promise<void>{return this.validateHostPort(taskID,host,port,false);}
+
   /** 意图资产校验：受信 main-agent 派发放行 pending（AllowsPendingAssets 分流）。 */
   async validateIntentAssets(taskID: number, n: Node | null, ids: number[]): Promise<void> {
     if (n && nodeAllowsPendingAssets(n)) return this.validateWorkerAssets(taskID, ids);
@@ -973,6 +977,11 @@ OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g'))=$1)`;
   async validateIntentHosts(taskID: number, n: Node | null, hosts: string[]): Promise<void> {
     if (n && nodeAllowsPendingAssets(n)) return this.validateWorkerHosts(taskID, hosts);
     return this.validateTaskHostsApproved(taskID, hosts);
+  }
+
+  async validateIntentHostPort(taskID:number,n:Node|null,host:string,port:number):Promise<void>{
+    if(n&&nodeAllowsPendingAssets(n))return this.validateWorkerHostPort(taskID,host,port);
+    return this.validateTaskHostPort(taskID,host,port);
   }
 
   /**

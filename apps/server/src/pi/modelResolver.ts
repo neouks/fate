@@ -8,22 +8,38 @@ import type { ModelSource } from '../agent/roles.js';
 import { buildModelSource } from './providerFromProfile.js';
 
 /** The management DTO and all role sessions use this same precedence and ordered chain. */
-export async function resolveModelProfiles(db:Database,taskID:number,role:string) {
+export async function resolveModelProfiles(db:Database,taskID:number,role:string,context?:{conversationID?:number;profileID?:number}) {
   const task=await db.tasks().getTask(taskID);
-  if(!task)throw new Error(`任务 #${taskID} 不存在`);
+  if(taskID&&!task)throw new Error(`任务 #${taskID} 不存在`);
   const chain=await db.query(`SELECT profile_id,status,position,last_error FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`,[taskID]);
   const agent=await db.query(`SELECT llm_profile_id AS id,enabled FROM agents WHERE key=$1`,[role]);
   let ids=chain.rows.filter(r=>r.status==='ready').map(r=>Number(r.profile_id));
-  const active=Number(task.active_llm_profile_id ?? task.llm_profile_id ?? 0);
+  const active=Number(context?.profileID??task?.active_llm_profile_id ?? task?.llm_profile_id ?? 0);
   if(ids.includes(active))ids=[active,...ids.filter(id=>id!==active)];
   let source='task_chain';
-  if(!chain.rows.length){
-    const id=active || Number(agent.rows[0]?.id ?? 0);
-    source=active?'task_chain':id?'agent_binding':'global_profile';
-    if(id) ids=[id]; else { const global=await db.platform().activeProfile();if(global)ids=[global.id]; }
+  if(context?.profileID){ids=[context.profileID];source='conversation';}
+  if(!chain.rows.length&&!context?.profileID){
+    const bound=Number(task?.active_llm_profile_id??task?.llm_profile_id??agent.rows[0]?.id??0);
+    const primary=bound||Number((await db.platform().activeProfile())?.id??0);
+    source=task?.active_llm_profile_id||task?.llm_profile_id?'task_chain':Number(agent.rows[0]?.id)?'agent_binding':'global_profile';
+    if(primary)ids=[primary];
+    const poolEnabled=await db.platform().getBool('llm_pool_enabled',false);
+    const bindFallback=await db.platform().getBool('llm_pool_bind_fallback',false);
+    const explicitlyBound=!!bound;
+    if(poolEnabled&&(!explicitlyBound||bindFallback)&&primary){
+      const all=await db.platform().listProfiles();
+      const candidates=all.filter(p=>p.id===primary||!p.poolExclude).sort((a,b)=>Number(b.id===primary)-Number(a.id)||Number(b.isDefault)-Number(a.isDefault)||b.priority-a.priority||a.id-b.id);
+      ids=candidates.map(p=>p.id);
+    }
   }
   const profiles:LLMProfile[]=[];
   for(const id of ids){ const p=await db.platform().profileByID(id);if(p)profiles.push(p); }
+  if(profiles.length>1){
+    const health=await db.query(`SELECT profile_id FROM llm_profile_health WHERE profile_id=ANY($1::bigint[]) AND open_until>now()`,[profiles.map(p=>p.id)]);
+    const cooling=new Set(health.rows.map(r=>Number(r.profile_id)));
+    const available=profiles.filter(p=>!cooling.has(p.id));
+    if(available.length)profiles.splice(0,profiles.length,...available);
+  }
   const p=profiles[0];
   return {profiles,chain:chain.rows,source,resolution:{profile_id:p?.id,name:p?.name??'',model:p?.model??'',format:p?.format??'',source,
     available:!!p && agent.rows[0]?.enabled!==false,
@@ -51,46 +67,90 @@ async function reserveRequest(db:Database,p:LLMProfile,signal?:AbortSignal){
 
 export function makeModelResolver(db:Database,build=buildModelSource):ModelResolver {
   const cache=new Map<string,Promise<ModelSource>>();
-  return async(taskID,role)=>{
-    const resolved=await resolveModelProfiles(db,taskID,role);
+  return async(taskID,role,context)=>{
+    const resolved=await resolveModelProfiles(db,taskID,role,context);
     if(!resolved.resolution.available)throw new Error(resolved.resolution.reason);
     const profiles=resolved.profiles, sources:ModelSource[]=[];
     for(const profile of profiles){
-      const key=createHash('sha256').update(JSON.stringify(profile)).digest('hex');
+      const headerSession=context?.conversationID?`conversation:${context.conversationID}`:`task:${taskID||'platform'}:${role}`;
+      const scopedProfile={...profile,sessionHeaderValue:profile.sessionHeaderKey?headerSession:undefined};
+      const key=createHash('sha256').update(JSON.stringify(scopedProfile)).digest('hex');
       let source=cache.get(key);
-      if(!source){if(cache.size>=32)cache.clear();source=build(profile);cache.set(key,source);source.catch(()=>cache.delete(key));}
+      if(!source){if(cache.size>=32)cache.clear();source=build(scopedProfile);cache.set(key,source);source.catch(()=>cache.delete(key));}
       sources.push(await source);
     }
     const runtime=await ModelRuntime.create({refreshOnCreate:false});
     for(const source of sources){const provider=source.modelRuntime.getProvider(source.model.provider);if(!provider)throw new Error('模型 provider 未注册');await runtime.registerNativeProvider(provider);}
     await runtime.refresh({allowNetwork:false});
-    let index=0,retries=0,lastError='',attemptID:number|undefined;
+    const retryRaw=await db.platform().getSetting('llm_retry_policy');
+    let retryPolicy:Record<string,{attempts?:number;interval_ms?:number}>={};
+    try{retryPolicy=retryRaw?JSON.parse(retryRaw) as typeof retryPolicy:{}}catch{/* invalid saved setting uses sdk defaults */}
+    let index=0,retries=0,lastError='',lastResponseIndex=0,purpose:'conversation'|'compaction'='conversation';
+    let runtimeID:string|undefined;
+    const pending:{conversation:Array<{id:number;index:number}>;compaction:Array<{id:number;index:number}>}={conversation:[],compaction:[]};
     runtime.registerVirtualModel({provider:'series-router',id:`task-${taskID}-${role}`,name:`任务 ${taskID} / ${role}`,input:sources.every(s=>s.model.input.includes('image'))?['text','image']:['text'],
       contextWindow:Math.min(...sources.map(s=>s.model.contextWindow)),maxTokens:Math.min(...sources.map(s=>s.model.maxTokens)),
       route:async request=>{
+        request.signal?.throwIfAborted();
         await reserveRequest(db,profiles[index]!,request.signal);
+        request.signal?.throwIfAborted();
         const p=profiles[index]!,source=sources[index]!;
-        const row=await db.query(`INSERT INTO llm_request_attempts(task_id,role,profile_id,model,status) VALUES($1,$2,$3,$4,'running') RETURNING id`,[taskID,role,p.id,p.model]);
-        attemptID=Number(row.rows[0]!.id);
+        const row=await db.transaction(async tx=>{
+          if(runtimeID && !(await tx.query('SELECT id FROM runtime_role_configs WHERE id=$1 AND finished_at IS NULL AND expires_at>clock_timestamp() FOR SHARE',[runtimeID])).rowCount)throw new Error('模型执行器已过期，禁止发起新请求');
+          return tx.query(`INSERT INTO llm_request_attempts(task_id,role,profile_id,model,status,conversation_id,purpose,runtime_id) VALUES($1,$2,$3,$4,'running',$5,$6,$7) RETURNING id`,[taskID||null,role,p.id,p.model,context?.conversationID??null,purpose,runtimeID??null]);
+        });
+        pending[purpose].push({id:Number(row.rows[0]!.id),index});
         return {model:source.model,thinkingLevel:source.thinkingLevel??'off'};
       }});
-    return {modelRuntime:runtime,model:runtime.getModel('series-router',`task-${taskID}-${role}`)!,modelPolicy:{
+    return {modelRuntime:runtime,model:runtime.getModel('series-router',`task-${taskID}-${role}`)!,streaming:profiles[0]?.streaming!==false,modelPolicy:{
+      setRuntimeID(id){runtimeID=id;},
+      setPurpose(value){purpose=value;},
+      async finish(){const ids=[...pending.conversation,...pending.compaction].map(a=>a.id);if(ids.length)await db.query("UPDATE llm_request_attempts SET status='aborted',error='会话结束前请求被取消',finished_at=now() WHERE id=ANY($1::bigint[]) AND status='running'",[ids]);pending.conversation=[];pending.compaction=[];},
       async onResponse(message){
         const m=message as {stopReason?:string;errorMessage?:string;usage?:unknown};
+        const attempt=pending[purpose].shift();
+        // pi may emit an aborted synthetic message after a host-completed tool turn.
+        // It has no provider request and must not create failures or alter health.
+        if(!attempt)return;
+        lastResponseIndex=attempt.index;
         lastError=m.stopReason==='error'?cleanError(m.errorMessage??'模型调用失败',profiles):'';
-        if(attemptID)await db.query(`UPDATE llm_request_attempts SET status=$2,error=$3,usage=$4::jsonb,finished_at=now() WHERE id=$1`,[attemptID,m.stopReason==='aborted'?'aborted':lastError?'failed':'completed',lastError,JSON.stringify(m.usage??{})]);
-        attemptID=undefined;
-        if(!lastError)retries=0;
+        if(attempt)await db.query(`UPDATE llm_request_attempts SET
+          status=CASE WHEN status='running' THEN $2 ELSE status END,
+          error=CASE WHEN status='running' THEN $3 ELSE error END,
+          usage=CASE WHEN status='running' OR COALESCE(($4::jsonb->>'totalTokens')::numeric,0)>0 THEN $4::jsonb ELSE usage END,
+          finished_at=COALESCE(finished_at,now()) WHERE id=$1`,[attempt.id,m.stopReason==='aborted'?'aborted':lastError?'failed':'completed',lastError,JSON.stringify(m.usage??{})]);
+        if(!lastError){
+          retries=0;
+          await db.query(`INSERT INTO llm_profile_health(profile_id,fails,trips,open_until,last_error,last_at) VALUES($1,0,0,NULL,'',now())
+            ON CONFLICT(profile_id) DO UPDATE SET fails=0,open_until=NULL,last_error='',last_at=now()`,[profiles[lastResponseIndex]!.id]);
+        }
       },
-      async retry(){
+      async retry(signal){
+        signal?.throwIfAborted();
         if(!lastError)return false;
-        const p=profiles[index]!;
+        const p=profiles[lastResponseIndex]!;
         const hard=/401|403|invalid.?api.?key|unauthori|insufficient|quota|credit|balance/i.test(lastError);
-        const retryLimit=Math.max(0,Math.min(3,p.retry?.connect?.attempts??0));
-        if(!hard && retries++<retryLimit){await delay(Math.min(p.retry?.connect?.interval_ms||250,10_000));return true;}
+        const globalRule=retryPolicy.connect??{};
+        const configured=p.retry?.connect?.attempts??0;
+        const retryLimit=configured===-1?0:Math.max(0,Math.min(20,configured||Number(globalRule.attempts)||3));
+        if(!hard && retries<retryLimit){
+          retries++;const fixed=p.retry?.connect?.interval_ms||Number(globalRule.interval_ms)||0;
+          await delay(Math.min(fixed||Math.min(250*2**(retries-1),4000),10_000),undefined,{signal});return true;
+        }
+        const health=await db.query<{fails:number;trips:number}>(`SELECT fails,trips FROM llm_profile_health WHERE profile_id=$1`,[p.id]);
+        const fails=Number(health.rows[0]?.fails??0)+1,trips=Number(health.rows[0]?.trips??0);
+        const threshold=Number(retryPolicy.breaker?.attempts)||3;
+        const trip=hard||(threshold>=0&&fails>=threshold);
+        const nextTrips=trip?trips+1:trips;
+        const coolMinutes=[1,5,30][Math.min(nextTrips-1,2)]??30;
+        const interval=Number(retryPolicy.breaker?.interval_ms)||0;
+        const openUntil=trip?new Date(Date.now()+(interval||coolMinutes*60_000)):null;
+        await db.query(`INSERT INTO llm_profile_health(profile_id,fails,trips,open_until,last_error,last_at) VALUES($1,$2,$3,$4,$5,now())
+          ON CONFLICT(profile_id) DO UPDATE SET fails=$2,trips=$3,open_until=$4,last_error=$5,last_at=now()`,[p.id,fails,nextTrips,openUntil,lastError]);
         await db.query(`UPDATE task_llm_profiles SET last_error=$3,status=CASE WHEN $4 THEN 'quota_exhausted' ELSE status END,exhausted_at=CASE WHEN $4 THEN now() ELSE exhausted_at END WHERE task_id=$1 AND profile_id=$2`,[taskID,p.id,lastError,hard]);
-        if(index+1>=sources.length)return false;
-        index++;retries=0;
+        const next=Math.max(index,lastResponseIndex+1);
+        if(next>=sources.length)return false;
+        index=next;retries=0;
         if(resolved.source==='task_chain')await db.query('UPDATE tasks SET active_llm_profile_id=$2 WHERE id=$1',[taskID,profiles[index]!.id]);
         return true;
       },

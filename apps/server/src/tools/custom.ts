@@ -13,13 +13,19 @@ export function renderToolTemplate(template: string, args: Record<string, unknow
   });
 }
 
+/** Share eligibility with planning; loading this catalog does not execute tools. */
+export async function boundCustomTools(db: import('../db/index.js').Database, role: string) {
+  if (!["worker", "planner", "mainagent", "pentest", "retester"].includes(role)) return [];
+  const catalog = await db.platform().listTools();
+  const reserved = new Set(catalog.filter(t => t.system || t.kind === 'builtin').map(t => t.key));
+  return catalog.filter(t => t.enabled && t.agents.includes(role) && !t.system && t.kind !== 'builtin' && t.kind !== 'shell' && !reserved.has(t.key));
+}
+
 /** Custom tools enter the same pi tool pipeline and approval gate as native tools. */
 export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?: ToolDefinition, guard?: ToolGuard): Promise<ToolDefinition[]> {
-  if (ctx.role !== "worker") return [];
-  const catalog = await ctx.db.platform().listTools();
-  const reserved = new Set(catalog.filter((t) => t.system || t.kind === "builtin").map((t) => t.key));
+  const catalog = await boundCustomTools(ctx.db, ctx.role);
   const shell = bash ?? createBashToolDefinition(cwd) as unknown as ToolDefinition;
-  return catalog.filter((t) => t.enabled && t.agents.includes(ctx.role) && !t.system && t.kind !== "builtin" && !reserved.has(t.key))
+  return catalog
     .map((tool) => defineTool({
       name: tool.key, label: tool.key, description: tool.description,
       parameters: (Object.keys(tool.schema).length ? tool.schema : { type: "object", properties: { args: { type: "string" } } }) as never,
@@ -38,14 +44,14 @@ export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?:
           let body = spec["body"] === undefined || spec["body"] === "" ? undefined : renderToolTemplate(typeof spec["body"] === "string" ? spec["body"] : JSON.stringify(spec["body"]), args);
           const combined = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
           const result=await evidenceRequest(ctx,{url,method,headers,body},combined,input=>check(tool.key,{...args,...input}));
-          return {content:[{type:'text' as const,text:JSON.stringify(result)}],isError:result.status>=400,details:undefined};
+          return {content:[{type:'text' as const,text:clampOutput(JSON.stringify(result))}],isError:result.status>=400,details:undefined};
         }
         let command: string;
         if (tool.kind === "script") {
           const code = String(spec["code"] ?? "");
           if (!code.trim()) throw new Error("脚本 code 为空");
           command = `printf %s ${shellQuote(JSON.stringify(args))} | python3 -c ${shellQuote(code)}`;
-        } else if (tool.kind === "shell" && tool.executable) {
+        } else if (tool.kind === "command" && spec["legacy_shell_args"] === true && tool.executable) {
           // Executable is configured by the operator; model supplies an argument string.
           command = `${shellQuote(tool.executable)} ${String(args["args"] ?? "")}`;
         } else {
@@ -57,4 +63,10 @@ export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?:
         return shell.execute(callID, { command, timeout: timeout / 1000 }, signal, update, extensionContext);
       },
     }) as unknown as ToolDefinition);
+}
+
+/** Shell entries describe installed command environments; they are not separate tools. */
+export async function shellEnvironmentNotes(ctx:ToolRunContext){
+ const entries=(await ctx.db.platform().listTools()).filter(t=>t.kind==='shell'&&t.enabled&&t.agents.includes(ctx.role));
+ return entries.map(t=>`${t.key}: ${t.description}\n${t.usageHelp??''} ${t.whenToUse??''}`).join('\n').slice(0,8000);
 }

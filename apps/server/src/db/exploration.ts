@@ -3,6 +3,7 @@
 // 列表/统计类只读方法按需在后续模块补充。
 
 import { createHash } from "node:crypto";
+import {normalizeContract,workFingerprint} from '../agent/intent-contract.js';
 import type { PoolClient } from "pg";
 import type { Database } from "./index.js";
 
@@ -72,6 +73,7 @@ export function jsonbClean(b: string): string {
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
 export interface Node {
+  content_version?: number;
   id: number;
   kind: string;
   payload: Record<string, unknown>;
@@ -134,7 +136,7 @@ const INTENT_DISPATCH_PREDICATE =
   `(SELECT 1 FROM tasks dispatch_task WHERE dispatch_task.exploration_id=exploration_nodes.exploration_id ` +
   `AND dispatch_task.deleted_at IS NULL AND dispatch_task.execution_mode='manual'))`;
 
-const NODE_COLS = `id, kind, payload, priority, state, COALESCE(origin,''), COALESCE(owner,''), COALESCE(blocked_reason,''), created_at`;
+const NODE_COLS = `id, kind, payload, priority, state, COALESCE(origin,'') AS origin, COALESCE(owner,'') AS owner, COALESCE(blocked_reason,'') AS blocked_reason, created_at, content_version`;
 
 // ─── 队列事务（worker_queue.go beginQueue：探索级 advisory xact lock）────────
 
@@ -206,6 +208,7 @@ export class ExplorationStore {
   private mapNode(row: Record<string, unknown>): Node {
     return {
       id: Number(row["id"]),
+      content_version: Number(row['content_version']??0),
       kind: String(row["kind"]),
       payload: (row["payload"] as Record<string, unknown>) ?? {},
       priority: Number(row["priority"] ?? 0),
@@ -304,7 +307,9 @@ export class ExplorationStore {
   ): Promise<{ id: number; created: boolean }> {
     if (origin === "") origin = "planner";
     const summary = typeof payload["summary"] === "string" ? payload["summary"] : "";
-    const fingerprint = intentFingerprint(summary, anchors);
+    const contract = normalizeContract(payload.contract,summary);
+    const fingerprint = workFingerprint(contract,anchors) ?? intentFingerprint(summary, anchors);
+    payload = {...payload,contract};
     if (fingerprint === "" && !requireManaged) {
       const id = await this.addNode(KindIntent, payload, priority, "open", origin, anchors);
       return { id, created: true };
@@ -319,27 +324,49 @@ export class ExplorationStore {
         );
         if (modeRes.rows[0]?.mode === EXECUTION_MANUAL) throw new PlannerManualModeError();
       }
-      const rows = await tx.query<{ id: string; payload: Record<string, unknown>; anchors: string }>(
-        `SELECT n.id, n.payload,
+      for(const ref of contract.basis){
+        const basis=await tx.query(`SELECT 1 FROM exploration_nodes n WHERE n.id=$2 AND n.content_version=$3 AND n.kind IN ('fact','finding') AND n.state IN ('confirmed','origin')
+          AND (n.exploration_id=$1 OR n.exploration_id IN (SELECT src.exploration_id FROM tasks current JOIN task_relations r ON r.task_id=current.id JOIN tasks src ON src.id=r.source_task_id WHERE current.exploration_id=$1 AND src.deleted_at IS NULL))
+          AND exploration_node_readable(n.exploration_id,n.id,$4)`,[this.expID,ref.node_id,ref.version,(payload.pending_asset_execution as {issuer?:string}|undefined)?.issuer==='mainagent']);
+        if(!basis.rowCount)throw new Error(`依据 #${ref.node_id} 已变化或不再授权，请刷新上下文后重新规划`);
+      }
+      const rows = await tx.query<{ id: string; state:string; payload: Record<string, unknown>; anchors: string }>(
+        `SELECT n.id, n.state, n.payload,
                 COALESCE((SELECT json_agg(a.asset_id ORDER BY a.asset_id) FROM exploration_anchors a WHERE a.node_id=n.id), '[]'::json)::text AS anchors
          FROM exploration_nodes n
-         WHERE n.exploration_id=$1 AND n.kind='intent' AND n.state IN ('open','running','paused')
-         ORDER BY n.id`,
+         WHERE n.exploration_id=$1 AND n.kind='intent'
+         ORDER BY CASE WHEN n.state IN ('open','running','paused') THEN 0 ELSE 1 END,n.id DESC`,
         [this.expID],
       );
+      const rowFingerprint=(row:typeof rows.rows[number])=>{
+        const summary=typeof row.payload.summary==='string'?row.payload.summary:'';
+        const assets=JSON.parse(row.anchors) as number[];
+        return row.payload.contract?workFingerprint(normalizeContract(row.payload.contract,summary),assets)??intentFingerprint(summary,assets):intentFingerprint(summary,assets);
+      };
+      const sameWork=(row:typeof rows.rows[number])=>rowFingerprint(row)===fingerprint ||
+        ((!contract.work || !(row.payload.contract as {work?:unknown}|undefined)?.work) &&
+          intentFingerprint(String(row.payload.summary??''),JSON.parse(row.anchors) as number[])===intentFingerprint(summary,anchors));
+      if(payload.retry_of){
+        const previous=rows.rows.find(row=>Number(row.id)===Number(payload.retry_of));
+        if(!previous||!sameWork(previous))throw new Error('retry_of 必须指向本任务的同一项工作');
+      }
       for (const row of rows.rows) {
         const existing = row.payload ?? {};
-        const existingAnchors = (JSON.parse(row.anchors) as number[]) ?? [];
-        let existingFingerprint = typeof existing["fingerprint"] === "string" ? existing["fingerprint"] : "";
-        if (existingFingerprint === "") {
-          const existingSummary = typeof existing["summary"] === "string" ? existing["summary"] : "";
-          existingFingerprint = intentFingerprint(existingSummary, existingAnchors);
-        }
-        if (existingFingerprint === fingerprint) {
+        if (sameWork(row)) {
+          if(payload.retry_of && Number(payload.retry_of)===Number(row.id) && !['open','running','paused'].includes(row.state)){
+            const reason=payload.retry_reason;
+            if(typeof reason!=='string'||!reason.trim())throw new Error('重试必须说明原因');
+            if(payload.retry_kind==='transient_failure' && ['blocked','exhausted','stopped'].includes(row.state))break;
+            const oldBasis=(existing.contract as {basis?:{node_id:number;version:number}[]}|undefined)?.basis??[];
+            if(payload.retry_kind==='new_evidence' && contract.basis.some(ref=>!oldBasis.some(old=>old.node_id===ref.node_id&&old.version===ref.version)))break;
+            throw new Error('重试需可恢复故障或新的有效事实依据');
+          }
           await tx.commit();
           return { id: Number(row.id), created: false };
         }
       }
+
+      if(payload.retry_of && !rows.rows.some(row=>Number(row.id)===Number(payload.retry_of)))throw new Error('retry_of 必须属于本任务');
 
       const stored: Record<string, unknown> = { ...payload, fingerprint };
       const cleanAnchors = [...new Set(anchors.filter((a) => a > 0))].sort((a, b) => a - b);
@@ -448,7 +475,12 @@ export class ExplorationStore {
 
   async resetRunningIntents(): Promise<number> {
     return this.queueExec(
-      `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
+      `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL,
+       payload=payload||jsonb_build_object('resume_requested',true,'execution_stop',jsonb_build_object(
+         'version',1,'reason','executor_recovered','summary','原执行器不可用，由新租约恢复',
+         'recorded_at',now(),'accepted_result',false,
+         'recovery','先核对已保存事实、工具结果和检查点，仅继续未完成的验收；不得重复已成功的操作。已提交结果由宿主重新验收。'
+           ||CASE WHEN payload->'progress'->>'next_step' IS NOT NULL THEN ' 上次检查点记录（可能早于事实写回）：'||(payload->'progress'->>'next_step') ELSE '' END))
        WHERE exploration_id=$1 AND kind='intent' AND state='running' AND payload->>'cancelled_by_user' IS DISTINCT FROM 'true'`,
       this.expID,
     );
@@ -456,7 +488,8 @@ export class ExplorationStore {
 
   async reopenIntent(id: number): Promise<boolean> {
     const n = await this.queueExec(
-      `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
+      `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL,
+         payload=CASE WHEN payload ? 'execution_result' THEN (payload-'execution_result'-'execution_result_basis')||jsonb_build_object('previous_result',payload->'execution_result') ELSE payload END
        WHERE id=$1 AND exploration_id=$2 AND kind='intent'
          AND state IN ('paused','blocked','exhausted','stopped') AND payload->>'cancelled_by_user' IS DISTINCT FROM 'true'`,
       id, this.expID,
@@ -466,7 +499,8 @@ export class ExplorationStore {
 
   async reopenBlockedIntents(): Promise<number> {
     return this.queueExec(
-      `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
+      `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL,
+         payload=CASE WHEN payload ? 'execution_result' THEN (payload-'execution_result'-'execution_result_basis')||jsonb_build_object('previous_result',payload->'execution_result') ELSE payload END
        WHERE exploration_id=$1 AND kind='intent' AND state='blocked' AND payload->>'cancelled_by_user' IS DISTINCT FROM 'true'`,
       this.expID,
     );
@@ -672,6 +706,19 @@ export class ExplorationStore {
       for (const n of q.items) {
         if (q.executionMode === EXECUTION_MANUAL && !nodeDispatchRequested(n)) continue;
         if (eligible && !eligible(n)) continue;
+        if(n.payload.needs_replanning===true)continue;
+        const contract=normalizeContract(n.payload.contract,String(n.payload.summary??''));
+        let stale=false;
+        for(const ref of contract.basis){
+          if(!(await tx.query("SELECT 1 FROM exploration_nodes n WHERE n.id=$1 AND n.content_version=$2 AND n.kind IN ('fact','finding') AND n.state IN ('confirmed','origin') AND exploration_node_readable(n.exploration_id,n.id,$4) AND (n.exploration_id=$3 OR n.exploration_id IN (SELECT src.exploration_id FROM tasks current JOIN task_relations r ON r.task_id=current.id JOIN tasks src ON src.id=r.source_task_id WHERE current.exploration_id=$3 AND src.deleted_at IS NULL))",[ref.node_id,ref.version,this.expID,nodeAllowsPendingAssets(n)])).rowCount){stale=true;break;}
+        }
+        if(stale){await tx.query("UPDATE exploration_nodes SET payload=payload||'{\"needs_replanning\":true}'::jsonb WHERE id=$1",[n.id]);continue;}
+        if(q.executionMode!==EXECUTION_MANUAL&&n.origin==='planner'&&n.payload.resume_requested!==true&&(n.payload.pending_asset_execution as {issuer?:string}|undefined)?.issuer!=='mainagent'){
+          // Serialize the final goal proof with the actual claim, not only the
+          // earlier reservation. No new automatic work after goal completion.
+          const met=await tx.query("SELECT 1 WHERE EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal') AND NOT EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND state<>'met')",[this.expID]);
+          if(met.rowCount)continue;
+        }
         const res = await tx.query(
           `UPDATE exploration_nodes SET state='running',owner=$1,payload=payload || jsonb_build_object('dispatch_requested',true)
            WHERE id=$2 AND exploration_id=$3 AND state='open' AND payload->>'cancelled_by_user' IS DISTINCT FROM 'true'
@@ -697,6 +744,8 @@ export class ExplorationStore {
   // ─── Activity（appendActivity 平移）───────────────────────────────────────
 
   async appendActivity(a: Activity): Promise<number> {
+    if(!this.db.transactionClient)return this.db.transaction(db=>db.exploration(this.expID).appendActivity(a));
+    await this.db.query("SELECT pg_advisory_xact_lock($1)",[-this.expID]);
     const tokens = a.kind === "result";
     const res = await this.db.query<{ id: string }>(
       `INSERT INTO activity(exploration_id, node_id, worker, kind, tool, tool_use_id, is_error, summary, detail, metadata,

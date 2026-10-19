@@ -1,3 +1,5 @@
+import {migrateArtex} from './artex-migration.js';
+import {migrateBuiltinPrompts} from '../agent/prompts.js';
 // 平台配置 store：settings KV / agent 提示词 / 工具目录 / MCP / LLM profile / 内置种子。
 // 平移自 Go 版 db/settings.go + db/config.go(settings·prompts·mcp·profiles 部分) + db/tools.go +
 // db/db.go 的 seedBuiltins（六角色 agent、变量目录、内置拦截规则 v1/v2/v3、内置 MCP）。
@@ -975,7 +977,7 @@ export async function seedBuiltinTools(db: Database): Promise<void> {
   const ALL = ["planner", "worker", "mainagent", "goals"];
   const seeds: Array<[string, string, string[]]> = [
     ["bash", "执行 shell 命令（经出口网关做任务级授权）", ALL],
-    ["read", "读取文件", ALL],
+    ["read", "读取文件", [...ALL,"auto","reporter","pentest","retester"]],
     ["write", "写入文件", ["worker"]],
     ["edit", "编辑文件（字符串替换）", ["worker"]],
     ["graph_overview", "读取探索态势总览（目标/frontier/在跑/近期事实/覆盖度）", SHARED],
@@ -1008,8 +1010,56 @@ export async function seedBuiltinTools(db: Database): Promise<void> {
 }
 
 export async function seedBuiltins(db: Database): Promise<void> {
+  // New roles are insert-only: operator prompts, budgets and bindings survive upgrades.
+  await db.query(`INSERT INTO agents(key,name,role,builtin,enabled,trigger_run_mode,trigger_merge_mode,trigger_max_parallel)
+    VALUES ('reporter','Reporter','assistant',false,true,'parallel','none',5),('retester','Retester','assistant',false,true,'parallel','none',5) ON CONFLICT(key) DO NOTHING`);
   await seedBuiltinTools(db);
+  await db.transaction(async tx=>{
+    // Retire the active catalog entries, preserving customized historical metadata.
+    const retired=['checkpoint_intent','complete_intent'];
+    await tx.query(`INSERT INTO settings(key,value)
+      SELECT 'pi_worker_removed_tools_previous',jsonb_agg(to_jsonb(t) ORDER BY key)::text
+      FROM tools t WHERE system AND kind='builtin' AND key=ANY($1::text[]) HAVING count(*)>0
+      ON CONFLICT(key) DO NOTHING`,[retired]);
+    await tx.query("DELETE FROM tools WHERE system AND kind='builtin' AND key=ANY($1::text[])",[retired]);
+  });
   const store = new PlatformStore(db);
+  const extensionTools:Array<[string,string,string[]]>=[
+   ...['shell_open','shell_send','shell_read','shell_close','shell_list'].map(key=>[key,'当前 PI 执行会话的交互终端',['worker','planner','mainagent']] as [string,string,string[]]),
+   ['context_search','检索授权探索节点、执行结果与冷图原文',['worker','planner','mainagent','pentest','auto','goals','reporter','retester']],
+   ['context_get','按稳定引用分页读取节点详情与血缘',['worker','planner','mainagent','pentest','auto','goals','reporter','retester']],
+   ['read_tool_output','续读完整工具 JSON 原文',['goals','planner','mainagent','worker','auto','pentest','reporter','retester']],
+   ['http_request','执行授权 HTTP 请求并保存证据',['worker','pentest','retester']],
+   ['traffic_body','分页读取流量证据',['worker','pentest','reporter','retester']],
+   ['read_attachment','分页读取当前会话附件',['worker','mainagent','auto','pentest','reporter','retester']],
+   ['record_finding_retest_result','保存明确的复测结论',['retester']],
+   ['get_finding_retest_context','读取原漏洞与复测约束',['retester']],
+   ['get_finding','读取漏洞和证据版本',['reporter','retester','auto','pentest']],
+   ['update_finding_report','以证据版本更新报告',['reporter','auto']],
+   ['list_tasks','列出平台任务',['auto']],['get_task','查询任务状态',['auto']],
+   ['record_conversation_fact','绑定任务的 Pentest 写回有来源的事实',['pentest']],['report_conversation_finding','绑定任务的 Pentest 原子提交有证据的漏洞',['pentest']],['resume_task','恢复任务并查询准入结果',['auto']],
+   ['spawn_task','创建任务',['auto']],['pause_task','暂停任务',['auto']],['add_task_hint','给任务追加提示',['auto']],
+  ];
+  for(const [key,description,agents] of extensionTools)await db.query(`INSERT INTO tools(key,system,description,schema,agents,enabled,kind) VALUES($1,true,$2,'{}',$3::jsonb,true,'builtin') ON CONFLICT(key) DO NOTHING`,[key,description,JSON.stringify(agents)]);
+  if(await store.getSetting('pi_extra_role_bindings_v1')!=='true'){
+    const legacyShared=['planner','worker','mainagent'],legacyAll=[...legacyShared,'goals'];
+    const bindings:Array<[string[],string[],string[]]>=[
+      [['bash'],legacyAll,['pentest']],
+      [['read'],legacyAll,['pentest','retester','auto','reporter']],
+      [['write','edit'],['worker'],['pentest']],
+      [['graph_overview','node_detail'],legacyShared,['pentest']],
+      [['list_assets'],legacyShared,['pentest','retester','auto']],
+      [['list_findings'],['worker','planner','mainagent'],['pentest','reporter','auto']],
+    ];
+    // Only recognize untouched legacy defaults; never broaden a custom binding.
+    for(const [keys,before,added] of bindings)await db.query('UPDATE tools SET agents=agents||$3::jsonb WHERE key=ANY($1::text[]) AND agents=$2::jsonb AND enabled',[keys,JSON.stringify(before),JSON.stringify(added)]);
+    await store.setSetting('pi_extra_role_bindings_v1','true');
+  }
+  if(await store.getSetting('pi_reporter_trigger_v1')!=='true'){
+    await db.query(`INSERT INTO agent_triggers(agent_key,on_finding,finding_message) SELECT 'reporter',true,'根据本次漏洞及其证据完善报告，先读取证据版本再提交。' WHERE NOT EXISTS(SELECT 1 FROM agent_triggers WHERE agent_key='reporter')`);
+    await store.setSetting('pi_reporter_trigger_v1','true');
+  }
+
 
   // 1. 内置 agent（ON CONFLICT 只刷 name/description，interactive_shell/run_seconds 不覆盖用户改动）
   for (const a of BUILTIN_AGENTS) {
@@ -1048,6 +1098,9 @@ export async function seedBuiltins(db: Database): Promise<void> {
     `UPDATE mcp_servers SET name='playwright'
      WHERE name='browser' AND NOT EXISTS (SELECT 1 FROM mcp_servers WHERE name='playwright')`,
   );
+
+  await migrateBuiltinPrompts(db);
+  await migrateArtex(db);
 
   // 5. 内置 MCP 只是配置预设：disabled 且不授予任何 agent。ON CONFLICT 保证重启不覆盖用户改动。
   await db.query(

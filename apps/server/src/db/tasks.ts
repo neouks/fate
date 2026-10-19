@@ -7,7 +7,7 @@
 // seedTaskCompanyAssets），随对应模块平移后再并入；SourceTaskIDs 为只读继承（task_relations）。
 
 import type { PoolClient } from "pg";
-import type { Database } from "./index.js";
+import { Database } from "./index.js";
 import { EXECUTION_MANAGED, EXECUTION_MANUAL, jsonbClean, QueueTx } from "./exploration.js";
 import { normalizeAgentHost, parseCanonicalIP, rootDomain } from "./task_scope.js";
 
@@ -79,6 +79,10 @@ export interface Task {
 
 /** 必须与任务/探索行同事务提交的创建期数据（AssetIDs/CompanyIDs 见文件头说明）。 */
 export interface TaskCreateOptions {
+  assetIDs?: number[];
+  companyIDs?: number[];
+  seedFirstIntent?: boolean;
+  executionMode?: "managed" | "manual";
   assetApprovalTemplate?: string;
   name?: string;
   categoryID?: number | null;
@@ -253,10 +257,50 @@ export class TaskStore {
       const taskID = Number(row.id);
       await insertTaskRelations(tx, taskID, sourceTaskIDs);
       await insertTaskLLMProfiles(tx, taskID, llmProfileIDs);
+      const scoped = new Database(this.db.pool, client);
+      const normalizeIDs=(values:number[]|undefined,maximum:number)=>{
+        const ids=[...new Set(values??[])];
+        if(ids.length>maximum||ids.some(id=>!Number.isSafeInteger(id)||id<=0))throw Object.assign(new Error('无效的任务资产/企业 ID'),{statusCode:400});
+        return ids;
+      };
+      const companies=normalizeIDs(opts.companyIDs,20), assets=normalizeIDs(opts.assetIDs,1000);
+      if(companies.length){
+        await tx.query('SELECT pg_advisory_xact_lock(7337741003)');
+        const found=await tx.query('SELECT id FROM companies WHERE id=ANY($1::bigint[]) FOR SHARE',[companies]);
+        if(found.rows.length!==companies.length)throw Object.assign(new Error('企业不存在'),{statusCode:404});
+        await tx.query(`INSERT INTO task_scope(task_id,kind,company_id,source,reason) SELECT $1,'company',unnest($2::bigint[]),'manual','任务创建时关联企业' ON CONFLICT DO NOTHING`,[taskID,companies]);
+        const seeds=await tx.query(`SELECT kind,domain,net::text,value FROM company_scope WHERE company_id=ANY($1::bigint[]) ORDER BY id`,[companies]);
+        for(const seed of seeds.rows){
+          if(seed.kind==='domain')await scoped.assets().upsertRootDomain({domain:String(seed.domain),taskID});
+          else if(seed.kind==='ip')await scoped.assets().upsertIP({ip:String(seed.net).split('/')[0]!,taskID});
+          else if(seed.kind==='keyword'&&/^https?:\/\//i.test(String(seed.value)))await scoped.assets().upsertHTTPService({url:String(seed.value),taskID});
+        }
+        await tx.query(`UPDATE assets SET task_ids=CASE WHEN $1=ANY(task_ids) THEN task_ids ELSE array_append(task_ids,$1) END WHERE company_id=ANY($2::bigint[])`,[taskID,companies]);
+        await tx.query(`UPDATE task_asset_links l SET source='company',source_summary='任务创建时关联企业',approval_state='approved',approved_by='user',approved_at=now()
+          FROM assets a WHERE l.task_id=$1 AND l.asset_id=a.id AND (a.company_id=ANY($2::bigint[]) OR l.source='system')`,[taskID,companies]);
+      }
+      if(assets.length){
+        const found=await tx.query('SELECT id FROM assets WHERE id=ANY($1::bigint[]) FOR SHARE',[assets]);
+        if(found.rows.length!==assets.length)throw Object.assign(new Error('资产不存在'),{statusCode:404});
+        await tx.query(`UPDATE assets SET task_ids=CASE WHEN $1=ANY(task_ids) THEN task_ids ELSE array_append(task_ids,$1) END WHERE id=ANY($2::bigint[])`,[taskID,assets]);
+        await tx.query(`UPDATE task_asset_links SET source='direct',source_summary='任务创建时直接选择',approval_state='approved',approved_by='user',approved_at=now() WHERE task_id=$1 AND asset_id=ANY($2::bigint[])`,[taskID,assets]);
+      }
+      const selected=await scoped.assets().getByIDs(assets);
+      for(const asset of selected)await scoped.taskScope().addAutoScope(taskID,asset.type,asset.domain??'',asset.url??'',asset.ip??'');
       await seedUserAssetGrants(tx, taskID);
+      await tx.query(`INSERT INTO exploration_anchors(node_id,asset_id)
+        SELECT n.id,l.asset_id FROM exploration_nodes n CROSS JOIN task_asset_links l
+        WHERE n.exploration_id=$1 AND n.state='origin' AND l.task_id=$2 ON CONFLICT DO NOTHING`,[expID,taskID]);
+      if(opts.executionMode==='manual')await tx.query("UPDATE tasks SET execution_mode='manual' WHERE id=$1",[taskID]);
+      if(opts.seedFirstIntent){
+        const origin=await scoped.exploration(expID).originFactID();
+        const anchors=(await tx.query('SELECT asset_id FROM task_asset_links WHERE task_id=$1',[taskID])).rows.map(r=>Number(r.asset_id));
+        const intent=await scoped.exploration(expID).addNode('intent',{summary:description,goal,dispatch_requested:true},0,'open','user',anchors);
+        await scoped.exploration(expID).link(origin,'spawns',intent);
+      }
       await tx.commit();
       return {
-        execution_mode: EXECUTION_MANAGED,
+        execution_mode: opts.executionMode ?? EXECUTION_MANAGED,
         asset_approval_template: template,
         id: taskID,
         name: opts.name ?? "",
@@ -498,18 +542,24 @@ export class TaskStore {
    * 原子出队 + 记录用户暂停。queue_mode 故意保留（从未运行的 bootstrap 任务恢复时仍做
    * 目标分解），但下次入队拿新的 queued_at 时间戳（FIFO 队尾）。行不匹配抛冲突错误。
    */
-  async applyTaskPause(id: number): Promise<{ queueMode: string }> {
-    const res = await this.db.query<{ mode: string }>(
-      `UPDATE tasks
-          SET paused=true, paused_at=COALESCE(paused_at,now()), queued=false, queued_at=NULL
-        WHERE id=$1 AND deleted_at IS NULL AND paused=false
-          AND status NOT IN ('done','failed','timeout')
-        RETURNING COALESCE(queue_mode,'') AS mode`,
-      [id],
-    );
-    const row = res.rows[0];
-    if (!row) throw new TaskLifecycleConflictError(`task ${id} is unavailable for pause`);
-    return { queueMode: row.mode ?? "" };
+  async applyTaskPause(id: number): Promise<{ queueMode: string; commandID: number }> {
+    return this.db.transaction(async tx => {
+      const res = await tx.query<{ mode: string }>(
+        `UPDATE tasks
+            SET paused=true, paused_at=COALESCE(paused_at,now()), queued=false, queued_at=NULL
+          WHERE id=$1 AND deleted_at IS NULL AND paused=false
+            AND status NOT IN ('done','failed','timeout')
+          RETURNING COALESCE(queue_mode,'') AS mode`,
+        [id],
+      );
+      const row = res.rows[0];
+      if (!row) throw new TaskLifecycleConflictError(`task ${id} is unavailable for pause`);
+      await tx.query(`INSERT INTO runtime_task_commands(task_id,command) VALUES($1,'pause')
+        ON CONFLICT(task_id,command) WHERE status='pending' DO NOTHING`, [id]);
+      const command = await tx.query<{ id: string }>(`SELECT id FROM runtime_task_commands
+        WHERE task_id=$1 AND command='pause' AND status='pending' ORDER BY id DESC LIMIT 1`, [id]);
+      return { queueMode: row.mode ?? "", commandID: Number(command.rows[0]!.id) };
+    });
   }
 
   // ─── execution_mode（db/execution_mode.go，与 planner 意图写入共用队列锁）──

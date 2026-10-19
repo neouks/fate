@@ -35,17 +35,34 @@ async function until(fn:()=>Promise<boolean>, ms=5000) {
 }
 describe("scheduler and graph regressions", () => {
   it("manual dispatch commits before wake; a single worker drains multiple intents without a 30s sleep", async () => {
+    // The persisted platform quota overrides EngineConfig. Other integration
+    // suites may leave workers=2; a single FIFO faux queue requires one worker.
+    const previousWorkers=await db.platform().getSetting('workers');
+    await db.platform().setSetting('workers','1');
+    let active:Engine|undefined;
+    try {
     const t=await task(), s=db.exploration(t.exploration_id);
     await db.query("UPDATE tasks SET execution_mode='manual' WHERE id=$1",[t.id]);
     const ids=[await s.addIntent({summary:"first"},5,[],"user"),await s.addIntent({summary:"second"},5,[],"user")];
     const w=await model("reg-worker"), m=await model("reg-main");
-    const e=new Engine(db,{...defaultEngineConfig(),workers:1,debounceMs:5}, async(_,role)=>role==="worker"?w.source:m.source,dir); engines.push(e);
-    w.faux.setResponses([fauxAssistantMessage("first complete"),fauxAssistantMessage("second complete")]);
+    const e=new Engine(db,{...defaultEngineConfig(),workers:1,debounceMs:5}, async(_,role)=>role==="worker"?w.source:m.source,dir); engines.push(e);active=e;
+    w.faux.setResponses(ids.flatMap(id=>[
+      fauxAssistantMessage([fauxToolCall("record_fact",{summary:"LOCAL fixture observed",evidence:"deterministic local scheduler fixture"})]),
+      fauxAssistantMessage('LOCAL observations saved; execution finished.'),
+    ]));
     m.faux.setResponses([fauxAssistantMessage([fauxToolCall("dispatch_intents",{intent_ids:ids})]),fauxAssistantMessage("已下发")]);
     await e.mainChat(t.id,"执行队列");
-    await until(async()=>(await s.listByKind("intent",10)).every((n)=>n.state==="done"));
-    expect(w.faux.state.callCount).toBe(2);
+    // Two intents must drain within the agreed 15s scheduling window, well below the old 30s poll.
+    await until(async()=>(await s.listByKind("intent",10)).every((n)=>n.state==="done"),15_000);
+    expect(w.faux.state.callCount).toBe(4);
+    const claims=await db.query("SELECT DISTINCT worker FROM activity WHERE exploration_id=$1 AND kind='round' AND node_id=ANY($2::bigint[])",[t.exploration_id,ids]);
+    expect(claims.rows).toHaveLength(1);
     await e.stop(t.id);
+    } finally {
+      await active?.shutdown();
+      if(previousWorkers===null)await db.query("DELETE FROM settings WHERE key='workers'");
+      else await db.platform().setSetting('workers',previousWorkers);
+    }
   });
   it("chat on a paused task does not start workers and segments retain independent context", async () => {
     const t=await task(), s=db.exploration(t.exploration_id); await s.addIntent({summary:"must not run"},5,[],"user");
@@ -54,7 +71,7 @@ describe("scheduler and graph regressions", () => {
     const e=new Engine(db,defaultEngineConfig(),async(_,role)=>{ roles.push(role);return main.source; },dir); engines.push(e);
     main.faux.setResponses([fauxAssistantMessage("A"), (context)=>{
       expect(JSON.stringify(context.messages)).not.toContain("segment-one-secret");
-      expect(JSON.stringify(context)).not.toContain('"name":"bash"');
+      expect(JSON.stringify(context)).toContain('"name":"bash"');
       return fauxAssistantMessage("B");
     },(context)=>{ expect(JSON.stringify(context.messages)).toContain("segment-one-secret");return fauxAssistantMessage("A again"); }]);
     await e.mainChat(t.id,"segment-one-secret",1); await e.mainChat(t.id,"new segment",2); await e.mainChat(t.id,"remember",1);
@@ -64,12 +81,17 @@ describe("scheduler and graph regressions", () => {
     expect(activity.rows.filter((r)=>r.kind==="user").map((r)=>r.main_seg)).toEqual([1,2,1]);
   });
   it("concurrent run requests start only one worker pool", async () => {
-    const t=await task(), s=db.exploration(t.exploration_id); await s.addIntent({summary:"one"},5,[],"user");
-    const w=await model("reg-once"); w.faux.setResponses([fauxAssistantMessage("complete")]);
+    const t=await task(), s=db.exploration(t.exploration_id); await s.addIntent({summary:"one",dispatch_requested:true},5,[],"user");
+    const w=await model("reg-once"); w.faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("record_fact",{summary:"LOCAL fixture",evidence:"deterministic scheduler fixture"})]),
+      fauxAssistantMessage('LOCAL observations saved; execution finished.'),
+      fauxAssistantMessage("submitted"),
+    ]);
     const e=new Engine(db,{...defaultEngineConfig(),workers:1,debounceMs:5},async()=>w.source,dir); engines.push(e);
+    await db.query("UPDATE tasks SET execution_mode='manual' WHERE id=$1",[t.id]);
     await Promise.all([e.run(t.id),e.run(t.id),e.run(t.id)]);
     await until(async()=>(await s.listByKind("intent",10))[0]?.state==="done");
-    expect(w.faux.state.callCount).toBe(1);await e.stop(t.id);
+    expect(w.faux.state.callCount).toBe(2);await e.stop(t.id);
   });
   it("stops an in-flight main response and clears the real running state", async () => {
     const t=await task(), m=await model("reg-cancel-chat");
@@ -110,7 +132,7 @@ describe("scheduler and graph regressions", () => {
       expect((await roleResources(db,"worker")).mcpEntries?.some((e)=>e.name==="fixture-mcp")).toBe(false);
       await db.query("INSERT INTO agent_visibility(agent_id,resource_kind,resource_id,enabled) SELECT id,'mcp',$1,true FROM agents WHERE key='worker'",[id]);
       expect((await roleResources(db,"worker")).mcpEntries?.some((e)=>e.name==="fixture-mcp")).toBe(true);
-      expect((await roleResources(db,"mainagent")).mcpEntries).toBeUndefined();
+      expect((await roleResources(db,"mainagent")).mcpEntries).toEqual([]);
     } finally { await db.platform().deleteMCP(id); }
   });
 });

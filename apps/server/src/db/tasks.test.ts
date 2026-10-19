@@ -281,6 +281,9 @@ describe.skipIf(!haveDB)("task store + scope (integration)", () => {
     // 用户暂停：出队但保留 queue_mode
     const paused = await store.applyTaskPause(t.id);
     expect(paused.queueMode).toBe("bootstrap");
+    expect(paused.commandID).toBeGreaterThan(0);
+    const command = await db!.query("SELECT status FROM runtime_task_commands WHERE id=$1", [paused.commandID]);
+    expect(command.rows[0]?.status).toBe("pending");
     let got = await store.getTask(t.id);
     expect(got!.paused).toBe(true);
     expect(got!.queued).toBe(false);

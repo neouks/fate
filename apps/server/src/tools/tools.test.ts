@@ -6,11 +6,29 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { openDatabase, type Database } from "../db/index.js";
 import { workerTools, plannerTools, mainTools, goalsTools, TodoStore, runContext } from "./index.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { clampOutput, MAX_TOOL_OUTPUT } from "./define.js";
 
 const TEST_DSN = process.env.SERIES_TEST_PG_DSN ?? "postgres://series:series@127.0.0.1:5433/series_test?sslmode=disable";
 
 let haveDB = true;
 let db: Database | null = null;
+
+describe("bounded tool output",()=>{
+  it("keeps truncated results valid JSON below 20 KiB and preserves continuation fields",()=>{
+    const text=clampOutput(JSON.stringify({content:"证据😀".repeat(20_000),next_offset:4096}));
+    expect(Buffer.byteLength(text,"utf8")).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    const parsed=JSON.parse(text) as {content:string;next_offset:number;truncated_fields:string[]};
+    expect(parsed.next_offset).toBe(4096);
+    expect(parsed.content).toContain("续读");
+    expect(parsed.truncated_fields).toContain("content");
+  });
+  it('bounds escaped fallback previews without an infinite truncation loop',()=>{
+    const value=Object.fromEntries(Array.from({length:1200},(_,i)=>['\\"'.repeat(50)+i,'x']));
+    const result=clampOutput(JSON.stringify(value));
+    expect(Buffer.byteLength(result)).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(()=>JSON.parse(result)).not.toThrow();
+  });
+});
 
 beforeAll(async () => {
   process.env.SERIES_PG_DSN = TEST_DSN;
@@ -61,16 +79,17 @@ describe.skipIf(!haveDB)("工具层", () => {
     expect(p).not.toContain("record_fact");
     expect(m).toContain("set_goals");
     expect(m).toContain("dispatch_intents");
-    expect(g).toEqual(["set_goals", "set_constraints", "register_user_target"]);
+    expect(g).toEqual(["context_search", "context_get", "read_tool_output", "set_goals", "set_constraints", "register_user_target"]);
   });
 
   it("record_fact 写通道纪律：只能写回自己的意图，锚点继承 + yields 边 + 标记已测", async () => {
     const { taskID, expID } = await seedTask(db!, "record_fact 测试");
     const s = db!.exploration(expID);
     // 两个意图，worker 只绑第一个
-    const a = await s.addIntent({ summary: "方向 A" }, 5, [], "planner");
+    const a = await s.addIntent({ summary: "方向 A",dispatch_requested:true }, 5, [], "planner");
     const b = await s.addIntent({ summary: "方向 B" }, 5, [], "planner");
     await s.setIntentState(b, "running");
+    await s.claimNextWorker("work#1");
     const ctx = runContext(db!, taskID, expID, "worker", { workerName: "work#1", intentID: a });
     const [record] = workerTools(ctx).filter((t) => t.name === "record_fact");
 
@@ -92,7 +111,7 @@ describe.skipIf(!haveDB)("工具层", () => {
     );
 
     const ok = await call(record!, { summary: "发现登录页", evidence: "HTTP 200", confidence: "high" });
-    expect(ok.isError).toBeFalsy();
+    expect(ok.isError,ok.text).toBeFalsy();
     const factID = Number(JSON.parse(ok.text)["fact_id"]);
     expect(factID).toBeGreaterThan(0);
     // yields 边存在
@@ -108,7 +127,8 @@ describe.skipIf(!haveDB)("工具层", () => {
 
   it("insert_assets + list_assets + add_task_scope", async () => {
     const { taskID, expID } = await seedTask(db!, "insert_assets 测试");
-    const ctx = runContext(db!, taskID, expID, "worker", { workerName: "work#1", intentID: 1 });
+    const intentID=await db!.exploration(expID).addIntent({summary:"asset discovery"},1,[],"user");
+    const ctx = runContext(db!, taskID, expID, "worker", { workerName: "work#1", intentID });
     const byName = Object.fromEntries(workerTools(ctx).map((t) => [t.name, t]));
 
     const ins = await call(byName["insert_assets"]!, {
@@ -143,17 +163,18 @@ describe.skipIf(!haveDB)("工具层", () => {
     await db!.query(`DELETE FROM explorations WHERE id=$1`, [expID]);
   });
 
-  it("report_finding 触发 notifyFinding 桩 + findings 行 + prove_goal 收官", async () => {
+  it("report_finding 立即发布并通知，Worker 结束前 prove_goal 可读取", async () => {
     const { taskID, expID } = await seedTask(db!, "finding 测试");
     const s = db!.exploration(expID);
-    const intentID = await s.addIntent({ summary: "测注入" }, 5, [], "planner");
-    await s.setIntentState(intentID, "running");
+    const intentID = await s.addIntent({ summary: "测注入",dispatch_requested:true }, 5, [], "planner");
+    await s.claimNextWorker("work#1");
     const goalID = await s.addGoal({ text: "证明一个漏洞" }, "user");
 
     const events: string[] = [];
     const ctx = runContext(db!, taskID, expID, "worker", {
       workerName: "work#1",
       intentID,
+      collaborationPolicy: "blackboard-v1",
       hooks: {
         notifyFinding: () => events.push("finding"),
         notifyGoalMet: () => events.push("goal_met"),
@@ -168,19 +189,20 @@ describe.skipIf(!haveDB)("工具层", () => {
       summary: "login 参数可注入",
       evidence: "' OR 1=1 -- 返回 200",
     });
-    expect(rep.isError).toBeFalsy();
+    expect(rep.isError,rep.text).toBeFalsy();
     expect(events).toContain("finding");
     const findingNodeID = Number(JSON.parse(rep.text)["finding_node_id"]);
     const row = await db!.query(`SELECT severity, status FROM findings WHERE node_id=$1`, [findingNodeID]);
-    expect(row.rows[0]!["severity"]).toBe("high");
+    expect(row.rowCount).toBe(1);
 
     // prove_goal：用该 finding 证明目标 → met + notifyGoalMet
     const pctx = runContext(db!, taskID, expID, "planner", {
       hooks: { notifyGoalMet: () => events.push("goal_met") },
     });
     const pByName = Object.fromEntries(plannerTools(pctx).map((t) => [t.name, t]));
+    expect((await db!.query("SELECT severity FROM findings WHERE node_id=$1",[findingNodeID])).rows[0]!.severity).toBe("high");
     const prove = await call(pByName["prove_goal"]!, { goal_id: goalID, evidence_node_id: findingNodeID });
-    expect(prove.isError).toBeFalsy();
+    expect(prove.isError,prove.text).toBeFalsy();
     expect(JSON.parse(prove.text)["all_goals_met"]).toBe(true);
     expect(events).toContain("goal_met");
 
@@ -199,7 +221,7 @@ describe.skipIf(!haveDB)("工具层", () => {
     const byName = Object.fromEntries(mainTools(mctx).map((t) => [t.name, t]));
 
     // parent 指向意图 → 拒绝
-    const intentA = await db!.exploration(expID).addIntent({ summary: "方向 A" }, 5, [], "planner");
+    const intentA = await db!.exploration(expID).addIntent({ summary: "方向 A",dispatch_requested:true }, 5, [], "planner");
     const bad = await call(byName["add_intent"]!, { intents: [{ summary: "B", parent_id: intentA }] });
     expect(bad.isError).toBe(true);
 
@@ -224,7 +246,7 @@ describe.skipIf(!haveDB)("工具层", () => {
 
     const pctx = runContext(db!, taskID, expID, "planner", { todos: new TodoStore() });
     const pOver = Object.fromEntries(plannerTools(pctx).map((t) => [t.name, t]));
-    const text = await call(pOver["graph_overview"]!, {});
+    const text = await call(pOver["graph_overview"]!, {view:"recent"});
     const o = JSON.parse(text.text);
     expect(o["goals"]).toHaveLength(1);
     expect(o["frontier_open"]).toBeGreaterThanOrEqual(1);
@@ -232,7 +254,7 @@ describe.skipIf(!haveDB)("工具层", () => {
 
     const wctx = runContext(db!, taskID, expID, "worker", { intentID: 1 });
     const wOver = Object.fromEntries(workerTools(wctx).map((t) => [t.name, t]));
-    const wtext = await call(wOver["graph_overview"]!, {});
+    const wtext = await call(wOver["graph_overview"]!, {view:"recent"});
     expect("coverage" in JSON.parse(wtext.text)).toBe(false);
 
     // 清理

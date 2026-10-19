@@ -63,6 +63,7 @@ export function createServerTransport(config:Record<string,unknown>,cwd:string,a
   const transport=String(config.transport ?? ('url' in config?'http':'stdio'));
   if(transport==='stdio')return new StdioTransport({command:String(config.command).replace(/^~(?=\/|$)/,homedir()),args:config.args as string[]|undefined,env:config.env as Record<string,string>|undefined,cwd:path.resolve(cwd,String(config.cwd??'.')),stderr:'pipe'});
   if(!['http','sse'].includes(transport))throw new Error(`不支持的 MCP transport: ${transport}`);
+  if(!config.url)throw new Error('MCP url 不能为空');
   const dispatcher=config.insecure===true?new Agent({connect:{rejectUnauthorized:false}}):undefined;
   const scopedFetch:Fetcher=dispatcher?((url,init)=>undiciFetch(url as string,{...init,dispatcher} as never) as unknown as Promise<Response>):fetch;
   const result=transport==='sse'?new LegacySseTransport(String(config.url),config.headers as Record<string,string>,scopedFetch):new StreamableHttpTransport({url:String(config.url),headers:config.headers as Record<string,string>,fetch:scopedFetch,authProvider});

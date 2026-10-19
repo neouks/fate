@@ -1,5 +1,7 @@
+import {findingPublished} from '../db/worker-drafts.js';
+import {writeOrigin,writeAnchors,assertDirectWrite,sourceFields,sameSource} from './write-origin.js';
 import {bindEvidence} from "../evidence/store.js";
-import { resolveGraphNode } from "../db/graph_view.js";
+import { graphSources, resolveGraphNode } from "../db/graph_view.js";
 // 漏洞工具：report_finding（worker 三通道写回之一）、list_findings、prove_goal（收官）。
 
 import { domainTool } from "./define.js";
@@ -17,7 +19,7 @@ export function reportFindingTool(ctx: ToolRunContext) {
       name: "report_finding",
       description:
         "报告一个确认存在的漏洞。前置条件：真实触发过（不是'疑似'）、有可复现证据；" +
-        "疑似问题用 record_fact 记录而不是报洞。报洞前先用 list_findings 查重。落库即唤醒 planner。",
+        "疑似问题用 record_fact 记录而不是报洞。报洞前先用 list_findings 查重；提交成功后立即写入图谱。",
       promptSnippet: "报告确认的漏洞（须可复现）",
       parameters: {
         type: "object",
@@ -32,30 +34,39 @@ export function reportFindingTool(ctx: ToolRunContext) {
         },
         required: ["vulnclass", "severity", "summary", "evidence"],
       },
+      // This operation owns its DB transaction and publishes only after commit.
+      transactional: false,
       async run(args, c) {
+        assertDirectWrite(args);
+        if (!args.evidence?.trim()) throw new Error('漏洞缺少实际证据');
+        if (!args.summary?.trim()) throw new Error('summary 不能为空');
+        let created=false;
         const saved = await c.db.transaction(async db => {
+        await c.hooks.assertOwnership?.(db);
         await db.query('SELECT pg_advisory_xact_lock($1)', [-c.expID]);
-        if(c.toolCallID){const existing=await db.query("SELECT id,node_id FROM findings WHERE task_id=$1 AND tool_call_id=$2",[c.taskID,c.toolCallID]);if(existing.rowCount)return {finding_node_id:Number(existing.rows[0]!.node_id),finding_id:Number(existing.rows[0]!.id)};}
         const s = db.exploration(c.expID);
-        const intentID = c.intentID;
-        if (!intentID) throw new Error("report_finding 仅在 worker 执行意图时可用");
-        const intent = await s.getNode(intentID);
-        if (!intent || intent.kind !== "intent" || intent.payload.cancelled_by_user === true) throw new Error(`意图 #${intentID} 不存在`);
-
-        const anchors =
-          args.asset_ids && args.asset_ids.length > 0 ? args.asset_ids : await s.anchorAssetIDs(intentID);
-        if (anchors.length > 0) {
-          await db.taskScope().validateIntentAssets(c.taskID, intent, anchors);
+        const origin = await writeOrigin({...c,db});
+        const anchors = await writeAnchors({...c,db},origin,args.asset_ids);
+        if(c.toolCallID){
+          const existing=(await db.query(`SELECT f.id,f.node_id,n.payload FROM findings f JOIN exploration_nodes n ON n.id=f.node_id
+            WHERE f.task_id=$1 AND f.tool_call_id=$2`,[c.taskID,c.toolCallID])).rows[0];
+          if(existing){
+            const payload=existing.payload as Record<string,unknown>;
+            if(!sameSource(c,origin,payload))throw new Error('工具调用编号已用于其他来源');
+            await writeAnchors({...c,db},origin,await s.anchorAssetIDs(Number(existing.node_id)));
+            return {finding_node_id:Number(existing.node_id),finding_id:Number(existing.id)};
+          }
         }
 
         const payload: Record<string, unknown> = {
           vulnclass: args.vulnclass,
           name: args.name ?? "",
           severity: args.severity,
-          from_intent: intentID,
+          summary: args.summary,
+          ...sourceFields(c,origin),
         };
         const nodeID = await s.addNode(KindFinding, payload, 0, "confirmed", c.workerName ?? c.role, anchors);
-        await s.link(intentID, RelYields, nodeID);
+        await s.link(origin.id, RelYields, nodeID);
 
         const ins = await db.query<{ id: string }>(
           `INSERT INTO findings(task_id, node_id, vulnclass, name, severity, summary, evidence, worker, asset_ids, status)
@@ -78,9 +89,12 @@ export function reportFindingTool(ctx: ToolRunContext) {
         const findingID=Number(ins.rows[0]!.id);
         await db.query("UPDATE findings SET tool_call_id=$2 WHERE id=$1",[findingID,c.toolCallID??null]);
         if(args.traffic_refs?.length)await bindEvidence(db,findingID,args.traffic_refs,c.taskID);
+        await findingPublished(db,c.expID,nodeID);
+        created=true;
         return { finding_node_id: nodeID, finding_id: findingID };
         });
-        c.hooks.notifyFinding?.(c.expID, saved.finding_node_id);
+        // Nested callers leave delivery to the durable wakeup after their outer commit.
+        if(created&&!c.db.transactionClient)c.hooks.notifyFinding?.(c.expID, saved.finding_node_id);
         return saved;
       },
     },
@@ -118,12 +132,27 @@ export function listFindingsTool(ctx: ToolRunContext) {
           params[0] = [c.taskID, ...src.rows.map((r) => Number(r.source_task_id))];
         }
         const res = await c.db.query(
-          `SELECT f.id, f.node_id, f.vulnclass, f.name, f.severity, f.summary, f.status, f.asset_ids, f.created_at
+          `SELECT f.id, f.task_id, f.node_id, f.vulnclass, f.name, f.severity, f.summary, f.status, f.asset_ids, f.created_at
            FROM findings f WHERE ${where} ORDER BY f.created_at DESC LIMIT ${limit} OFFSET ${args.offset ?? 0}`,
           params,
         );
+        const sources=await graphSources(c.db,c.taskID),sourceByTask=new Map(sources.map(source=>[source.taskID,source]));
+        const visible=[] as typeof res.rows;
+        for(const row of res.rows){
+          const ownerTask=Number(row.task_id),owner=ownerTask===c.taskID?{taskID:c.taskID,expID:c.expID}:sourceByTask.get(ownerTask);
+          if(!owner)continue;
+          try{
+            if(row.node_id!==null){await resolveGraphNode(c.db,c.taskID,c.expID,Number(row.node_id),c.role==='worker');}
+            else{
+              const ids=Array.isArray(row.asset_ids)?row.asset_ids.map(Number):[];
+              const states=await c.db.taskScope().taskAssetApprovalStates(owner.taskID,ids);
+              if(!ids.every(id=>states.get(id)==='approved'||(c.role==='worker'&&states.get(id)==='pending')))continue;
+            }
+            visible.push(row);
+          }catch{/* Unauthorized evidence is omitted from the role's projection. */}
+        }
         return {
-          findings: res.rows.map((r: Record<string, unknown>) => ({
+          findings: visible.map((r: Record<string, unknown>) => ({
             id: Number(r["id"]),
             node_id: r["node_id"] === null ? null : Number(r["node_id"]),
             vulnclass: r["vulnclass"],
@@ -159,14 +188,23 @@ export function proveGoalTool(ctx: ToolRunContext) {
         },
         required: ["goal_id", "evidence_node_id"],
       },
+      transactional: false,
       async run(args, c) {
         await c.db.transaction(async db => {
+          await c.hooks.assertOwnership?.(db);
           await db.query('SELECT pg_advisory_xact_lock($1)', [-c.expID]);
           const s = db.exploration(c.expID);
           const goal = await s.getNode(args.goal_id);
           if (!goal || goal.kind !== 'goal') throw new Error('目标不存在');
           const { node: evidence } = await resolveGraphNode(db, c.taskID, c.expID, args.evidence_node_id);
-          if (!['fact','finding'].includes(evidence.kind)) throw new Error('证据必须为已授权的事实或漏洞');
+          if (!['fact','finding'].includes(evidence.kind) || evidence.state !== 'confirmed' || evidence.payload.acceptance_status==='unverified')
+            throw new Error('证据必须为仍获授权的 confirmed 事实或漏洞；任务原文、线索及撤回记录不能证明目标');
+          const finding = evidence.kind === 'finding'
+            ? (await db.query('SELECT evidence,status FROM findings WHERE node_id=$1',[evidence.id])).rows[0] : undefined;
+          const observation = finding?.evidence ?? evidence.payload.evidence;
+          if (typeof observation !== 'string' || !observation.trim()) throw new Error('目标证据缺少实际观察内容，请读取或补充证据后再证明');
+          if (['inferred','unknown'].includes(String(evidence.payload.observation_type)) || finding?.status === 'false_positive')
+            throw new Error('推测、未知观察或已判定误报不能作为目标达成证据');
           await s.link(evidence.id, RelProves, goal.id);
           await s.setNodeState(goal.id, 'met');
         });

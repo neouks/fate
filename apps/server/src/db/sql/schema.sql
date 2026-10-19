@@ -262,6 +262,9 @@ CREATE TABLE IF NOT EXISTS exploration_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
 CREATE INDEX IF NOT EXISTS idx_expedges_dst ON exploration_edges(dst_id, rel);
+-- Stable continuation cursor; preserve the existing composite primary key.
+ALTER TABLE exploration_edges ADD COLUMN IF NOT EXISTS id BIGSERIAL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_expedges_cursor ON exploration_edges(id);
 -- cold-digest (§1): the 'covers' relation (digest→member) postdates shipped installs,
 -- whose rel CHECK is an inline auto-named constraint. Find and recreate it as ck_edge_rel.
 DO $$
@@ -1409,6 +1412,16 @@ CREATE TABLE IF NOT EXISTS findings (
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS triage_version BIGINT NOT NULL DEFAULT 0;
+CREATE OR REPLACE FUNCTION bump_finding_triage_version() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.status IS DISTINCT FROM OLD.status THEN NEW.triage_version := OLD.triage_version + 1; END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_findings_triage_version ON findings;
+CREATE TRIGGER trg_findings_triage_version BEFORE UPDATE OF status ON findings
+    FOR EACH ROW EXECUTE FUNCTION bump_finding_triage_version();
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 -- Task selectors anti-join legacy graph nodes before pagination.
 CREATE INDEX IF NOT EXISTS idx_findings_task_node ON findings(task_id, node_id) WHERE node_id IS NOT NULL;
@@ -1749,6 +1762,8 @@ CREATE TABLE IF NOT EXISTS llm_request_attempts (
   model TEXT NOT NULL, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '',
   usage JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT now(), finished_at TIMESTAMPTZ
 );
+-- Platform/Auto/Pentest conversations can call a model without a bound task.
+ALTER TABLE llm_request_attempts ALTER COLUMN task_id DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_llm_attempts_task ON llm_request_attempts(task_id,id DESC);
 CREATE TABLE IF NOT EXISTS llm_request_limits (
   profile_id BIGINT PRIMARY KEY REFERENCES llm_profiles(id) ON DELETE CASCADE,
@@ -1763,6 +1778,21 @@ CREATE TABLE IF NOT EXISTS engine_worker_slots (
   id TEXT PRIMARY KEY,task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   token TEXT NOT NULL
 );
+-- Durable pause commands let the API instance wait for the instance that owns the task lease.
+CREATE TABLE IF NOT EXISTS runtime_task_commands (
+  id BIGSERIAL PRIMARY KEY,
+  task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  command TEXT NOT NULL CHECK(command IN ('pause')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','acknowledged')),
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  acknowledged_at TIMESTAMPTZ,
+  executor_owner TEXT,
+  detail TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_task_commands_pending
+  ON runtime_task_commands(task_id,command) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS idx_runtime_task_commands_task
+  ON runtime_task_commands(task_id,id DESC);
 
 -- Immutable, content-addressed evidence survives deletion from the traffic inbox.
 CREATE TABLE IF NOT EXISTS evidence_blobs(hash TEXT PRIMARY KEY,bytes BYTEA NOT NULL);
@@ -1782,3 +1812,304 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
 );
 ALTER TABLE finding_retests ADD COLUMN IF NOT EXISTS lease_token TEXT;
 ALTER TABLE finding_retests ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;
+
+ALTER TABLE evidence_blobs ALTER COLUMN bytes DROP NOT NULL;
+ALTER TABLE evidence_blobs ADD COLUMN IF NOT EXISTS file_path TEXT;
+ALTER TABLE evidence_blobs ADD COLUMN IF NOT EXISTS size BIGINT;
+
+CREATE TABLE IF NOT EXISTS runtime_session_leases (
+ key TEXT PRIMARY KEY,token TEXT NOT NULL,expires_at TIMESTAMPTZ NOT NULL,stop_requested BOOLEAN NOT NULL DEFAULT false
+);
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS task_id BIGINT REFERENCES tasks(id) ON DELETE SET NULL;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS session_file TEXT;
+CREATE TABLE IF NOT EXISTS conversation_runs (
+ id BIGSERIAL PRIMARY KEY,conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+ status TEXT NOT NULL DEFAULT 'queued',message TEXT NOT NULL,attachments JSONB NOT NULL DEFAULT '[]',
+ trigger_id BIGINT REFERENCES agent_triggers(id) ON DELETE SET NULL,event_keys TEXT[] NOT NULL DEFAULT '{}',
+ token TEXT,started_at TIMESTAMPTZ,finished_at TIMESTAMPTZ,error TEXT NOT NULL DEFAULT '',created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conv_runs_queue ON conversation_runs(status,id);
+CREATE TABLE IF NOT EXISTS agent_trigger_events (
+ id BIGSERIAL PRIMARY KEY,event_key TEXT NOT NULL UNIQUE,kind TEXT NOT NULL,task_id BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+ payload JSONB NOT NULL DEFAULT '{}',created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS agent_trigger_deliveries (
+ trigger_id BIGINT NOT NULL REFERENCES agent_triggers(id) ON DELETE CASCADE,event_id BIGINT NOT NULL REFERENCES agent_trigger_events(id) ON DELETE CASCADE,
+ run_id BIGINT REFERENCES conversation_runs(id) ON DELETE SET NULL,PRIMARY KEY(trigger_id,event_id)
+);
+ALTER TABLE llm_request_attempts ALTER COLUMN task_id DROP NOT NULL;
+ALTER TABLE llm_request_attempts ADD COLUMN IF NOT EXISTS conversation_id BIGINT REFERENCES conversations(id) ON DELETE CASCADE;
+
+-- Evidence ownership survives removal from the traffic inbox. Existing bound
+-- snapshots can recover their owner from an unambiguous finding association.
+ALTER TABLE traffic_evidence_snapshots ADD COLUMN IF NOT EXISTS task_id BIGINT;
+ALTER TABLE traffic_evidence_snapshots ADD COLUMN IF NOT EXISTS intent_id BIGINT;
+UPDATE traffic_evidence_snapshots s SET task_id=e.task_id,intent_id=e.intent_id
+FROM traffic_exchanges e WHERE e.id=s.id AND s.task_id IS NULL;
+UPDATE traffic_evidence_snapshots s SET task_id=owners.task_id
+FROM (SELECT b.snapshot_id,min(f.task_id) AS task_id FROM finding_traffic_bindings b
+ JOIN findings f ON f.id=b.finding_id WHERE f.task_id IS NOT NULL
+ GROUP BY b.snapshot_id HAVING count(DISTINCT f.task_id)=1) owners
+WHERE s.id=owners.snapshot_id AND s.task_id IS NULL;
+
+-- Read projections use the same ancestor-anchor policy as the domain tools.
+CREATE OR REPLACE FUNCTION exploration_node_readable(eid BIGINT,nid BIGINT,allow_pending BOOLEAN DEFAULT false)
+RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
+ WITH RECURSIVE owner AS (
+  SELECT id FROM tasks WHERE exploration_id=eid AND deleted_at IS NULL
+ ), lineage(id) AS (
+  SELECT id FROM exploration_nodes WHERE exploration_id=eid AND id=nid
+  UNION
+  SELECT e.src_id FROM exploration_edges e JOIN lineage l ON e.dst_id=l.id WHERE e.exploration_id=eid
+ )
+ SELECT EXISTS(SELECT 1 FROM owner) AND EXISTS(SELECT 1 FROM lineage)
+ AND NOT EXISTS(SELECT 1 FROM lineage l JOIN exploration_anchors a ON a.node_id=l.id CROSS JOIN owner o
+  WHERE COALESCE(task_asset_effective_approval_state(o.id,a.asset_id),'') <> ALL(
+   CASE WHEN allow_pending THEN ARRAY['approved','pending'] ELSE ARRAY['approved'] END))
+$$;
+CREATE OR REPLACE FUNCTION exploration_activity_readable(eid BIGINT,nid BIGINT,meta JSONB)
+RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
+ SELECT CASE WHEN nid IS NOT NULL THEN exploration_node_readable(eid,nid)
+ WHEN (meta->'worker_feedback'->>'intent_id') ~ '^[0-9]+$'
+ THEN exploration_node_readable(eid,(meta->'worker_feedback'->>'intent_id')::bigint)
+ ELSE EXISTS(SELECT 1 FROM tasks WHERE exploration_id=eid AND deleted_at IS NULL) END
+$$;
+CREATE OR REPLACE FUNCTION finding_readable(fid BIGINT)
+RETURNS BOOLEAN LANGUAGE SQL STABLE AS $$
+ SELECT COALESCE((SELECT CASE WHEN f.node_id IS NOT NULL THEN exploration_node_readable(t.exploration_id,f.node_id)
+ ELSE NOT EXISTS(SELECT 1 FROM jsonb_array_elements_text(f.asset_ids) a
+  WHERE COALESCE(task_asset_effective_approval_state(t.id,a.value::bigint),'')<>'approved') END
+ FROM findings f JOIN tasks t ON t.id=f.task_id AND t.deleted_at IS NULL WHERE f.id=fid),false)
+$$;
+
+CREATE TABLE IF NOT EXISTS tool_output_artifacts (
+ id TEXT PRIMARY KEY,task_id BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+ conversation_id BIGINT REFERENCES conversations(id) ON DELETE CASCADE,node_id BIGINT REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+ tool TEXT NOT NULL,tool_call_id TEXT NOT NULL,body TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Stop is a durable request; only executor completion confirms a running retest.
+ALTER TABLE finding_retests ADD COLUMN IF NOT EXISTS stop_requested BOOLEAN NOT NULL DEFAULT false;
+-- Keep delivery tombstones after a user deletes the generated conversation.
+ALTER TABLE agent_trigger_deliveries ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+UPDATE agent_trigger_deliveries SET delivered_at=now() WHERE run_id IS NOT NULL AND delivered_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS runtime_role_configs (
+ id TEXT PRIMARY KEY,task_id BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+ conversation_id BIGINT REFERENCES conversations(id) ON DELETE CASCADE,role TEXT NOT NULL,
+ configured JSONB NOT NULL,effective JSONB NOT NULL,started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ expires_at TIMESTAMPTZ NOT NULL,finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_role_configs_task ON runtime_role_configs(task_id) WHERE finished_at IS NULL;
+-- Every model attempt belongs to one runtime, rather than merely a task/role:
+-- concurrent Workers must never close one another's requests after a crash.
+ALTER TABLE llm_request_attempts ADD COLUMN IF NOT EXISTS runtime_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_llm_attempts_runtime_running ON llm_request_attempts(runtime_id) WHERE status='running';
+
+ALTER TABLE tool_output_artifacts ADD COLUMN IF NOT EXISTS authorization_hash TEXT;
+
+-- Sequence allocation order is not transaction commit order. A seen-set avoids
+-- losing a late commit whose id is below a previously observed maximum.
+CREATE TABLE IF NOT EXISTS scheduler_seen_sources (
+ kind TEXT NOT NULL,source_id BIGINT NOT NULL,PRIMARY KEY(kind,source_id)
+);
+
+ALTER TABLE engine_worker_slots ADD COLUMN IF NOT EXISTS intent_id BIGINT;
+
+-- Planner acknowledges individual events only after a successful planning round.
+-- No max(id) cursor: a lower sequence value can commit after a higher value.
+CREATE TABLE IF NOT EXISTS exploration_context_events (
+ id BIGSERIAL PRIMARY KEY,
+ exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+ node_id BIGINT REFERENCES exploration_nodes(id) ON DELETE SET NULL,
+ kind TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),acknowledged_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_context_events_pending ON exploration_context_events(exploration_id,id) WHERE acknowledged_at IS NULL;
+CREATE TABLE IF NOT EXISTS planner_decisions (
+ id BIGSERIAL PRIMARY KEY,exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+ round_id TEXT NOT NULL UNIQUE,decision JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_planner_decisions_exp ON planner_decisions(exploration_id,id DESC);
+CREATE OR REPLACE FUNCTION capture_exploration_context() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE eid BIGINT; nid BIGINT; event_kind TEXT;
+BEGIN
+ IF TG_OP='DELETE' THEN
+  eid:=OLD.exploration_id; nid:=NULL; event_kind:='node_deleted';
+ ELSIF TG_OP='INSERT' OR NEW.payload IS DISTINCT FROM OLD.payload OR NEW.state IS DISTINCT FROM OLD.state OR NEW.content_version IS DISTINCT FROM OLD.content_version THEN
+  eid:=NEW.exploration_id; nid:=NEW.id; event_kind:=NEW.kind;
+ ELSE RETURN NEW;
+ END IF;
+ -- During exploration cascade deletion the owning exploration no longer exists.
+ IF EXISTS(SELECT 1 FROM explorations WHERE id=eid) THEN
+  INSERT INTO exploration_context_events(exploration_id,node_id,kind) VALUES(eid,nid,event_kind);
+  INSERT INTO exploration_context_events(exploration_id,node_id,kind)
+   SELECT current.exploration_id,nid,event_kind FROM tasks source
+   JOIN task_relations r ON r.source_task_id=source.id JOIN tasks current ON current.id=r.task_id
+   WHERE source.exploration_id=eid AND current.deleted_at IS NULL;
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS exploration_context_event ON exploration_nodes;
+CREATE TRIGGER exploration_context_event AFTER INSERT OR UPDATE OR DELETE ON exploration_nodes FOR EACH ROW EXECUTE FUNCTION capture_exploration_context();
+
+CREATE OR REPLACE FUNCTION version_exploration_content() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.payload IS DISTINCT FROM OLD.payload OR NEW.state IS DISTINCT FROM OLD.state THEN
+  NEW.content_version := OLD.content_version + 1;
+ END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS exploration_content_version ON exploration_nodes;
+CREATE TRIGGER exploration_content_version BEFORE UPDATE ON exploration_nodes FOR EACH ROW EXECUTE FUNCTION version_exploration_content();
+
+CREATE OR REPLACE FUNCTION capture_context_authorization() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE tid BIGINT;
+BEGIN
+ IF TG_OP='UPDATE' AND NEW.approval_state IS NOT DISTINCT FROM OLD.approval_state THEN RETURN NEW; END IF;
+ IF TG_OP='DELETE' THEN tid:=OLD.task_id; ELSE tid:=NEW.task_id; END IF;
+ INSERT INTO exploration_context_events(exploration_id,kind)
+  SELECT exploration_id,'authorization' FROM tasks WHERE deleted_at IS NULL AND (id=tid OR id IN (SELECT task_id FROM task_relations WHERE source_task_id=tid));
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS context_authorization_event ON task_asset_links;
+CREATE TRIGGER context_authorization_event AFTER INSERT OR UPDATE OR DELETE ON task_asset_links FOR EACH ROW EXECUTE FUNCTION capture_context_authorization();
+
+CREATE OR REPLACE FUNCTION version_finding_context() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+ UPDATE exploration_nodes SET content_version=content_version+1 WHERE id=NEW.node_id;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS finding_context_version ON findings;
+CREATE TRIGGER finding_context_version AFTER UPDATE OF evidence,report,status,summary,name,severity ON findings
+ FOR EACH ROW WHEN (NEW.evidence IS DISTINCT FROM OLD.evidence OR NEW.report IS DISTINCT FROM OLD.report
+ OR NEW.status IS DISTINCT FROM OLD.status OR NEW.summary IS DISTINCT FROM OLD.summary
+ OR NEW.name IS DISTINCT FROM OLD.name OR NEW.severity IS DISTINCT FROM OLD.severity)
+ EXECUTE FUNCTION version_finding_context();
+
+-- Native platform adaptation: additive audit purpose, preserving historical requests.
+ALTER TABLE llm_request_attempts ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'conversation';
+
+-- UI stream snapshots: shared across executors, with durable final activities as authority.
+ALTER TABLE conversation_activities ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';
+CREATE TABLE IF NOT EXISTS agent_stream_snapshots (
+ scope TEXT NOT NULL CHECK(scope IN ('task','conversation')),
+ scope_id BIGINT NOT NULL, turn_id TEXT NOT NULL, stream_id TEXT NOT NULL,
+ channel TEXT NOT NULL CHECK(channel IN ('text','thinking')),
+ worker TEXT NOT NULL, node_id BIGINT, main_seg INTEGER,
+ body TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ expires_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(scope,scope_id,stream_id,channel)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_stream_scope ON agent_stream_snapshots(scope,scope_id);
+ALTER TABLE conversation_runs ADD COLUMN IF NOT EXISTS turn_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_request ON conversation_runs(conversation_id,turn_id) WHERE turn_id IS NOT NULL;
+
+-- Blackboard collaboration v1: private work journals and durable release notifications.
+ALTER TABLE explorations ADD COLUMN IF NOT EXISTS published_revision BIGINT NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS worker_observations (
+ intent_id BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+ exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+ node_id BIGINT PRIMARY KEY, finding_id BIGINT, kind TEXT NOT NULL CHECK(kind IN ('fact','finding')),
+ payload JSONB NOT NULL, asset_ids JSONB NOT NULL DEFAULT '[]', traffic_refs JSONB NOT NULL DEFAULT '[]',
+ dedup_key TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), published_at TIMESTAMPTZ,
+ UNIQUE(intent_id,dedup_key)
+);
+ALTER TABLE worker_observations ADD COLUMN IF NOT EXISTS draft_version INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS worker_observation_revisions (
+ node_id BIGINT NOT NULL REFERENCES worker_observations(node_id) ON DELETE CASCADE,
+ version INTEGER NOT NULL, payload JSONB NOT NULL, asset_ids JSONB NOT NULL, traffic_refs JSONB NOT NULL,
+ saved_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(node_id,version)
+);
+CREATE TABLE IF NOT EXISTS blackboard_wakeups (
+ id BIGSERIAL PRIMARY KEY, exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+ event_key TEXT NOT NULL, kind TEXT NOT NULL, node_id BIGINT,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), acknowledged_at TIMESTAMPTZ,
+ UNIQUE(exploration_id,event_key)
+);
+ALTER TABLE engine_worker_slots ADD COLUMN IF NOT EXISTS planning_round TEXT;
+ALTER TABLE engine_worker_slots ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT 'running';
+CREATE TABLE IF NOT EXISTS blackboard_planning_rounds (
+ id TEXT PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+ token TEXT NOT NULL, basis_revision BIGINT NOT NULL, status TEXT NOT NULL DEFAULT 'planning',
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION advance_published_graph() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.kind IN ('fact','finding') AND (TG_OP='INSERT' OR NEW.payload IS DISTINCT FROM OLD.payload OR NEW.state IS DISTINCT FROM OLD.state) THEN
+  UPDATE explorations SET published_revision=published_revision+1 WHERE id=NEW.exploration_id;
+ END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS published_graph_revision ON exploration_nodes;
+CREATE TRIGGER published_graph_revision AFTER INSERT OR UPDATE ON exploration_nodes FOR EACH ROW EXECUTE FUNCTION advance_published_graph();
+
+CREATE TABLE IF NOT EXISTS worker_checkpoints (
+ intent_id BIGINT PRIMARY KEY REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+ progress JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION wake_blackboard_control() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE eid BIGINT;
+BEGIN
+ -- Agent discovery can create parents and apply an approval template while a
+ -- Worker is still exploring. Persist authorization immediately, but do not
+ -- treat that discovery as a user control event or start another planning round.
+ IF TG_TABLE_NAME='task_asset_links' AND TG_OP<>'DELETE'
+    AND current_setting('series.agent_discovery',true)='on'
+    AND NULLIF(current_setting('series.asset_origin',true),'')::jsonb->>'node_id' IS NOT NULL THEN
+  RETURN NEW;
+ END IF;
+ IF TG_TABLE_NAME='task_asset_links' AND TG_OP='UPDATE' THEN
+  IF NEW.approval_state IS NOT DISTINCT FROM OLD.approval_state THEN RETURN NEW; END IF;
+ END IF;
+ IF TG_TABLE_NAME='task_constraints' THEN
+  IF TG_OP='DELETE' THEN eid:=OLD.exploration_id; ELSE eid:=NEW.exploration_id; END IF;
+ ELSE
+  IF TG_OP='DELETE' THEN SELECT exploration_id INTO eid FROM tasks WHERE id=OLD.task_id;
+  ELSE SELECT exploration_id INTO eid FROM tasks WHERE id=NEW.task_id; END IF;
+ END IF;
+ IF EXISTS(SELECT 1 FROM explorations WHERE id=eid) THEN
+  UPDATE explorations SET published_revision=published_revision+1 WHERE id=eid;
+  INSERT INTO blackboard_wakeups(exploration_id,event_key,kind) VALUES(eid,'control:'||txid_current()::text,'control_changed') ON CONFLICT DO NOTHING;
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF; RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS blackboard_constraints ON task_constraints;
+CREATE TRIGGER blackboard_constraints AFTER INSERT OR UPDATE OR DELETE ON task_constraints FOR EACH ROW EXECUTE FUNCTION wake_blackboard_control();
+DROP TRIGGER IF EXISTS blackboard_authorization ON task_asset_links;
+CREATE TRIGGER blackboard_authorization AFTER INSERT OR UPDATE OR DELETE ON task_asset_links FOR EACH ROW EXECUTE FUNCTION wake_blackboard_control();
+
+-- Durable publication hand-off: survives death after complete_intent commits.
+CREATE TABLE IF NOT EXISTS worker_settlements (
+ id uuid PRIMARY KEY, intent_id bigint NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+ exploration_id bigint NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+ task_id bigint NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, worker text NOT NULL,
+ activity_id bigint, created_at timestamptz NOT NULL DEFAULT now(), released_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS worker_settlements_pending ON worker_settlements(exploration_id) WHERE released_at IS NULL;
+ALTER TABLE blackboard_planning_rounds ADD COLUMN IF NOT EXISTS source_versions jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+-- Direct Worker writeback: retries of one tool call return its original graph node.
+ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS tool_call_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_tool_call ON exploration_nodes(exploration_id,tool_call_id)
+ WHERE kind='fact' AND tool_call_id IS NOT NULL;
+
+-- Durable human continuation identity; native PI sessions carry the actual dialogue.
+CREATE TABLE IF NOT EXISTS worker_interventions (
+ id BIGSERIAL PRIMARY KEY,
+ task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ intent_id BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+ request_id TEXT NOT NULL,
+ message TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ completed_at TIMESTAMPTZ,
+ UNIQUE(task_id,intent_id,request_id)
+);
+
+ALTER TABLE engine_worker_slots ADD COLUMN IF NOT EXISTS manual BOOLEAN NOT NULL DEFAULT false;
+
+-- Neo turn display projection; source activities remain the durable authority.
+CREATE INDEX IF NOT EXISTS idx_activity_turn ON activity(exploration_id,(metadata->>'turn_id'),id);
+CREATE INDEX IF NOT EXISTS idx_conversation_activity_turn ON conversation_activities(conversation_id,(metadata->>'turn_id'),id);

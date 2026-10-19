@@ -1,4 +1,5 @@
-import { resolveGraphNode } from "../db/graph_view.js";
+import {writeOrigin,writeAnchors,assertDirectWrite,sourceFields,sameSource} from './write-origin.js';
+import { resolveGraphNode, authorizedNodes } from "../db/graph_view.js";
 // 探索图读写工具：record_fact（写通道纪律核心）、node_detail、
 // search_worker_traces / get_worker_trace（worker 间过程级信息交换）。
 
@@ -8,9 +9,12 @@ import { KindFact, RelYields, nodeAllowsPendingAssets } from "../db/exploration.
 
 // ─── record_fact：worker 写回事实（intent --yields--> fact）─────────────────
 
-interface RecordFactArgs { summary: string; evidence?: string; confidence?: "low" | "medium" | "high"; asset_ids?: number[]; }
+interface RecordFactArgs { facts?:RecordFactArgs[]; summary: string; evidence?: string; detail?:string; observation_type?:'observed'|'inferred'|'negative'|'unknown';confidence?: "low" | "medium" | "high"; asset_ids?: number[]; }
 
 export function recordFactTool(ctx: ToolRunContext) {
+  const singleProperties = {
+    summary:{type:"string"},evidence:{type:"string"},detail:{type:"string"},observation_type:{type:"string",enum:["observed","inferred","negative","unknown"]},confidence:{type:"string",enum:["low","medium","high"]},asset_ids:{type:"array",items:{type:"integer"}}
+  };
   return domainTool<RecordFactArgs>(
     {
       name: "record_fact",
@@ -21,8 +25,11 @@ export function recordFactTool(ctx: ToolRunContext) {
       parameters: {
         type: "object",
         properties: {
+          facts:{type:"array",minItems:1,maxItems:20,items:{type:"object",properties:singleProperties,required:["summary"]},description:"独立结论批量提交，每项事务独立；返回同序 ID 与错误"},
           summary: { type: "string", description: "一句话事实结论（自包含，不引用'上文'）" },
           evidence: { type: "string", description: "支撑该结论的关键证据原文（命令输出/响应片段）" },
+          detail:{type:'string',description:'复现所需且 summary/evidence 未覆盖的方法或限制；无额外信息时省略，不重复摘要或证据'},
+          observation_type:{type:'string',enum:['observed','inferred','negative','unknown'],description:'区分实测观察、推断、负面结果和未知；confirmed 表示记录已提交，不表示所有推断为真'},
           confidence: { type: "string", enum: ["low", "medium", "high"], description: "置信度，默认 medium" },
           asset_ids: {
             type: "array",
@@ -30,38 +37,56 @@ export function recordFactTool(ctx: ToolRunContext) {
             description: "该事实涉及的资产 id；缺省继承意图锚定的资产",
           },
         },
-        required: ["summary"],
+        anyOf:[{required:["summary"]},{required:["facts"]}],
       },
-      async run(args, c) {
+      transactional:false,
+      async run(args, ctx) {
+        assertDirectWrite(args);
+        const save=(args:RecordFactArgs,ctx:ToolRunContext)=>ctx.db.transaction(async db=>{
+        await ctx.hooks.assertOwnership?.(db);
+        assertDirectWrite(args);
+        if (!args.summary?.trim()) throw new Error('summary 不能为空');
+        if (ctx.role === 'worker' && !args.evidence?.trim()) throw new Error('事实缺少实际证据');
+        const c={...ctx,db};
         const s = c.db.exploration(c.expID);
-        // 写通道纪律：worker 只能写回自己领取的意图。
-        const intentID = c.intentID;
-        if (!intentID) throw new Error("record_fact 仅在 worker 执行意图时可用");
-        const intent = await s.getNode(intentID);
-        if (!intent || intent.kind !== "intent") throw new Error(`意图 #${intentID} 不存在`);
-        if (intent.payload["cancelled_by_user"] === true) throw new Error("意图已被用户取消，停止写回");
-
-        // 锚点：显式指定优先，否则继承意图锚。
-        const anchors =
-          args.asset_ids && args.asset_ids.length > 0 ? args.asset_ids : await s.anchorAssetIDs(intentID);
-        // 授权校验（worker 口径：mainagent 签发的 pending 资产可用）。
-        if (anchors.length > 0) {
-          await c.db.taskScope().validateIntentAssets(c.taskID, intent, anchors);
+        const origin = await writeOrigin(c);
+        const anchors = await writeAnchors(c,origin,args.asset_ids);
+        if (c.toolCallID) {
+          const old=(await db.query("SELECT id,payload FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND tool_call_id=$2",[c.expID,c.toolCallID])).rows[0];
+          if (old) {
+            const payload=old.payload as Record<string,unknown>;
+            if (!sameSource(c,origin,payload)) throw new Error('工具调用编号已用于其他来源');
+            const savedAnchors=await s.anchorAssetIDs(Number(old.id));
+            await writeAnchors(c,origin,savedAnchors);
+            return {fact_id:Number(old.id),anchored_assets:savedAnchors.length};
+          }
         }
-
         const payload: Record<string, unknown> = {
           summary: args.summary,
-          from_intent: intentID,
+          ...sourceFields(c,origin),
         };
         if (args.evidence) payload["evidence"] = args.evidence;
+        if(args.detail)payload.detail=args.detail;
+        payload.observation_type=args.observation_type??(args.confidence==='high'?'observed':args.confidence==='low'?'unknown':'inferred');
         payload["confidence"] = args.confidence ?? "medium";
 
         const factID = await s.addNode(KindFact, payload, 0, "confirmed", c.workerName ?? c.role, anchors);
-        await s.link(intentID, RelYields, factID);
+        await db.query('UPDATE exploration_nodes SET tool_call_id=$2 WHERE id=$1',[factID,c.toolCallID??null]);
+        await s.link(origin.id, RelYields, factID);
         if (anchors.length > 0) {
           await c.db.taskScope().markTaskAssetsTested(c.taskID, anchors, c.workerName ?? c.role);
         }
         return { fact_id: factID, anchored_assets: anchors.length };
+      });
+        if(!args.facts)return save(args,ctx);
+        if(args.summary||!args.facts.length||args.facts.length>20)throw new Error('使用 summary 单条或 facts 批量输入，不能混用');
+        const results=[];
+        for(let i=0;i<args.facts.length;i++){
+          ctx.signal?.throwIfAborted();
+          try{results.push(await save(args.facts[i]!,{...ctx,toolCallID:ctx.toolCallID?`${ctx.toolCallID}:item:${i}`:undefined}));}
+          catch(error){results.push({fact_id:0,error:error instanceof Error?error.message:String(error)});}
+        }
+        return {fact_ids:results.map(r=>r.fact_id),results};
       },
     },
     ctx,
@@ -70,7 +95,7 @@ export function recordFactTool(ctx: ToolRunContext) {
 
 // ─── node_detail：任意节点钻取 ───────────────────────────────────────────────
 
-interface NodeDetailArgs { node_id: number; }
+interface NodeDetailArgs { node_id: number; offset?: number; after_edge?: number; anchor_offset?: number; }
 
 export function nodeDetailTool(ctx: ToolRunContext) {
   return domainTool<NodeDetailArgs>(
@@ -80,7 +105,7 @@ export function nodeDetailTool(ctx: ToolRunContext) {
       promptSnippet: "钻取节点详情与血缘",
       parameters: {
         type: "object",
-        properties: { node_id: { type: "integer", description: "节点 id" } },
+        properties: { node_id: { type: "integer", description: "节点 id" }, offset:{type:"integer",minimum:0},after_edge:{type:"integer",minimum:0},anchor_offset:{type:"integer",minimum:0} },
         required: ["node_id"],
       },
       readOnly: true,
@@ -89,23 +114,34 @@ export function nodeDetailTool(ctx: ToolRunContext) {
         const { node } = resolved;
         const s = c.db.exploration(resolved.expID);
         const edges = await c.db.query(
-          `SELECT src_id, rel, dst_id FROM exploration_edges
-           WHERE exploration_id=$1 AND (src_id=$2 OR dst_id=$2) ORDER BY id`,
-          [resolved.expID, args.node_id],
+          `SELECT id, src_id, rel, dst_id FROM exploration_edges
+           WHERE exploration_id=$1 AND (src_id=$2 OR dst_id=$2) AND id>$3 ORDER BY id LIMIT 11`,
+          [resolved.expID, args.node_id,args.after_edge??0],
         );
         const anchors = await s.anchorAssetIDs(args.node_id);
         const anchorAssets =
           anchors.length > 0
-            ? (await c.db.assets().getByIDs(anchors)).map((a) => ({
+            ? (await c.db.assets().getByIDs(anchors.slice(args.anchor_offset??0,(args.anchor_offset??0)+10))).map((a) => ({
                 id: a.id,
                 type: a.type,
                 host: a.domain || a.ip || a.url || a.app_name || a.bundle_id,
               }))
             : [];
+        const visibleEdges=[];
+        for(const edge of edges.rows.slice(0,10)){
+          const otherID=Number(edge.src_id)===node.id?Number(edge.dst_id):Number(edge.src_id);
+          const other=await s.getNode(otherID);
+          if(other&&(await authorizedNodes(c.db,resolved.taskID,resolved.expID,[other],c.role==='worker')).length)visibleEdges.push(edge);
+        }
+        const payload=JSON.stringify(node.payload),offset=Math.max(0,args.offset??0),full=Buffer.byteLength(payload)<8000;
         return {
           source_task_id: resolved.taskID, inherited: resolved.inherited,
-          node: { id: node.id, kind: node.kind, state: node.state, payload: node.payload, created_at: node.created_at },
-          edges: edges.rows,
+          node: { id: node.id, kind: node.kind, state: node.state, payload: full?node.payload:undefined, created_at: node.created_at },
+          payload_json: full?undefined:payload.slice(offset,offset+1000),
+          next_offset: full||offset+1000>=payload.length?null:offset+1000,
+          edges: visibleEdges,
+          next_edge:edges.rows.length>10?Number(edges.rows[9]!.id):null,
+          next_anchor_offset:(args.anchor_offset??0)+10<anchors.length?(args.anchor_offset??0)+10:null,
           anchors: anchorAssets,
         };
       },
@@ -116,7 +152,7 @@ export function nodeDetailTool(ctx: ToolRunContext) {
 
 // ─── search_worker_traces：跨 work 过程检索 ────────────────────────────────
 
-interface SearchTracesArgs { query: string; limit?: number; }
+interface SearchTracesArgs { query: string; limit?: number; before_id?: number; }
 
 export function searchWorkerTracesTool(ctx: ToolRunContext) {
   return domainTool<SearchTracesArgs>(
@@ -131,6 +167,7 @@ export function searchWorkerTracesTool(ctx: ToolRunContext) {
         type: "object",
         properties: {
           query: { type: "string", description: "关键字（不区分大小写）" },
+          before_id:{type:"integer",minimum:0},
           limit: { type: "integer", description: "默认 10，上限 20" },
         },
         required: ["query"],
@@ -145,18 +182,23 @@ export function searchWorkerTracesTool(ctx: ToolRunContext) {
            FROM activity
            WHERE exploration_id=$1 AND node_id IS NOT NULL AND node_id IS DISTINCT FROM $3
              AND kind NOT IN ('usage','round')
-             AND (summary ILIKE $2 OR detail ILIKE $2)
+             AND (summary ILIKE $2 OR detail ILIKE $2) AND ($5::bigint=0 OR id<$5)
            ORDER BY id DESC LIMIT $4`,
-          [c.expID, q, c.intentID ?? -1, limit],
+          [c.expID, q, c.intentID ?? -1, limit+1,args.before_id??0],
         );
+        const visible=[];
+        for(const row of res.rows.slice(0,limit)){
+          try{await resolveGraphNode(c.db,c.taskID,c.expID,Number(row.node_id),c.role==='worker');visible.push(row);}catch{ /* filtered */ }
+        }
         return {
-          matches: res.rows.map((r: Record<string, unknown>) => ({
+          next_cursor:res.rows.length>limit?Number(res.rows[limit-1]!.id):null,
+          matches: visible.map((r: Record<string, unknown>) => ({
             step_id: Number(r["id"]),
             intent_id: r["node_id"] === null ? null : Number(r["node_id"]),
             worker: r["worker"],
             kind: r["kind"],
             tool: r["tool"],
-            summary: r["summary"],
+            summary: String(r["summary"]??"").slice(0,150),
             context: r["context"],
           })),
           hint: "用 get_worker_trace(intent_id, step_ids=[...]) 获取完整步骤内容",
@@ -199,21 +241,22 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
       readOnly: true,
       async run(args, c) {
         const s = c.db.exploration(c.expID);
-        const intent = await s.getNode(args.intent_id);
-        if (!intent || intent.kind !== "intent") throw new Error(`意图 #${args.intent_id} 不存在`);
+        const resolved=await resolveGraphNode(c.db,c.taskID,c.expID,args.intent_id,c.role==='worker');
+        const intent=resolved.node;
+        if(intent.kind!=='intent')throw new Error('节点不是意图');
 
         const listRows = await c.db.query(
           `SELECT id, kind, tool, is_error, summary, created_at FROM activity
            WHERE exploration_id=$1 AND node_id=$2 AND kind NOT IN ('usage','round') AND id>$3
-           ORDER BY id LIMIT 51`,
-          [c.expID, args.intent_id, args.after_id ?? 0],
+           ORDER BY id LIMIT 11`,
+          [resolved.expID, args.intent_id, args.after_id ?? 0],
         );
-        const steps = listRows.rows.slice(0,50).map((r: Record<string, unknown>) => ({
+        const steps = listRows.rows.slice(0,10).map((r: Record<string, unknown>) => ({
           step_id: Number(r["id"]),
           kind: r["kind"],
           tool: r["tool"],
           is_error: r["is_error"] === true,
-          summary: r["summary"],
+          summary: String(r["summary"]??"").slice(0,150),
         }));
 
         const detail: Record<string, unknown>[] = [];
@@ -221,7 +264,7 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
           const rows = await c.db.query(
             `SELECT id, kind, tool, summary, detail FROM activity
              WHERE exploration_id=$1 AND node_id=$2 AND id=ANY($3::bigint[]) ORDER BY id`,
-            [c.expID, args.intent_id, args.step_ids.slice(0,5)],
+            [resolved.expID, args.intent_id, args.step_ids.slice(0,5)],
           );
           for (const r of rows.rows) {
             const body = (r["detail"] as string | null) ?? (r["summary"] as string | null) ?? "";
@@ -229,9 +272,9 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
               step_id: Number(r["id"]),
               kind: r["kind"],
               tool: r["tool"],
-              body: body.slice(Math.max(0,args.offset ?? 0), Math.max(0,args.offset ?? 0)+3000),
+              body: body.slice(Math.max(0,args.offset ?? 0), Math.max(0,args.offset ?? 0)+350),
               total_chars: body.length,
-              next_offset: (args.offset ?? 0)+3000<body.length ? (args.offset ?? 0)+3000 : null,
+              next_offset: (args.offset ?? 0)+350<body.length ? (args.offset ?? 0)+350 : null,
             });
           }
         }
@@ -240,7 +283,7 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
         if (args.include_output) {
           const row = await c.db.query(
             `SELECT summary FROM activity WHERE exploration_id=$1 AND node_id=$2 AND kind='result' ORDER BY id DESC LIMIT 1`,
-            [c.expID, args.intent_id],
+            [resolved.expID, args.intent_id],
           );
           output = (row.rows[0]?.["summary"] as string | undefined) ?? undefined;
         }
@@ -248,9 +291,10 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
         return {
           intent: { id: intent.id, state: intent.state, summary: intent.payload["summary"] },
           steps,
-          next_cursor: listRows.rows.length>50 ? Number(listRows.rows[49]!.id) : null,
+          next_cursor: listRows.rows.length>10 ? Number(listRows.rows[9]!.id) : null,
           detail,
-          final_output: output,
+          final_output: output?.slice(Math.max(0,args.offset??0),Math.max(0,args.offset??0)+1000),
+          output_next_offset:output&&(args.offset??0)+1000<output.length?(args.offset??0)+1000:null,
         };
       },
     },
