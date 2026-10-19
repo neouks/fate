@@ -1,3 +1,10 @@
+import {registerTurnRoutes} from './routes/turns.js';
+import {registerTaskFileRoutes} from "./routes/task-files.js";
+import {configureEvidenceStore} from '../evidence/blobs.js';
+import {registerActivityStreamShutdown} from './activity-stream.js';
+import {registerRetestRoutes} from "./routes/retests.js";
+import {registerConversationRoutes} from "./routes/conversations.js";
+import {registerLLMManagementRoutes} from "./routes/llm-management.js";
 import multipart from "@fastify/multipart";
 import {registerAttachmentRoutes} from "./routes/attachments.js";
 import {registerEvidenceRoutes} from "./routes/evidence.js";
@@ -59,10 +66,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({
     logger: {
       level: process.env.SERIES_LOG_LEVEL ?? "info",
+      serializers:{req:(req)=>({method:req.method,url:req.url?.replace(/([?&]token=)[^&]*/g,'$1[redacted]'),host:req.headers.host,remoteAddress:req.ip})},
     },
     bodyLimit: 64 * 1024 * 1024,
   });
+  registerActivityStreamShutdown(app);
+  registerTurnRoutes(app);
 
+  configureEvidenceStore(deps.db,deps.dataDir);
   app.register(multipart);
   app.decorate("db", deps.db);
   app.decorate("engine", deps.engine);
@@ -141,7 +152,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerAssetRoutes(app);
   registerConfigRoutes(app);
   registerEvidenceRoutes(app);
+  registerRetestRoutes(app);
+  registerConversationRoutes(app);
   registerAttachmentRoutes(app);
+  registerTaskFileRoutes(app);
+  registerLLMManagementRoutes(app);
   registerRemovedRoutes(app);
   registerCompatRoutes(app);
   registerApprovalRoutes(app);

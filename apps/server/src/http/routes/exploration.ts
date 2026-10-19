@@ -1,9 +1,13 @@
+import {serveActivityStream} from '../activity-stream.js';
 // 探索图路由（按 expID 寻址，M5 新契约）：节点/边/活动分页/frontier + 活动实时 SSE。
 // SSE 与 Go streamActivity 同构：先 `: connected`，回放 since 之后的 DB 历史，
 // 再桥接 engine.bus 的 activity 事件；每帧 `id: <seq>\ndata: {json}\n\n`，20s 心跳 `: ping`。
 
 import type { FastifyInstance } from "fastify";
 import type { EngineActivity } from "../../engine/engine.js";
+import {authorizedNodes} from '../../db/graph_view.js';
+import {buildGraphOverview} from '../../tools/overview.js';
+import {runContext} from '../../tools/context.js';
 
 /** engine.bus activity 事件（EngineActivity + 落库后的自增 id）。 */
 type BusActivity = EngineActivity & { id?: number };
@@ -18,6 +22,13 @@ function num(v: unknown, def = 0): number {
 export function registerExplorationRoutes(app: FastifyInstance): void {
   const db = () => app.db;
 
+  app.get('/api/exploration/:expID/context',async(req,reply)=>{
+    const expID=num((req.params as {expID:string}).expID);
+    const task=(await db().query('SELECT id FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL',[expID])).rows[0];
+    if(!task)return reply.code(404).send({error:'task not found'});
+    return buildGraphOverview(runContext(db(),Number(task.id),expID,'mainagent'));
+  });
+
   app.get("/api/exploration/:expID/nodes", async (req) => {
     const expID = num((req.params as { expID: string }).expID);
     const q = req.query as Record<string, unknown>;
@@ -28,7 +39,7 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
       `SELECT id, kind, payload, priority, state, COALESCE(origin,'') AS origin, COALESCE(owner,'') AS owner,
               COALESCE(blocked_reason,'') AS blocked_reason, created_at
        FROM exploration_nodes
-       WHERE exploration_id=$1 AND ($2::text IS NULL OR kind=$2) AND ($3::text IS NULL OR state=$3)
+       WHERE exploration_id=$1 AND exploration_node_readable($1,id) AND ($2::text IS NULL OR kind=$2) AND ($3::text IS NULL OR state=$3)
        ORDER BY id DESC LIMIT $4`,
       [expID, kind, state, limit],
     );
@@ -51,7 +62,7 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
   app.get("/api/exploration/:expID/edges", async (req) => {
     const expID = num((req.params as { expID: string }).expID);
     const res = await db().query(
-      `SELECT id, src_id, rel, dst_id, created_at FROM exploration_edges WHERE exploration_id=$1 ORDER BY id LIMIT 20000`,
+      `SELECT id, src_id, rel, dst_id, created_at FROM exploration_edges WHERE exploration_id=$1 AND exploration_node_readable($1,src_id) AND exploration_node_readable($1,dst_id) ORDER BY id LIMIT 20000`,
       [expID],
     );
     return {
@@ -76,7 +87,7 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
     const nodeFilter = node ?? intent;
     const res = await db().query(
       `SELECT ${ACTIVITY_COLS} FROM activity
-       WHERE exploration_id=$1 AND id>$2 AND ($3::bigint IS NULL OR node_id=$3)
+       WHERE exploration_id=$1 AND id>$2 AND exploration_activity_readable($1,node_id,metadata) AND ($3::bigint IS NULL OR node_id=$3)
        ORDER BY id ASC LIMIT $4`,
       [expID, since, nodeFilter, limit],
     );
@@ -98,7 +109,9 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
   app.get("/api/exploration/:expID/frontier", async (req) => {
     const expID = num((req.params as { expID: string }).expID);
     const limit = Math.min(500, Math.max(1, num((req.query as Record<string, unknown>)["limit"], 50)));
-    const items = await db().exploration(expID).frontier(limit);
+    const task=(await db().query('SELECT id FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL',[expID])).rows[0];
+    if(!task)throw Object.assign(new Error('任务不存在'),{statusCode:404});
+    const items = await authorizedNodes(db(),Number(task.id),expID,await db().exploration(expID).frontier(limit));
     return { items };
   });
 
@@ -122,112 +135,6 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
     if (expID <= 0) {
       return reply.code(400).send({ error: "缺少或无效的 expID 查询参数" });
     }
-    let since = Math.max(0, num(q["since"], 0));
-    // 浏览器自动重连带 Last-Event-ID（最后收到的 id）——优先于 query，精确续传。
-    const lastEventID = req.headers["last-event-id"];
-    if (typeof lastEventID === "string" && lastEventID.trim() !== "") {
-      since = Math.max(since, num(lastEventID.split(":")[0], since));
-    }
-
-    reply.hijack();
-    const raw = reply.raw;
-    raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
-    raw.write(": connected\n\n");
-
-    const send = (payload: Record<string, unknown>): void => {
-      raw.write(`id: ${String(payload["id"])}\ndata: ${JSON.stringify(payload)}\n\n`);
-    };
-    const dto = (a: BusActivity): Record<string, unknown> => ({
-      id: a.id ?? 0,
-      seq: a.id ?? 0,
-      ts: new Date().toISOString(),
-      intent_id: a.nodeID == null ? undefined : String(a.nodeID),
-      task_id: a.taskID,
-      exp_id: a.expID,
-      node_id: a.nodeID ?? null,
-      worker: a.worker === "main" ? "mainagent" : a.worker ?? "",
-      kind: a.kind,
-      main_seg: a.mainSeg,
-      metadata: a.metadata,
-      tool_use_id: a.toolCallId,
-      stream_id: a.streamID,
-      tool: a.tool ?? null,
-      is_error: a.isError ?? false,
-      summary: a.summary ?? "",
-      detail: a.detail ?? null,
-      created_at: new Date().toISOString(),
-    });
-
-    // 回放历史（订阅先行防丢：回放期间的新事件靠 id 去重）。
-    let last = since;
-    let replaying = true;
-    const buffered: BusActivity[] = [];
-    const onActivity = (a: BusActivity): void => {
-      if (a.expID !== expID) return;
-      if (replaying) { buffered.push(a); return; }
-      if ((a.id ?? 0) <= last) return;
-      last = a.id ?? last;
-      send(dto(a));
-    };
-    app.engine.bus.on("activity", onActivity);
-    const onDelta = (delta: { expID: number; worker: string; nodeID?: number; mainSeg?: number; text: string; streamID: string; isThinking?: boolean }) => {
-      if (delta.expID !== expID || delta.isThinking || replaying) return;
-      raw.write(`event: delta\ndata: ${JSON.stringify({ worker: delta.worker === "main" ? "mainagent" : delta.worker,
-        intent_id: delta.nodeID == null ? undefined : String(delta.nodeID), main_seg: delta.mainSeg,
-        text: delta.text, stream_id: delta.streamID })}\n\n`);
-    };
-    app.engine.bus.on("delta", onDelta);
-    try {
-      // Page the complete gap; never advance the cursor past omitted history.
-      for (;;) {
-        const rows = await db().query(
-          `SELECT ${ACTIVITY_COLS} FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id ASC LIMIT 2000`, [expID, last]);
-        for (const r of rows.rows) {
-          const id = Number(r["id"]);
-          if (id <= last) continue;
-          last = id;
-          const ts = r["created_at"] instanceof Date ? (r["created_at"] as Date).toISOString() : String(r["created_at"]);
-          send({ ...r, id, seq: id, ts, exp_id: expID,
-            intent_id: r["node_id"] == null ? undefined : String(r["node_id"]),
-            main_seg: r["main_seg"] == null ? undefined : Number(r["main_seg"]),
-            worker: r["worker"] === "main" ? "mainagent" : String(r["worker"] ?? "") });
-        }
-        if (rows.rows.length < 2000) break;
-      }
-      replaying = false;
-      for (const activity of buffered.sort((a,b) => (a.id ?? 0) - (b.id ?? 0))) onActivity(activity);
-    } catch {
-      app.engine.bus.off("activity", onActivity);
-      app.engine.bus.off("delta", onDelta);
-      raw.end(); // reconnect from the last delivered ID, instead of silently dropping history
-      return;
-    }
-
-    let polling=false;
-    const poll=setInterval(async()=>{
-      if(polling||replaying||raw.destroyed)return;polling=true;
-      try{
-        const rows=await db().query(`SELECT ${ACTIVITY_COLS} FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT 2000`,[expID,last]);
-        for(const row of rows.rows){const id=Number(row.id);if(id<=last)continue;last=id;
-          send({...row,id,seq:id,exp_id:expID,worker:row.worker==='main'?'mainagent':row.worker,intent_id:row.node_id==null?undefined:String(row.node_id)});
-        }
-      }catch{raw.end();}finally{polling=false;}
-    },1000);
-    const ping = setInterval(() => {
-      raw.write(": ping\n\n"); // 注释行：不推进 Last-Event-ID、不伪造活动事件
-    }, 20_000);
-    const cleanup = (): void => {
-      clearInterval(ping);
-      clearInterval(poll);
-      app.engine.bus.off("activity", onActivity);
-      app.engine.bus.off("delta", onDelta);
-    };
-    req.raw.on("close", cleanup);
-    raw.on("error", cleanup);
+    await serveActivityStream(db(),req,reply,'task',expID);
   });
 }

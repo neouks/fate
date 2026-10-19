@@ -1,3 +1,4 @@
+import {LiveStreamWriter} from '../engine/live-stream.js';
 // M5 HTTP API 集成测试：fastify inject（登录/me、建任务容错、拦截 decide 幂等、
 // 已删模块 404）+ 真实监听口的活动 SSE（inject 只在流结束时 resolve，无法观测
 // 长连 SSE，故该用例起 :0 端口用 fetch 读流）。DB 共享开发库（series-ts-pg）。
@@ -171,8 +172,38 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
     expect((await authed("GET", `/api/tasks/${task.id}`)).statusCode).toBe(404);
   });
 
+  it("LLM 管理兼容 API：审计分页、轮询状态与有界全局重试策略", async () => {
+    const prior = await db!.platform().getSetting("llm_retry_policy");
+    try {
+      const policy = await authed("POST", "/api/llm/retry-policy", {
+        connect: { attempts: 99, interval_ms: 9_000_000 },
+        breaker: { attempts: 4, interval_ms: 10_000 },
+      });
+      expect(policy.statusCode).toBe(200);
+      expect(policy.json()).toMatchObject({
+        connect: { attempts: 20, interval_ms: 3_600_000 },
+        empty: { attempts: 0, interval_ms: 0 },
+        breaker: { attempts: 4, interval_ms: 10_000 },
+      });
+      expect((await authed("GET", "/api/llm/retry-policy")).json()).toEqual(policy.json());
+      const pool = await authed("GET", "/api/llm/pool");
+      expect(pool.statusCode).toBe(200);
+      expect(pool.json()).toMatchObject({ enabled: expect.any(Boolean), bind_fallback: expect.any(Boolean), chain: expect.any(Array) });
+      const records = await authed("GET", "/api/llm/records?page=0&size=10");
+      expect(records.statusCode).toBe(200);
+      expect(records.json()).toMatchObject({ records: expect.any(Array), total: expect.any(Number) });
+      expect((await authed("GET", "/api/llm/records/tasks")).statusCode).toBe(200);
+      expect((await authed("GET", "/api/llm/records/999999999")).statusCode).toBe(404);
+    } finally {
+      if (prior === null) await db!.query("DELETE FROM settings WHERE key='llm_retry_policy'");
+      else await db!.platform().setSetting("llm_retry_policy", prior);
+    }
+  });
+
   it("活动 SSE：since 回放 DB + engine.bus 实时帧（data: {json}\\n\\n，id: 行）", { timeout: 30_000 }, async () => {
-    const expID = await db!.createExploration("sse 测试", "sse");
+    const task = await db!.tasks().createTaskWithOptions("sse 测试", "sse", {});
+    const expID = task.exploration_id;
+    createdTaskIDs.push(task.id);
     createdExpIDs.push(expID);
     const s = db!.exploration(expID);
     const r1 = await s.appendActivity({ worker: "planner", kind: "text", summary: "历史帧1" });
@@ -211,7 +242,7 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
         buf += dec.decode(value, { stream: true });
         let idx: number;
         while ((idx = buf.indexOf("\n\n")) !== -1) {
-          frames.push(buf.slice(0, idx));
+          if(!buf.slice(0,idx).startsWith("event: streams")&&!buf.slice(0,idx).startsWith("retry:"))frames.push(buf.slice(0, idx));
           buf = buf.slice(idx + 2);
         }
       }
@@ -227,22 +258,26 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
     expect(JSON.parse(dataLine(frames[2]!))).toMatchObject({ id: r2, summary: "历史帧2" });
 
     // 实时帧：engine.bus 广播（id 递增，防回放重复）。
-    const live = { taskID: 0, expID, nodeID: 7, worker: "work#1", kind: "tool_use", tool: "bash", summary: "实时帧", id: r2 + 1 };
+    const liveNode=await s.addIntent({summary:"SSE live"},1,[],"user");
+    const liveID=await s.appendActivity({node_id:liveNode,worker:"work#1",kind:"tool_use",tool:"bash",summary:"实时帧"});
+    const live = { taskID: 0, expID, nodeID: liveNode, worker: "work#1", kind: "tool_use", tool: "bash", summary: "实时帧", id: liveID };
     engine.bus.emit("activity", live);
     await collectUntil(() => frames.length >= 4);
-    expect(frames[3]!.startsWith(`id: ${r2 + 1}\n`)).toBe(true);
-    expect(JSON.parse(dataLine(frames[3]!))).toMatchObject({ id: r2 + 1, seq: r2 + 1, intent_id: "7", kind: "tool_use", tool: "bash", task_id: 0 });
+    expect(frames[3]!.startsWith(`id: ${liveID}\n`)).toBe(true);
+    expect(JSON.parse(dataLine(frames[3]!))).toMatchObject({ id: liveID, seq: liveID, intent_id: String(liveNode), kind: "tool_use", tool: "bash", task_id: 0 });
 
     // 过滤语义：非本探索的事件不投递。
     engine.bus.emit("activity", { taskID: 1, expID: expID + 999_999, kind: "text", id: r2 + 2 });
     await new Promise((r) => setTimeout(r, 300));
     expect(frames.length).toBe(4);
 
-    engine.bus.emit("delta", { expID, worker: "main", mainSeg: 2, text: "streaming", streamID: "fixture-stream" });
+    const writer=new LiveStreamWriter(db!,'task',expID,{worker:'main',main_seg:2,turn_id:'fixture'});
+    writer.push({kind:'assistant_delta',text:'streaming',streamID:'fixture-stream'});
     await collectUntil(() => frames.length >= 5);
     expect(frames[4]).toContain("event: delta");
     expect(JSON.parse(dataLine(frames[4]!))).toMatchObject({ worker: "mainagent", main_seg: 2, text: "streaming" });
 
+    await writer.close();
     ac.abort();
     await sseApp.close().catch(() => undefined);
   });
@@ -286,7 +321,7 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
   });
 
   it("已删除模块：404 + 统一文案", async () => {
-    for (const url of ["/api/traffic", "/api/traffic/exchange?id=1", "/api/llm/records", "/api/llm/pool", "/api/update/check", "/api/task-archives", "/api/task-templates", "/api/side-questions/x/events", "/api/intercept/judge", "/api/tasks/notifications"]) {
+    for (const url of ["/api/update/check", "/api/task-archives", "/api/task-templates", "/api/side-questions/x/events", "/api/intercept/judge", "/api/tasks/notifications"]) {
       const r = await authed("GET", url);
       expect(r.statusCode, url).toBe(404);
       expect((r.json() as { error: string }).error, url).toBe("模块已在重构中移除");
@@ -356,4 +391,11 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
     expect(cov.enabled).toBe(true);
     expect(cov.scope_rows).toBeGreaterThanOrEqual(1);
   });
+});
+
+it('rejects the removed Worker conversation endpoint without persisting messages',async()=>{
+ if(!haveDB)return;
+ const before=Number((await db!.query('SELECT count(*) n FROM worker_interventions')).rows[0].n);
+ const r=await authed('POST','/api/tasks/999999/intents/999999/messages',{message:'must not run',request_id:'removed'});
+ expect(r.statusCode).toBe(410);expect(Number((await db!.query('SELECT count(*) n FROM worker_interventions')).rows[0].n)).toBe(before);
 });

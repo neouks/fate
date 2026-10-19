@@ -163,8 +163,8 @@ describe.skipIf(!haveDB)("批次A：主对话链", () => {
         seg: 0,
         attachments: [{ name: "poc.py", path: "uploads/poc.py", size: 12 }],
       });
-      expect(r2.statusCode).toBe(400);
-      expect(r2.json().error).toContain("附件尚未接入");
+      expect(r2.statusCode).toBe(404);
+      expect(r2.json().error).toContain("附件不存在或不属于本任务");
       expect(calls).toHaveLength(1);
 
       // 非"不在引擎"的真实错误（如模型缺失）不触发装载重试，按 500 透出。
@@ -223,7 +223,9 @@ describe.skipIf(!haveDB)("批次A：主对话链", () => {
 
   it("SSE task→expID 换算：?task= 回放该任务 exploration 的活动行；expID 优先", { timeout: 30_000 }, async () => {
     // 干扰项：另一个 exploration 各带一条活动——若 task 值被误当 expID/错库，回放会串台。
-    const decoyExpID = await db!.createExploration("批次A干扰探索", "decoy");
+    const decoyTask=await db!.tasks().createTaskWithOptions("批次A干扰探索", "decoy", {});
+    const decoyExpID = decoyTask.exploration_id;
+    createdTaskIDs.push(decoyTask.id);
     createdExpIDs.push(decoyExpID);
     const decoySeq = await db!.exploration(decoyExpID).appendActivity({ worker: "planner", kind: "text", summary: "干扰帧（不应出现）" });
     const ownSeq = await db!.exploration(expID).appendActivity({ worker: "mainagent", kind: "text", summary: "任务侧回放帧" });
@@ -256,7 +258,7 @@ describe.skipIf(!haveDB)("批次A：主对话链", () => {
           buf += dec.decode(value, { stream: true });
           let idx: number;
           while ((idx = buf.indexOf("\n\n")) !== -1) {
-            frames.push(buf.slice(0, idx));
+            if(!buf.slice(0,idx).startsWith("retry:")&&!buf.slice(0,idx).startsWith("event: streams"))frames.push(buf.slice(0, idx));
             buf = buf.slice(idx + 2);
           }
         }

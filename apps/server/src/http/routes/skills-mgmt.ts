@@ -141,47 +141,11 @@ function cleanEntryName(name: string): string | null {
   return segs.join("/");
 }
 
-// ─── multipart/form-data（最小解析：只取 filename 的文件段）──────────────────
-
-function parseMultipartFile(buffer: Buffer, contentType: string | undefined): { filename: string; data: Buffer } | null {
-  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType ?? "");
-  const boundary = (m?.[1] ?? m?.[2] ?? "").trim();
-  if (boundary === "") return null;
-  const delim = Buffer.from(`--${boundary}`);
-  let pos = buffer.indexOf(delim);
-  while (pos !== -1) {
-    let start = pos + delim.length;
-    if (buffer[start] === 0x2d && buffer[start + 1] === 0x2d) break; // 终界 --
-    if (buffer[start] === 0x0d && buffer[start + 1] === 0x0a) start += 2;
-    else if (buffer[start] === 0x0a) start += 1;
-    const next = buffer.indexOf(delim, start);
-    if (next === -1) break;
-    let end = next;
-    if (end >= start + 2 && buffer[end - 2] === 0x0d && buffer[end - 1] === 0x0a) end -= 2;
-    const part = buffer.subarray(start, end);
-    const headerEnd = part.indexOf("\r\n\r\n");
-    if (headerEnd !== -1) {
-      const headers = part.subarray(0, headerEnd).toString("utf8");
-      const fm = /filename="([^"]*)"/i.exec(headers);
-      if (fm && fm[1] !== "") return { filename: fm[1]!, data: Buffer.from(part.subarray(headerEnd + 4)) };
-    }
-    pos = next;
-  }
-  return null;
-}
-
 // ─── 路由 ────────────────────────────────────────────────────────────────────
 
 export function registerSkillMgmtRoutes(app: FastifyInstance): void {
   const db = () => app.db;
   const root = () => app.skillsRoot;
-
-  // Fastify 默认不解析 multipart：收原始 buffer，由上面的小解析器处理（仅取文件段）。
-  app.addContentTypeParser(
-    "multipart/form-data",
-    { parseAs: "buffer" },
-    (_req, body, done) => done(null, body),
-  );
 
   /** skill 目录内读写目标（name + rel 双层校验）。 */
   function skillPath(name: string, rel: string): { ok: true; abs: string } | { ok: false; error: string } {
@@ -256,7 +220,8 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
   app.post("/api/skills/upload", async (req, reply) => {
     const q = req.query as Record<string, string>;
     const overwrite = q["overwrite"] === "true" || q["overwrite"] === "1";
-    const file = parseMultipartFile(req.body as Buffer, req.headers["content-type"]);
+    const uploaded=await req.file({limits:{fileSize:64*1024*1024,files:1}});
+    const file=uploaded?{filename:uploaded.filename,data:await uploaded.toBuffer()}:null;
     if (!file) return reply.code(400).send({ error: "缺少上传文件（multipart file 字段）" });
     if (!/\.zip$/i.test(file.filename)) return reply.code(400).send({ error: "仅支持 .zip 上传" });
 

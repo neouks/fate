@@ -126,11 +126,12 @@ export function extractToken(req: FastifyRequest): string {
   }
   const xs = req.headers["x-series-token"];
   if (xs) return Array.isArray(xs) ? xs[0] ?? "" : xs;
-  const cookie = cookieValue(req, "series_token");
-  if (cookie) return cookie;
+  // EventSource cannot set an Authorization header. Its explicit token must
+  // take precedence over a cookie from another app on the same hostname/port.
   const q = req.query as Record<string, unknown> | null;
   const t = q?.["token"];
-  return typeof t === "string" ? t : "";
+  if (typeof t === "string" && t) return t;
+  return cookieValue(req, "series_token") ?? "";
 }
 
 /** JWT 鉴权：通过后放行；失败 401（文案对齐 Go requireAuth）。 */

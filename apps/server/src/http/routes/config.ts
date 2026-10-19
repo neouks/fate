@@ -1,3 +1,5 @@
+import {resolveRolePrompt,PROMPT_VERSION,hostProtocol} from '../../agent/prompts.js';
+import {runtimeConfiguration} from '../../engine/runtime-config.js';
 // 系统配置路由：settings KV / agents（列表+提示词）/ LLM profiles / MCP / skills 文件树。
 // web-search、judge、http-auth、pool 等子配置属已删除模块（routes/removed.ts 统一 404）。
 
@@ -40,6 +42,8 @@ function profileDTO(p: LLMProfile): Record<string, unknown> {
 }
 
 export function registerConfigRoutes(app: FastifyInstance): void {
+  app.get('/api/tasks/:id/runtime-config',async(req,reply)=>{const id=Number((req.params as {id:string}).id);if(!await app.db.tasks().getTask(id))return reply.code(404).send({error:'task not found'});return runtimeConfiguration(app.db,{taskID:id});});
+  app.get('/api/conversations/:id/runtime-config',async(req,reply)=>{const id=Number((req.params as {id:string}).id);if(!(await app.db.query('SELECT id FROM conversations WHERE id=$1',[id])).rowCount)return reply.code(404).send({error:'conversation not found'});return runtimeConfiguration(app.db,{conversationID:id});});
   // ─── LLM 测试连接：按 body 参数（或已存 profile id）构造 provider 做一次最小补全 ───
   // ─── 内置工具目录 ───
   app.get("/api/tools", async () => {
@@ -90,6 +94,11 @@ export function registerConfigRoutes(app: FastifyInstance): void {
           thinkingType: String(b["thinking_type"] ?? r["thinking_type"] ?? ""),
           format: String(b["format"] ?? r["format"] ?? "openai"),
           reasoningEffort: String(b["reasoning_effort"] ?? r["reasoning_effort"] ?? ""),
+          proxy: String(b["proxy"] ?? r["proxy"] ?? ""),
+          streaming: (b["streaming"] ?? r["streaming"]) !== false,
+          maxTokensField: String(b["max_tokens_field"] ?? r["max_tokens_field"] ?? ""),
+          sessionHeaderKey: String(b["session_header_key"] ?? r["session_header_key"] ?? ""),
+          sessionHeaderValue: 'connectivity-probe',
         };
       }
     }
@@ -101,6 +110,9 @@ export function registerConfigRoutes(app: FastifyInstance): void {
         thinkingType: String(b["thinking_type"] ?? ""),
         format: String(b["format"] ?? "openai"),
         reasoningEffort: String(b["reasoning_effort"] ?? ""),
+        proxy: String(b["proxy"] ?? ""), streaming: b["streaming"] !== false,
+        maxTokensField: String(b["max_tokens_field"] ?? ""),
+        sessionHeaderKey: String(b["session_header_key"] ?? ""), sessionHeaderValue: 'connectivity-probe',
       };
     }
     if (!profile.model || !profile.baseURL) {
@@ -178,12 +190,16 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       platform().getSetting("active_task"),
       platform().getEnabledTools(),
     ]);
-    return { workers, task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"global; next claim",role_settings:"next session",task_concurrency:"next admission"}, active_task: activeTask ?? "", intercept_enabled_tools: enabledTools };
+    return { workers, pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"global; next claim",role_settings:"next session",task_concurrency:"next admission"}, active_task: activeTask ?? "", intercept_enabled_tools: enabledTools };
   });
 
   const setSettings = async (req: { body?: unknown }, reply: { code(c: number): { send(v: unknown): unknown } }): Promise<unknown> => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const out: Record<string, unknown> = {};
+    for(const [key,allowed] of Object.entries({pi_context_policy:['domain','native'],pi_mcp_loading:['deferred','direct']})){
+      if(b[key]!==undefined&&!allowed.includes(String(b[key])))return reply.code(400).send({error:`无效 ${key}`});
+    }
+    for(const key of ['pi_context_policy','pi_mcp_loading'])if(b[key]!==undefined){await platform().setSetting(key,String(b[key]));out[key]=b[key];out.applies='next_session';}
     if(b["task_concurrency_enabled"]!==undefined)await platform().setSetting("task_concurrency_enabled",String(b["task_concurrency_enabled"]===true));
     if(b["task_concurrency_limit"]!==undefined){const n=Number(b["task_concurrency_limit"]);if(!Number.isInteger(n)||n<1)return reply.code(400).send({error:"task_concurrency_limit 必须为正整数"});await platform().setSetting("task_concurrency_limit",String(n));}
     if (b["workers"] !== undefined) {
@@ -237,7 +253,10 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     const agent = await platform().getAgentByKey(key);
     if (!agent) return reply.code(404).send({ error: `agent ${key} 不存在` });
     const [prompt, variables] = await Promise.all([platform().currentPrompt(agent.id), platform().promptVars(agent.id)]);
-    return { ...agentDTO(agent), prompt, variables };
+    const effective = await resolveRolePrompt(app.db, key);
+    return { ...agentDTO(agent), prompt: prompt || effective.template, variables,
+      prompt_source: effective.source, effective_prompt: effective.template, builtin_version: PROMPT_VERSION,
+      prompt_candidate: effective.candidate, host_protocol: hostProtocol(key) };
   });
 
   // PUT /api/agents/:key/prompt — 保存提示词新版本并切换 current。

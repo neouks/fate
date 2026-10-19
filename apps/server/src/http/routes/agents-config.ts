@@ -1,3 +1,6 @@
+import {platformPolicy} from '../../pi/platform-policy.js';
+import {builtinPrompt,renderPrompt,hostProtocol,PROMPT_VERSION,resolveRolePrompt} from '../../agent/prompts.js';
+import {textSize} from '../../agent/prompt-diagnostics.js';
 // 批次 C3：agent 运行配置 / 收尾词 / 任务级超时收尾词 / 提示词恢复与预览 / P3 触发器。
 // 对齐前端 web/src/lib/api.ts 的 saveAgentConfig/saveAgentWrapup/resetAgentWrapup/
 // saveAgentTaskTimeoutWrapup/resetAgentTaskTimeoutWrapup/resetAgentPrompt/agentTriggers/
@@ -15,22 +18,6 @@ import {
   WORKER_TASK_TIMEOUT_WRAPUP,
   WORKER_WRAPUP,
 } from "../../agent/prompts.js";
-
-/** agent key（或 role）→ 内置默认提示词模板；无内置（自定义/助手类）返回 null。 */
-function builtinPrompt(key: string): string | null {
-  switch (key) {
-    case "planner":
-      return PLANNER_PROMPT;
-    case "worker":
-      return WORKER_PROMPT;
-    case "mainagent":
-      return MAIN_PROMPT;
-    case "goals":
-      return GOALS_PROMPT;
-    default:
-      return null;
-  }
-}
 
 /** agent key → 内置默认收尾词（空串=该角色不支持收尾）。 */
 function builtinWrapup(key: string): string {
@@ -262,11 +249,17 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
       if (typeof v === "string") values[k] = v;
     }
     // 两种占位形态都替换：{{.Var}}（Go template 风格，与 prompts.ts 一致）与 {{Var}}。
-    let rendered = b["template"];
-    for (const [k, v] of Object.entries(values)) {
-      rendered = rendered.replaceAll(`{{.${k}}}`, v).replaceAll(`{{${k}}}`, v);
-    }
-    return { rendered };
+    const rendered = renderPrompt(b["template"], values);
+    const resolved = await resolveRolePrompt(db(), key);
+    const candidate = builtinPrompt(key);
+    return { rendered, platform_policy:await platformPolicy(db(),key), candidate: candidate === null ? null : renderPrompt(candidate, values),
+      configured_source: resolved.source, builtin_version: PROMPT_VERSION, host_protocol: hostProtocol(key),
+      diagnostics: { role_body: {...textSize(rendered),source:'preview_template'},
+        host_protocol: {...textSize(hostProtocol(key)),source:'host'},
+        task_context:{status:'not_assembled_in_template_preview'},
+        tool_schemas:{status:'available_in_runtime_diagnostics'},skill_index:{status:'available_in_runtime_diagnostics'},
+        mcp_schemas:{status:'not_loaded',reason:'预览不会启动 MCP；未知 Schema 不计入估算'} } };
+
   });
 
   // ─── P3 触发器（agent_triggers 表）─────────────────────────────────────────

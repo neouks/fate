@@ -133,12 +133,12 @@ export function registerCategoryRoutes(app: FastifyInstance): void {
     await p.catch(() => undefined);
   }
 
-  async function controlOne(id: number, action: string): Promise<{ ok: boolean; status?: string; queued?: boolean; error?: string }> {
+  async function controlOne(id: number, action: string): Promise<{ ok: boolean; status?: string; queued?: boolean; command_id?: number; error?: string }> {
     try {
       if (action === "pause") {
         await app.db.tasks().applyTaskPause(id); // 终态/已暂停 → 409 语义错误
-        await engineNoop(Promise.resolve().then(() => app.engine.pause(id)));
-        return { ok: true, status: "paused" };
+        const pause=await app.engine.pause(id);
+        return { ok: true, status: pause.status, command_id: pause.command_id };
       }
       if (action === "resume") {
         const res = await app.db.query<{ status: string }>(

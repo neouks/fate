@@ -1,3 +1,4 @@
+import {READABLE_FINDINGS} from "./finding-projection.js";
 // 批次 C6：发现页增强——真资产树 / 导出（md/csv）/ 漏洞深挖。
 // 对齐前端 web/src/lib/api.ts 的 findingAssetTree/exportFindings/deepenFinding 与
 // web/src/lib/types.ts 的 FindingAssetTree/FindingAssetNode/FindingDeepenResponse 形状。
@@ -34,7 +35,7 @@ function parseFilter(q: Record<string, string>): FindingFilter {
 /** findings 通用 WHERE（含 task_relations 继承视图，与列表一致）。 */
 function findingWhere(f: FindingFilter): { where: string; params: unknown[] } {
   const params: unknown[] = [];
-  let where = ` WHERE f.node_id IS NOT NULL`;
+  let where = ` WHERE true`;
   if (f.taskID) {
     params.push(f.taskID);
     where += ` AND (f.task_id=$${params.length} OR f.task_id IN (SELECT source_task_id FROM task_relations WHERE task_id=$${params.length}))`;
@@ -81,10 +82,10 @@ export function makeFindingsAssetTreeHandler(app: FastifyInstance) {
     const q = req.query as Record<string, string>;
     const { where, params } = findingWhere(parseFilter(q));
 
-    const total = await db().query<{ n: string }>(`SELECT count(*) AS n FROM findings f${where}`, params);
+    const total = await db().query<{ n: string }>(`SELECT count(*) AS n FROM ${READABLE_FINDINGS} f${where}`, params);
     const rows = await db().query(
       `SELECT f.id, f.task_id, f.node_id, f.name, f.vulnclass, COALESCE(f.severity,'') AS severity, f.asset_ids, f.created_at
-       FROM findings f${where} ORDER BY f.created_at DESC LIMIT $${params.length + 1}`,
+       FROM ${READABLE_FINDINGS} f${where} ORDER BY f.created_at DESC LIMIT $${params.length + 1}`,
       [...params, TREE_FINDING_CAP],
     );
     const truncated = rows.rows.length >= TREE_FINDING_CAP;
@@ -314,7 +315,7 @@ export function makeFindingsExportHandler(app: FastifyInstance) {
       where = w.where;
       params = w.params;
     } else {
-      where = ` WHERE f.node_id IS NOT NULL`;
+      where = ` WHERE true`;
     }
     if (scope === "selected") {
       const ids = (q["ids"] ?? "")
@@ -330,7 +331,7 @@ export function makeFindingsExportHandler(app: FastifyInstance) {
       `SELECT f.id, f.task_id, f.node_id, COALESCE(f.name,'') AS name, COALESCE(f.vulnclass,'') AS vulnclass,
               COALESCE(f.severity,'') AS severity, COALESCE(f.status,'') AS status,
               COALESCE(f.summary,'') AS summary, COALESCE(f.evidence,'') AS evidence, f.created_at
-       FROM findings f${where} ORDER BY f.created_at DESC LIMIT 5000`,
+       FROM ${READABLE_FINDINGS} f${where} ORDER BY f.created_at DESC LIMIT 5000`,
       params,
     );
     const iso = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v ?? ""));
@@ -406,11 +407,11 @@ export function makeFindingsExportHandler(app: FastifyInstance) {
 export function registerFindingsExtraRoutes(app: FastifyInstance): void {
   const db = () => app.db;
 
-  async function findingByAnyId(idStr: string): Promise<Record<string, unknown> | null> {
+  async function findingByAnyId(idStr: string, recordOnly = false): Promise<Record<string, unknown> | null> {
     const id = Number(idStr);
     if (!Number.isInteger(id)) return null;
-    let res = await db().query(`SELECT * FROM findings WHERE node_id=$1`, [id]);
-    if (res.rows.length === 0) res = await db().query(`SELECT * FROM findings WHERE id=$1`, [id]);
+    let res = await db().query(`SELECT * FROM findings WHERE ${recordOnly ? "id" : "node_id"}=$1 AND finding_readable(id)`, [id]);
+    if (!recordOnly && res.rows.length === 0) res = await db().query(`SELECT * FROM findings WHERE id=$1 AND finding_readable(id)`, [id]);
     return res.rows[0] ?? null;
   }
 
@@ -420,7 +421,7 @@ export function registerFindingsExtraRoutes(app: FastifyInstance): void {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const description = typeof b["description"] === "string" ? b["description"].trim() : "";
     if (description === "") return reply.code(400).send({ error: "description 不能为空" });
-    const row = await findingByAnyId(p["id"]!);
+    const row = await findingByAnyId(p["id"]!, (req.query as {id_kind?:string}).id_kind === "record");
     if (!row) return reply.code(404).send({ error: "漏洞不存在" });
 
     const taskID = Number(row["task_id"] ?? 0);

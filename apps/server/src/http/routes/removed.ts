@@ -8,12 +8,6 @@ const REMOVED_MODULE = { error: "模块已在重构中移除" };
 
 const REMOVED_PATHS = [
   // traffic（流量证据库）
-  // llm-records / 轮询池 / 全局重试策略
-  "/api/llm/records",
-  "/api/llm/records/*",
-  "/api/llm/pool",
-  "/api/llm/pool/*",
-  "/api/llm/retry-policy",
   // ScopeSentry 资产同步
   "/api/sync/*",
   // 一键自更新
@@ -30,8 +24,6 @@ const REMOVED_PATHS = [
   // 拦截 LLM judge 配置
   "/api/intercept/judge",
   // findings 复测（retests）
-  "/api/exploration/findings/retests/active",
-  "/api/exploration/findings/:id/retests",
   // 任务通知聚合
   "/api/tasks/notifications",
 ];

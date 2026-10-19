@@ -1,3 +1,4 @@
+import {executionSnapshot} from '../../engine/coordinator.js';
 import {prepareAttachments} from "../../evidence/attachments.js";
 // 任务路由：CRUD + 生命周期（start/pause/resume/stop|finish|control/delete）+ 意图控制 + 主对话。
 // 生命周期约定（对齐 Go manager/engine 分层）：tasks 表状态先落库，再驱动 engine；
@@ -25,6 +26,20 @@ async function engineNoop(p: unknown): Promise<void> {
 
 export function registerTaskRoutes(app: FastifyInstance): void {
   const tasks = () => app.db.tasks();
+  const serializeTask = async (task: Task) => {
+    const dto = taskDTO(task);
+    if (!isTerminalTaskStatus(task.status)) {
+      const pending = task.paused && !!(await app.db.query("SELECT 1 FROM runtime_task_commands WHERE task_id=$1 AND command='pause' AND status='pending' LIMIT 1", [task.id])).rowCount;
+      dto.status = task.paused ? (pending ? task.status : 'paused') : task.queued ? 'queued' : task.status;
+      dto.execution_status = pending ? 'waiting_for_executor' : dto.status;
+      dto.pause_pending = pending;
+    }
+    dto.scheduling=await executionSnapshot(app.db,task.id);
+    dto.in_flight=(dto.scheduling as {task_active:number}).task_active;
+    const occupancy=dto.scheduling as {task_active:number;ready:number;planning:number};
+    dto.engine_mode=task.paused?'paused':occupancy.task_active+occupancy.ready+occupancy.planning>0?'exploring':'idle';
+    return dto;
+  };
 
   // ─── 列表与创建 ────────────────────────────────────────────────────────────
 
@@ -38,7 +53,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
                  FROM findings f WHERE f.task_id=t.id),'{"critical":0,"high":0,"medium":0,"low":0}'::json) findings,
               COALESCE((SELECT json_build_object('total',count(*),'met',count(*) FILTER (WHERE state='met'))
                  FROM exploration_nodes n WHERE n.exploration_id=t.exploration_id AND n.kind='goal'),'{"total":0,"met":0}'::json) goals,
-              COALESCE((SELECT count(*) FROM exploration_nodes n WHERE n.exploration_id=t.exploration_id AND n.kind='intent' AND n.state='running'),0) in_flight,
+              COALESCE((SELECT count(*) FROM engine_worker_slots s JOIN engine_task_leases l ON l.task_id=s.task_id AND l.token=s.token WHERE s.task_id=t.id AND s.phase='running' AND l.expires_at>now()),0) in_flight,
               EXTRACT(EPOCH FROM COALESCE((SELECT max(a.created_at) FROM activity a WHERE a.exploration_id=t.exploration_id), t.created_at))::bigint last_activity_unix,
               COALESCE((SELECT json_build_object('input_tokens',COALESCE(SUM(a.input_tokens),0),'output_tokens',COALESCE(SUM(a.output_tokens),0),'cache_read_tokens',COALESCE(SUM(a.cache_read_tokens),0),'cache_write_tokens',COALESCE(SUM(a.cache_write_tokens),0))
                  FROM activity a WHERE a.exploration_id=t.exploration_id AND a.kind='result'),'{}'::json) tokens
@@ -46,8 +61,8 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const aggRows = new Map<number, Record<string, unknown>>();
     for (const r of (agg as unknown as { rows: Array<Record<string, unknown>> }).rows) aggRows.set(Number(r["id"]), r);
     return {
-      tasks: list.map((t) => {
-        const dto = taskDTO(t);
+      tasks: await Promise.all(list.map(async (t) => {
+        const dto = await serializeTask(t);
         const a = aggRows.get(Number(t.id));
         if (a) {
           dto["findings"] = a["findings"];
@@ -58,7 +73,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
           if (Object.keys((a["tokens"] as Record<string, unknown>) ?? {}).length > 0) dto["tokens"] = a["tokens"];
         }
         return dto;
-      }),
+      })),
       active,
     };
   });
@@ -77,6 +92,10 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       name: typeof b["name"] === "string" ? b["name"].trim() : "",
       categoryID: b["category_id"] === null || b["category_id"] === undefined ? null : Number(b["category_id"]) || null,
       sourceTaskIDs,
+      assetIDs: Array.isArray(b.asset_ids) ? b.asset_ids.map(Number) : undefined,
+      companyIDs: Array.isArray(b.company_ids) ? b.company_ids.map(Number) : undefined,
+      seedFirstIntent: b.seed_first_intent === true,
+      executionMode: b.execution_mode === 'manual' ? 'manual' : 'managed',
       llmProfileIDs,
       timeoutSeconds: Math.max(0, Number(b["timeout_seconds"]) || 0),
       planHeartbeatSeconds: Math.max(0, Number(b["plan_heartbeat_seconds"]) || 0),
@@ -84,8 +103,8 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       assetApprovalTemplate: typeof b["asset_approval_template"] === "string" ? b["asset_approval_template"] : undefined,
     });
     // 状态先落库（running），再后台跑 goals 分解 + 引擎循环；分解失败由引擎以活动事件记录。
-    void engineNoop(app.engine.admitTask(task.id, { decompose: { description } }));
-    return reply.code(201).send(taskDTO(task));
+    await app.engine.admitTask(task.id, { decompose: { description } });
+    return reply.code(201).send(await serializeTask((await tasks().getTask(task.id))!));
   });
 
   app.get("/api/tasks/:id", async (req, reply) => {
@@ -99,9 +118,9 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       app.db.taskScope().taskCoverage(id, task.exploration_id).catch(() => null),
     ]);
     return {
-      ...taskDTO(task),
+      ...await serializeTask(task),
       goals: goals.map((g) => ({ id: g.id, text: g.payload["text"] ?? "", vulnclass: g.payload["vulnclass"] ?? "", state: g.state })),
-      counts,
+      counts,goals_total:counts.goals,goals_met:counts.met,
       coverage: coverage ?? { enabled: false, scope_rows: 0, denominator: 0, tested: 0, pct: null, by_type: [] },
     };
   });
@@ -118,7 +137,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     if (typeof b["pinned"] === "boolean") {
       await app.db.query(`UPDATE tasks SET pinned_at=$2 WHERE id=$1`, [id, b["pinned"] ? new Date() : null]);
     }
-    return taskDTO((await tasks().getTask(id))!);
+    return serializeTask((await tasks().getTask(id))!);
   });
 
   // ─── 生命周期 ──────────────────────────────────────────────────────────────
@@ -127,7 +146,8 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const task = await tasks().getTask(id);
     if (!task) throw Object.assign(new Error("task not found"), { statusCode: 404 });
     await app.engine.admitTask(id);
-    return { id, status: "running" };
+    const after=await tasks().getTask(id);
+    return { id, status: after?.queued ? "queued" : "running", queued: after?.queued === true };
   }
 
   async function pauseTask(id: number): Promise<Record<string, unknown>> {
@@ -136,13 +156,14 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     } catch (err) {
       throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), { statusCode: 409 });
     }
-    await app.engine.pause(id);
-    return { id, paused: true, status: "paused" };
+    const result=await app.engine.pause(id);
+    return { id, paused: result.status==='paused', status: result.status, command_id: result.command_id };
   }
 
   async function resumeTask(id: number): Promise<Record<string, unknown>> {
     await app.engine.admitTask(id);
-    return { id, paused: false, status: (await tasks().getTask(id))?.status };
+    const after=await tasks().getTask(id);
+    return { id, paused: false, queued: after?.queued === true, status: after?.queued ? "queued" : after?.status };
   }
 
   async function stopTask(id: number): Promise<Record<string, unknown>> {
@@ -168,11 +189,14 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     if (action !== "pause" && action !== "resume" && action !== "finish") {
       return reply.code(400).send({ error: "action must be pause|resume|finish" });
     }
-    if (action === "pause") await pauseTask(id);
-    else if (action === "resume") await resumeTask(id);
+    let lifecycle:Record<string,unknown>|undefined;
+    if (action === "pause") lifecycle=await pauseTask(id);
+    else if (action === "resume") lifecycle=await resumeTask(id);
     else await stopTask(id);
     const t = await tasks().getTask(id);
-    return { id, paused: t?.paused === true, queued: t?.queued === true, status: t?.status ?? "created" };
+    return { id, paused: t?.paused === true, queued: t?.queued === true,
+      status: lifecycle?.status ?? (t?.queued ? "queued" : t?.status ?? "created"),
+      ...(lifecycle?.command_id === undefined ? {} : { command_id:lifecycle.command_id }) };
   });
 
   app.delete("/api/tasks/:id", async (req) => {
@@ -207,27 +231,17 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     });
   }
 
-  // 人工介入：运行中的意图注入纠偏消息（drain 语义，模型下一轮读）。
-  app.post("/api/tasks/:id/intents/:intentID/messages", async (req, reply) => {
-    const taskID = Number((req.params as { id: string }).id);
-    const intentID = Number((req.params as { intentID: string }).intentID);
-    const body = (req.body ?? {}) as { message?: unknown; request_id?: unknown };
-    const message = typeof body["message"] === "string" ? body["message"] : "";
-    if (message.trim() === "") return reply.code(400).send({ error: "message 不能为空" });
-    try {
-      app.engine.steerWork(taskID, intentID, message);
-    } catch (err) {
-      return reply.code(409).send({ error: err instanceof Error ? err.message : String(err) });
-    }
-    return { id: intentID, state: "running", accepted: true, request_id: body["request_id"] ?? "" };
-  });
+  // Historical messages remain readable; Worker control is button-only.
+  app.post("/api/tasks/:id/intents/:intentID/messages", async (_req, reply) =>
+    reply.code(410).send({ error: "Worker 不支持直接对话，请使用暂停或恢复按钮" }));
 
   app.get("/api/tasks/:id/worker-queue", async (req) => {
     const taskID = Number((req.params as { id: string }).id);
     const expID = await taskExploration(taskID);
     const q = await app.db.exploration(expID).workerQueue();
     return {
-      items: q.items.map((n) => ({ ...n, id: String(n.id) })),
+      scheduling:await executionSnapshot(app.db,taskID),
+      items: q.items.map((n) => ({ ...n, id: String(n.id),execution_phase:q.executionMode==='manual'?(n.payload.dispatch_requested?'ready':'pending_dispatch'):n.payload.dispatch_requested?'ready':'awaiting_planner' })),
       version: q.version,
       manual: q.manual,
       execution_mode: q.executionMode,
@@ -262,7 +276,9 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const message = typeof body["message"] === "string" ? body["message"] : "";
     if (!message.trim() && !(Array.isArray(body["attachments"]) && body["attachments"].length)) throw Object.assign(new Error("message 不能为空"), { statusCode: 400 });
     const attached=await prepareAttachments(app.db,app.dataDir,taskID,body["attachments"]);
-    return { reply: await app.engine.mainChat(taskID,[message,attached.text].filter(Boolean).join('\n\n'),segment,attached), mode: "main" };
+    const requestID=body["request_id"];
+    if(requestID!==undefined&&(typeof requestID!=="string"||!/^[-a-zA-Z0-9:]{1,120}$/.test(requestID)))throw Object.assign(new Error("request_id 无效"),{statusCode:400});
+    return { reply: await app.engine.mainChat(taskID,[message,attached.text].filter(Boolean).join('\n\n'),segment,attached,requestID as string|undefined), mode: "main" };
   };
   app.post("/api/tasks/:id/chat", async (req) => chat(Number((req.params as { id: string }).id), (req.body ?? {}) as Record<string, unknown>));
   app.post("/api/chat", async (req) => {
@@ -274,12 +290,13 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const taskID = Number((req.params as { id: string }).id);
     await taskExploration(taskID);
     await app.engine.stopMainChat(taskID);
-    return { ok: true, status: "stopped" };
+    const pending=!!(await app.db.query("SELECT 1 FROM runtime_session_leases WHERE key LIKE $1 AND expires_at>now()",[`main:${taskID}:%`])).rowCount;
+    return { ok: true, status: pending?'waiting_for_executor':'stopped' };
   });
   app.get("/api/tasks/:id/chat/status", async (req) => {
     const taskID = Number((req.params as { id: string }).id);
     await taskExploration(taskID);
-    return { running: app.engine.mainChatRunning(taskID) };
+    return { running: app.engine.mainChatRunning(taskID)||!!(await app.db.query("SELECT 1 FROM runtime_session_leases WHERE key LIKE $1 AND expires_at>now()",[`main:${taskID}:%`])).rowCount };
   });
 
   // GET /api/chat/mentions?task=&kind=&q=&cursor= — @ 提及候选（对齐 api.chatMentions）。
@@ -358,7 +375,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const first = ids[0] ?? null;
     await app.db.transaction(async tx=>{
       await tx.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[taskID]);
-      await tx.query(`UPDATE tasks SET llm_profile_id=$2,active_llm_profile_id=COALESCE($3,$2) WHERE id=$1`,[taskID,first,activeID]);
+      await tx.query(`UPDATE tasks SET llm_profile_id=$2::bigint,active_llm_profile_id=COALESCE($3::bigint,$2::bigint) WHERE id=$1`,[taskID,first,activeID]);
       await tx.query(`DELETE FROM task_llm_profiles WHERE task_id=$1`,[taskID]);
       for(let pos=0;pos<ids.length;pos++)await tx.query(`INSERT INTO task_llm_profiles(task_id,profile_id,position) VALUES($1,$2,$3)`,[taskID,ids[pos],pos]);
     });

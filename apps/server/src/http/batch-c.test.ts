@@ -1,3 +1,4 @@
+import {PLANNER_PROMPT} from '../agent/prompts.js';
 // 批次 C 集成测试：分类 CRUD+批量、skills 文件写读删+路径穿越拒绝+zip 上传、
 // agents config 读写闭环、custom tool CRUD+测试执行、asset-tree 真形状、export/deepen。
 // DB 共享开发库（series-ts-pg），与 api.test.ts 同构；vitest fileParallelism=false 串行。
@@ -454,7 +455,7 @@ describe.skipIf(!haveDB)("批次C：agent 配置", () => {
     const current = await db!.query<{ template_text: string }>(
       `SELECT p.template_text FROM agents a JOIN agent_prompts p ON p.id=a.current_prompt_id WHERE a.key='planner'`,
     );
-    expect(current.rows[0]!.template_text).toContain("规划者");
+    expect(current.rows[0]!.template_text).toBe(PLANNER_PROMPT);
 
     const preview = await authed("POST", "/api/agents/planner/prompt/preview", {
       template: "目标：{{Goal}} / {{.Goal}}；时间 {{Now}}；未知 {{Unknown}}",
