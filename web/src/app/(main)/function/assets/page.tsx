@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 
@@ -316,7 +317,7 @@ export default function AssetsPage() {
     <div className="flex h-[calc(100vh-6rem)] min-h-0 flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">资产</h1>
+          <PageHeading title={<>资产</>}/>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted-foreground">

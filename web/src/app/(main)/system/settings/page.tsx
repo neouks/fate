@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import { HTTPAuthCard } from "./_components/http-auth-card";
 import * as React from "react";
@@ -297,7 +298,7 @@ export default function SystemSettingsPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">系统配置</h1>
+        <PageHeading title={<>系统配置</>}/>
         <p className="text-muted-foreground text-sm">全局运行时开关</p>
       </div>
 

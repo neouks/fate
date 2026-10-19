@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 import { toast } from "sonner";
@@ -223,7 +224,7 @@ export default function AgentsPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Agent</h1>
+          <PageHeading title={<>Agent</>}/>
           <p className="text-muted-foreground text-sm">
             内置 Agent 的提示词/配置，以及自定义会话 Agent 的创建与管理
           </p>
@@ -257,7 +258,7 @@ export default function AgentsPage() {
       <Sheet open={!!editing} onOpenChange={(o) => !o && setEditKey(null)}>
         <SheetContent
           side="right"
-          className="flex flex-col gap-0 p-0 data-[side=right]:w-[45vw] data-[side=right]:sm:max-w-[45vw]"
+          className="flex flex-col gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:w-[min(720px,90vw)] data-[side=right]:sm:max-w-none"
         >
           {editing && (
             <>

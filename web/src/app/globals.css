@@ -11,14 +11,14 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --radius-xs: var(--radius);
-  --radius-sm: var(--radius);
+  --radius-xs: calc(var(--radius) - 4px);
+  --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
-  --radius-lg: var(--radius);
-  --radius-xl: var(--radius);
-  --radius-2xl: var(--radius);
-  --radius-3xl: var(--radius);
-  --radius-4xl: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -57,7 +57,7 @@
 /* Default theme styles (used when no data-theme-preset is set or when 'default' is selected).
 These serve as the fallback; there is no separate default.css file. */
 :root {
-  --radius: 5px;
+  --radius: 8px;
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
@@ -79,7 +79,7 @@ These serve as the fallback; there is no separate default.css file. */
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.985 0 0);
+  --sidebar: oklch(1 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
@@ -91,7 +91,7 @@ These serve as the fallback; there is no separate default.css file. */
   /* fonts */
   --font-sans: var(--font-geist);
   --font-mono: var(--font-geist-mono);
-  --background: oklch(1 0 0);
+  --background: oklch(0.988 0.002 260);
   --foreground: oklch(0.145 0 0);
 }
 
@@ -136,7 +136,7 @@ These serve as the fallback; there is no separate default.css file. */
 
   body {
     @apply bg-background text-foreground;
-    font-family: var(--font-sans), system-ui, sans-serif;
+    font-family: var(--font-sans), "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   }
   html {
     @apply font-sans;
@@ -284,3 +284,38 @@ html {
     -webkit-print-color-adjust: exact;
   }
 }
+
+/* Workspace design tokens: inherited by every page, including auth and overlays. */
+:root { --status-success: oklch(0.48 0.12 160); --status-warning: oklch(0.55 0.12 65); --status-info: oklch(0.5 0.12 250); --composer-radius: 20px; }
+.dark { --status-success: oklch(0.76 0.12 160); --status-warning: oklch(0.78 0.12 65); --status-info: oklch(0.76 0.12 250); }
+.workspace-page { width: 100%; max-width: 1600px; margin-inline: auto; }
+.workspace-page > :first-child { min-width: 0; }
+.workspace-page h1 { font-size: 1.625rem; font-weight: 600; letter-spacing: -.035em; }
+.workspace-page [data-slot="table"] { font-size: .875rem; }
+.workspace-page [data-slot="table-head"] { height: 2.75rem; color: var(--muted-foreground); }
+.workspace-page [data-slot="table-cell"] { padding-block: .875rem; }
+.workspace-page [data-slot="card"] { box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 3%, transparent); }
+.task-workspace { height: 100dvh; max-height: 100dvh; flex: 0 0 auto; min-height: 0; overflow: hidden; }
+.task-main-conversation [data-slot="message-scroller"] { flex: 1; height: auto; }
+.task-main-conversation [data-slot="bubble-content"] { font-size: 1rem; line-height: 1.75; }
+.task-main-conversation [data-slot="bubble"][data-align="start"] { max-width: 100%; width: 100%; }
+.task-main-conversation [data-slot="bubble"][data-align="start"] > [data-slot="bubble-content"] { background: transparent; }
+.task-main-conversation [data-slot="message-scroller-content"] { width: 100%; max-width: 860px; margin-inline: auto; padding: 1.5rem; gap: 1.5rem; }
+.task-composer { flex-shrink: 0; width: 100%; max-width: 860px; margin-inline: auto; padding: .75rem 1.5rem 1.25rem; }
+.task-composer [data-slot="input-group"] { border-radius: var(--composer-radius); background: var(--card); padding: .5rem; box-shadow: 0 4px 20px color-mix(in oklch, var(--foreground) 4%, transparent); }
+.task-composer textarea { min-height: 84px; font-size: 1rem; }
+.task-scroll-panel { height: 100%; min-height: 0; overflow: auto; padding: 1.5rem; }
+.task-scroll-panel > * { min-width: 0; }
+.task-process { min-width: 0; height: 100%; display: flex; flex-direction: column; background: var(--card); }
+.task-process [data-slot="bubble-content"] { font-size: .875rem; }
+@media (max-width: 639px) { .task-scroll-panel { padding: 1rem; } .task-composer { padding: .5rem .75rem; } .task-main-conversation [data-slot="message-scroller-content"] { padding: 1rem; } }
+
+.task-main-conversation .transcript-markdown { font-size: 1rem; line-height: 1.75; }
+.task-main-conversation .transcript-markdown > div { font-size: 1.05em; }
+
+.task-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem; padding-block: .5rem; }
+.task-header-title { grid-column: 1; min-height: 40px; }
+.task-header-actions { grid-column: 2; grid-row: 1; }
+.task-header-tabs { grid-column: 1 / -1; }
+@media (min-width:1280px) { .task-header { grid-template-columns: minmax(120px, 1fr) auto auto; min-height: 56px; padding-block: 0; } .task-header-tabs { grid-column: 2; grid-row: 1; } .task-header-actions { grid-column: 3; } }
+@media (max-width:639px) { .task-header-tabs { grid-row: 2; grid-column: 1 / -1; } .task-header-title > a, .task-header-title > span { display:none; } }

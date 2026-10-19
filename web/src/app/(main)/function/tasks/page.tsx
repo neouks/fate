@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 
@@ -810,7 +811,8 @@ export default function TasksPage() {
   );
 
   return (
-    <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-4">
+    <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-6">
+      <div className="px-4 lg:px-6"><PageHeading title="任务" description="管理探索任务、查看执行进度与已发布成果。"/></div>
       <TabsList className="mx-4 lg:mx-6">
         <TabsTrigger value="current">当前任务</TabsTrigger>
         <TabsTrigger value="archived">已归档</TabsTrigger>
@@ -3346,6 +3348,11 @@ function CreateTaskSheet({
   onCategoriesChanged: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
+  React.useEffect(() => {
+    const check = () => { const url=new URL(window.location.href); if(url.searchParams.get('create')==='1'){setOpen(true);url.searchParams.delete('create');window.history.replaceState(null,'',url);} };
+    check(); const open=()=>setOpen(true);window.addEventListener('series:create-task',open);
+    return()=>window.removeEventListener('series:create-task',open);
+  }, []);
   const [name, setName] = React.useState("");
   const [categoryID, setCategoryID] = React.useState<number | undefined>(undefined);
   const [description, setDescription] = React.useState("");

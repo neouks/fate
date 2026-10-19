@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 import { toast } from "sonner";
@@ -514,7 +515,7 @@ export default function InterceptPage() {
       <div className="flex items-center gap-2.5">
         <ShieldAlertIcon className="h-5 w-5 shrink-0" />
         <div>
-          <h1 className="text-lg font-semibold leading-tight">命令拦截</h1>
+          <PageHeading title={<>命令拦截</>}/>
           <p className="text-sm text-muted-foreground mt-0.5">
             工具执行前先按拦截规则匹配；未命中的命令可交由模型兜底判定
           </p>

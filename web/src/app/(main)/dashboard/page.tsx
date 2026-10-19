@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 
@@ -496,7 +497,7 @@ export default function DashboardPage() {
       {/* ── Header ── */}
       <div>
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">总览</h1>
+          <PageHeading title={<>总览</>}/>
           <p className="text-xs text-muted-foreground">系统全局状态 · 实时刷新</p>
         </div>
       </div>

@@ -64,7 +64,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
       defaultOpen={defaultOpen}
       style={
         {
-          "--sidebar-width": "calc(var(--spacing) * 68)",
+          "--sidebar-width": "256px",
         } as React.CSSProperties
       }
     >
@@ -75,7 +75,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           "[html[data-content-layout=centered]_&>*]:w-full",
           "[html[data-content-layout=centered]_&>*]:max-w-screen-2xl",
           "peer-data-[variant=inset]:border",
-          "[--dashboard-header-height:--spacing(12)]",
+          "[--dashboard-header-height:56px]",
           "min-w-0 overflow-x-hidden",
         )}
       >

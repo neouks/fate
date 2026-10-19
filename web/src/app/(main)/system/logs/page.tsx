@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import { entryAwareFetch } from "@/lib/http-auth";
 import * as React from "react";
@@ -143,7 +144,7 @@ export default function LogsPage() {
   return (
     <div className="flex flex-1 flex-col gap-3">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">系统日志</h1>
+        <PageHeading title={<>系统日志</>}/>
         <p className="text-muted-foreground text-sm">后端实时日志流(planner / worker / 数据库 / 流量 …)</p>
       </div>
       <div className="flex flex-1 flex-col gap-3">

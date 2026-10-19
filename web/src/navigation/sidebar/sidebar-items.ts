@@ -59,27 +59,33 @@ export interface NavGroup {
 export const sidebarItems: NavGroup[] = [
   {
     id: 1,
-    label: "功能",
     items: [
-      { id: "dashboard", title: "仪表盘", url: "/dashboard", icon: LayoutDashboard },
-            { id: "tasks", title: "任务", url: "/function/tasks", icon: Target },
+      { id: "tasks", title: "任务", url: "/function/tasks", icon: Target },
       { id: "findings", title: "发现", url: "/function/findings", icon: Bug },
-            { id: "assets", title: "资产", url: "/function/assets", icon: Network },
-          ],
+      { id: "assets", title: "资产", url: "/function/assets", icon: Network },
+      { id: "dashboard", title: "仪表盘", url: "/dashboard", icon: LayoutDashboard },
+      { id: "chat", title: "独立会话", url: "/chat", icon: MessageSquare },
+    ],
   },
   {
     id: 2,
-    label: "系统",
     items: [
-      { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
-      { id: "agents", title: "Agent", url: "/system/agents", icon: Bot },
-      { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug },
-      { id: "skills", title: "Skill", url: "/system/skills", icon: Sparkles },
-      { id: "tools", title: "工具", url: "/system/tools", icon: Wrench },
-      { id: "intercept", title: "拦截规则", url: "/system/intercept", icon: ShieldAlert },
-      { id: "approvals", title: "审批记录", url: "/system/intercept/approvals", icon: ClipboardList },
-      { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText },
-      { id: "settings", title: "系统配置", url: "/system/settings", icon: Settings2 },
+      {
+        id: "system",
+        title: "系统管理",
+        icon: Settings2,
+        subItems: [
+          { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
+          { id: "agents", title: "Agent", url: "/system/agents", icon: Bot },
+          { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug },
+          { id: "skills", title: "Skill", url: "/system/skills", icon: Sparkles },
+          { id: "tools", title: "工具", url: "/system/tools", icon: Wrench },
+          { id: "intercept", title: "拦截规则", url: "/system/intercept", icon: ShieldAlert },
+          { id: "approvals", title: "审批记录", url: "/system/intercept/approvals", icon: ClipboardList },
+          { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText },
+          { id: "settings", title: "系统配置", url: "/system/settings", icon: Settings2 },
+        ],
+      },
     ],
   },
 ];

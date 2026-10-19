@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 
@@ -26,7 +27,7 @@ function AgentDetailInner() {
           </Link>
         </Button>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Agent</h1>
+          <PageHeading title={<>Agent</>}/>
           <p className="text-muted-foreground font-mono text-xs">{key}</p>
         </div>
       </div>

@@ -1,4 +1,5 @@
 "use client";
+import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 
@@ -18,6 +19,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {Field,FieldGroup,FieldLabel} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -324,6 +326,7 @@ function ProfileSheet({
   const [effort, setEffort] = React.useState(NONE);
   const [priority, setPriority] = React.useState("0"); // 轮询顺位;越大越先
   const [poolExclude, setPoolExclude] = React.useState(false);
+  const [supportsImages,setSupportsImages]=React.useState(false);
   const [streaming, setStreaming] = React.useState(true); // true=流式(默认);false=非流式
   const [maxTokens, setMaxTokens] = React.useState("0"); // 单次回复输出上限;0=不发送
   const [maxTokensField, setMaxTokensField] = React.useState(NONE); // 上限用哪个字段名;NONE=max_tokens
@@ -352,6 +355,7 @@ function ProfileSheet({
     setPriority(String(profile?.priority ?? 0));
     setPoolExclude(profile?.pool_exclude ?? false);
     setStreaming(profile?.streaming ?? true);
+    setSupportsImages(profile?.supports_images??false);
     setMaxTokens(String(profile?.max_tokens ?? 0));
     setMaxTokensField(fromStore(profile?.max_tokens_field));
     setSessionHeaderKey(profile?.session_header_key ?? "");
@@ -439,6 +443,7 @@ function ProfileSheet({
         priority: Number(priority) || 0,
         pool_exclude: poolExclude,
         streaming,
+        supports_images:supportsImages,
         max_tokens: Math.max(0, Number(maxTokens) || 0),
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
@@ -461,7 +466,7 @@ function ProfileSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="flex flex-col gap-0 p-0 data-[side=right]:min-w-[420px] data-[side=right]:sm:max-w-xl"
+        className="flex flex-col gap-0 p-0 data-[side=right]:w-full data-[side=right]:min-w-0 data-[side=right]:sm:max-w-xl"
       >
         <SheetHeader className="px-4">
           <SheetTitle className="flex items-center gap-2">
@@ -671,6 +676,9 @@ function ProfileSheet({
               </div>
               <Switch checked={streaming} onCheckedChange={setStreaming} aria-label="流式输出" />
             </div>
+            <FieldGroup><Field orientation="horizontal"><FieldLabel htmlFor="model-images">模型支持图片输入</FieldLabel><Switch id="model-images" checked={supportsImages} onCheckedChange={setSupportsImages} /></Field></FieldGroup>
+            <div>
+            </div>
           </div>
 
           <div className="grid gap-3 rounded-lg border p-3">
@@ -856,7 +864,7 @@ export default function LLMPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="font-semibold text-xl tracking-tight">LLM</h1>
+          <PageHeading title={<>LLM</>}/>
           <p className="text-muted-foreground text-sm">
             全 Agent 共享的格式 / 模型 / 限速配置。点击卡片编辑，星标为当前激活配置。
           </p>
