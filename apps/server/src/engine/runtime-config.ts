@@ -65,7 +65,12 @@ export async function createTrackedRunner(db:Database,taskID:number,role:string,
    }
    return guard?.(g);
   },
-  discoveryGuard:async name=>{await assertToolBinding(db,role,name);await options.discoveryGuard?.(name);},
+  discoveryGuard:async name=>{
+   if(name.startsWith('shell_')&&!(await db.query('SELECT 1 FROM agents WHERE key=$1 AND enabled AND interactive_shell',[role])).rowCount)
+    throw new Error('交互终端已禁用');
+   await assertToolBinding(db,role,name);
+   await options.discoveryGuard?.(name);
+  },
   mcpGuard:async(server,method,tool)=>{
    if(!['tools/call','resources/read','prompts/get'].includes(method))return;
    const allowed=await db.query(`SELECT 1 FROM mcp_servers m JOIN agents a ON a.key=$1
