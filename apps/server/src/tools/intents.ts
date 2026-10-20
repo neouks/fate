@@ -15,7 +15,7 @@ export function addIntentTool(ctx: ToolRunContext) {
       name: "add_intent",
       description:
         "提交 1~4 条探索意图进 frontier，worker 将按优先级领取执行。提交前逐一与 open/running 意图及" +
-        "近期已完成意图比对：换措辞重复已有方向是严重错误。parent 必须是产出了证据的 fact/finding 节点" +
+        "近期已完成意图比对：换措辞重复已有方向是严重错误。尽量填写稳定的 contract.work，资源可用 asset:ID 或精确 URL；同方向复用 question_key/method_class/identity。legacy_text 表示仅有文本去重，不能据此认为语义无重复。parent 必须是产出了证据的 fact/finding 节点" +
         "（发现驱动规划）。串行依赖链用 todo_write 记录，只派前置已满足的那一步。",
       promptSnippet: "派发探索意图（先查重）",
       parameters: {
@@ -56,7 +56,7 @@ export function addIntentTool(ctx: ToolRunContext) {
           await c.hooks.assertOwnership?.(db);
           const capabilities = await workerCapabilities({...c, db});
           const s = db.exploration(c.expID), originFact = await s.originFactID();
-          const submitted: { summary: string; intent_id: number; created: boolean; duplicate_of?: number }[] = [];
+          const submitted: { summary: string; intent_id: number; created: boolean; duplicate_of?: number;dedup?:{version:2;strength:string;match?:string} }[] = [];
           for (const item of args.intents) {
             const parentIDs=[...new Set(item.parent_ids??(item.parent_id?[item.parent_id]:[originFact]))].filter(id=>id>0);
             const contract=normalizeContract(item.contract,item.summary);
@@ -84,7 +84,7 @@ export function addIntentTool(ctx: ToolRunContext) {
               if(oldWork&&!contract.work)contract.work=oldWork;
               await db.query("UPDATE exploration_nodes SET payload=payload||$2::jsonb WHERE id=$1 AND state='open' AND payload->>'needs_replanning'='true'",[res.id,JSON.stringify({...payload,needs_replanning:false})]);
             }
-            submitted.push({summary:item.summary,intent_id:res.id,created:res.created,...(!res.created?{duplicate_of:res.id}:{})});
+            submitted.push({summary:item.summary,intent_id:res.id,created:res.created,dedup:res.dedup,...(!res.created?{duplicate_of:res.id}:{})});
           }
           return submitted;
         });

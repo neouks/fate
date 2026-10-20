@@ -1,3 +1,4 @@
+import {workIdentity,overlappingWork,directionIdentity,type WorkAsset} from '../agent/work-identity.js';
 // 探索图 store：节点/边/锚点、意图指纹去重、advisory-lock 队列领取、状态机、activity 写入。
 // 忠实平移自 Go 版 db/exploration.go + db/worker_queue.go 的核心路径；
 // 列表/统计类只读方法按需在后续模块补充。
@@ -285,7 +286,7 @@ export class ExplorationStore {
     priority: number,
     anchors: number[],
     origin: string,
-  ): Promise<{ id: number; created: boolean }> {
+  ): Promise<{ id: number; created: boolean; dedup?:{version:2;strength:string;match?:string} }> {
     return this.addIntentDeduplicatedInner(payload, priority, anchors, origin, false);
   }
 
@@ -294,7 +295,7 @@ export class ExplorationStore {
     priority: number,
     anchors: number[],
     origin: string,
-  ): Promise<{ id: number; created: boolean }> {
+  ): Promise<{ id: number; created: boolean; dedup?:{version:2;strength:string;match?:string} }> {
     return this.addIntentDeduplicatedInner(payload, priority, anchors, origin, true);
   }
 
@@ -304,7 +305,7 @@ export class ExplorationStore {
     anchors: number[],
     origin: string,
     requireManaged: boolean,
-  ): Promise<{ id: number; created: boolean }> {
+  ): Promise<{ id: number; created: boolean; dedup?:{version:2;strength:string;match?:string} }> {
     if (origin === "") origin = "planner";
     const summary = typeof payload["summary"] === "string" ? payload["summary"] : "";
     const contract = normalizeContract(payload.contract,summary);
@@ -338,14 +339,19 @@ export class ExplorationStore {
          ORDER BY CASE WHEN n.state IN ('open','running','paused') THEN 0 ELSE 1 END,n.id DESC`,
         [this.expID],
       );
-      const rowFingerprint=(row:typeof rows.rows[number])=>{
-        const summary=typeof row.payload.summary==='string'?row.payload.summary:'';
-        const assets=JSON.parse(row.anchors) as number[];
-        return row.payload.contract?workFingerprint(normalizeContract(row.payload.contract,summary),assets)??intentFingerprint(summary,assets):intentFingerprint(summary,assets);
+      const allAssets=new Set(anchors);
+      const collectResource=(contract:unknown)=>{const match=/^asset:([1-9][0-9]*)$/.exec(String((contract as {work?:{resource?:string}}|undefined)?.work?.resource??''));if(match)allAssets.add(Number(match[1]));};
+      collectResource(contract);
+      for(const row of rows.rows){for(const id of JSON.parse(row.anchors) as number[])allAssets.add(id);collectResource(row.payload.contract);}
+      const assetRows=allAssets.size?(await tx.query('SELECT id,type,url,method,params,domain,ip,port FROM assets WHERE id=ANY($1::bigint[])',[[...allAssets]])).rows:[];
+      const assetMap=new Map<number,WorkAsset>(assetRows.map(a=>[Number(a.id),{...a,id:Number(a.id),type:String(a.type)} as WorkAsset]));
+      const identity=workIdentity(contract,summary,anchors,assetMap);
+      const rowIdentities=new Map(rows.rows.map(row=>[row.id,workIdentity(normalizeContract(row.payload.contract,String(row.payload.summary??'')),String(row.payload.summary??''),JSON.parse(row.anchors) as number[],assetMap)]));
+      const sameWork=(row:typeof rows.rows[number])=>{
+        const old=rowIdentities.get(row.id)!;
+        return old.key===identity.key || ((!contract.work || !(row.payload.contract as {work?:unknown}|undefined)?.work) &&
+          directionIdentity(String(row.payload.summary??''))===directionIdentity(summary) && JSON.stringify(old.targets)===JSON.stringify(identity.targets));
       };
-      const sameWork=(row:typeof rows.rows[number])=>rowFingerprint(row)===fingerprint ||
-        ((!contract.work || !(row.payload.contract as {work?:unknown}|undefined)?.work) &&
-          intentFingerprint(String(row.payload.summary??''),JSON.parse(row.anchors) as number[])===intentFingerprint(summary,anchors));
       if(payload.retry_of){
         const previous=rows.rows.find(row=>Number(row.id)===Number(payload.retry_of));
         if(!previous||!sameWork(previous))throw new Error('retry_of 必须指向本任务的同一项工作');
@@ -362,13 +368,15 @@ export class ExplorationStore {
             throw new Error('重试需可恢复故障或新的有效事实依据');
           }
           await tx.commit();
-          return { id: Number(row.id), created: false };
+          return { id: Number(row.id), created: false, dedup:{version:2,strength:identity.strength,match:"equivalent_work"} };
         }
       }
 
       if(payload.retry_of && !rows.rows.some(row=>Number(row.id)===Number(payload.retry_of)))throw new Error('retry_of 必须属于本任务');
 
-      const stored: Record<string, unknown> = { ...payload, fingerprint };
+      const overlap=rows.rows.find(row=>['open','running','paused'].includes(row.state)&&overlappingWork(identity,rowIdentities.get(row.id)!));
+      if(overlap)throw new Error(`工作范围与运行/待执行意图 #${overlap.id} 部分重叠；请读取该意图后排除已覆盖目标，或使用原意图，不新增重复执行。`);
+      const stored: Record<string, unknown> = { ...payload, fingerprint,work_identity:identity };
       const cleanAnchors = [...new Set(anchors.filter((a) => a > 0))].sort((a, b) => a - b);
       if (cleanAnchors.length > 0) stored["asset_ids"] = cleanAnchors;
       const raw = jsonbClean(JSON.stringify(stored));
@@ -382,7 +390,7 @@ export class ExplorationStore {
         await tx.query(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, assetID]);
       }
       await tx.commit();
-      return { id, created: true };
+      return { id, created: true, dedup:{version:2,strength:identity.strength} };
     } catch (err) {
       await tx.rollback();
       throw err;
@@ -777,7 +785,7 @@ export class ExplorationStore {
 // ─── 意图指纹（IntentFingerprint 平移）──────────────────────────────────────
 
 export function intentFingerprint(summary: string, anchors: number[]): string {
-  const normalized = summary.trim().toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+  const normalized = directionIdentity(summary);
   if (normalized === "") return "";
   const ids = [...new Set(anchors.filter((a) => a > 0))].sort((a, b) => a - b);
   const key = normalized + "\x00" + JSON.stringify(ids);
