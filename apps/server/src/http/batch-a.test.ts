@@ -325,11 +325,14 @@ describe.skipIf(!haveDB)("批次A：任务总览数据", () => {
       [taskID],
     );
     expect(chain.rows.map((r) => Number(r.profile_id))).toEqual([pidA, pidB]);
+    // Reopening the settings dialog must receive the complete saved chain.
+    expect((await authed("GET", `/api/tasks/${taskID}`)).json().llm_profile_ids).toEqual([pidA, pidB]);
 
     const put2 = await authed("PUT", `/api/tasks/${String(taskID)}/llm`, { llm_profile_ids: [] });
     expect((put2.json() as { ok: boolean }).ok).toBe(true);
     const t2 = (await db!.query(`SELECT llm_profile_id, active_llm_profile_id FROM tasks WHERE id=$1`, [taskID])).rows[0]!;
     expect(t2["llm_profile_id"]).toBeNull();
+    expect((await authed("GET", `/api/tasks/${taskID}`)).json().llm_profile_ids).toEqual([]);
     expect((await db!.query(`SELECT count(*) AS n FROM task_llm_profiles WHERE task_id=$1`, [taskID])).rows[0]!["n"]).toBe("0");
   });
 

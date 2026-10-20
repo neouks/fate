@@ -112,13 +112,15 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const task = await tasks().getTask(id);
     if (!task) return reply.code(404).send({ error: "task not found" });
     const s = app.db.exploration(task.exploration_id);
-    const [goals, counts, coverage] = await Promise.all([
+    const [goals, counts, coverage, modelChain] = await Promise.all([
       s.listByKind("goal", 500).catch(() => []),
       s.executionCounts().catch(() => ({ running: 0, goals: 0, met: 0 })),
       app.db.taskScope().taskCoverage(id, task.exploration_id).catch(() => null),
+      app.db.query('SELECT profile_id FROM task_llm_profiles WHERE task_id=$1 ORDER BY position', [id]),
     ]);
     return {
       ...await serializeTask(task),
+      llm_profile_ids: modelChain.rows.map((row) => Number(row.profile_id)),
       goals: goals.map((g) => ({ id: g.id, text: g.payload["text"] ?? "", vulnclass: g.payload["vulnclass"] ?? "", state: g.state })),
       counts,goals_total:counts.goals,goals_met:counts.met,
       coverage: coverage ?? { enabled: false, scope_rows: 0, denominator: 0, tested: 0, pct: null, by_type: [] },
