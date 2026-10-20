@@ -24,7 +24,7 @@ export interface ToolLoading {
 }
 /** Pure loadout shared with preview. Filtering never introduces a tool absent from the bound set. */
 export function toolLoadout(role:string,options:Pick<AgentRunnerOptions,'customTools'|'toolAllowlist'>,settings:{direct?:boolean;legacy?:boolean;legacyParameters?:string[];referenced?:string[];custom?:string[];fallback?:string}={}) {
- const allowed=(options.toolAllowlist??[]).filter(n=>!RETIRED_TOOLS.has(n));
+ const allowed=[...new Set(options.toolAllowlist??[])].filter(n=>!RETIRED_TOOLS.has(n));
  const compatibility=allowed.filter(n=>TOOL_ALIASES[n]&&(settings.legacy||settings.referenced?.includes(n)||!allowed.includes(TOOL_ALIASES[n]!)));
  const names=allowed.filter(n=>!TOOL_ALIASES[n]||compatibility.includes(n));
  const customTools=(options.customTools??[]).filter(t=>names.includes(t.name)).map(t=>settings.legacy||settings.legacyParameters?.includes(t.name)?t:compactToolSchema(t));
@@ -33,7 +33,8 @@ export function toolLoadout(role:string,options:Pick<AgentRunnerOptions,'customT
  const policy:ToolLoading={version:TOOL_POLICY_VERSION,initialActive,deferred,compatibility,...(settings.fallback?{fallback:settings.fallback}:{})};
  return {customTools:customTools.map(t=>({...t,...(deferred.includes(t.name)?{exposure:'deferred' as const}: {})})),toolAllowlist:names,toolLoading:policy};
 }
-export async function prepareToolLoading(db:Database,role:string,options:AgentRunnerOptions,direct:boolean,fallback?:string){
+type ToolLoadingOptions=Pick<AgentRunnerOptions,'customTools'|'toolAllowlist'|'legacyTools'|'systemPrompt'|'resumeSessionPath'|'skillsDir'|'allowedSkills'>;
+export async function prepareToolLoading(db:Database,role:string,options:ToolLoadingOptions,direct:boolean,fallback?:string){
  let legacy=false;
  if(options.resumeSessionPath){try{const lines=(await readFile(options.resumeSessionPath,'utf8')).split('\n').filter(Boolean).map(l=>JSON.parse(l));legacy=lines.some(e=>e.type==='message')&&!lines.some(e=>e.type==='custom'&&e.customType===TOOL_POLICY_VERSION);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}}
  // Scan only explicitly bound Skills for compatibility; no Skill content is injected into the model.

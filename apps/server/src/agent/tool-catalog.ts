@@ -49,11 +49,12 @@ export async function previewRoleTools(db:Database,role:string,taskBound=true){
  const nativeNames=['worker','planner','mainagent'].includes(role)||role==='pentest'&&taskBound?['read','bash','write','edit']:['auto','reporter','pentest','goals'].includes(role)?['read']:[];
  const disabled=await disabledBuiltinTools(db,role);
  const domain=await applyToolBindings(db,role,roleDefinitions(db,role,taskBound));
- const candidate=[...domain,...native().filter(t=>nativeNames.includes(t.name)&&!disabled.has(t.name)),...(agent.interactiveShell&&['worker','planner','mainagent'].includes(role)?terminalToolDefinitions():[]),...await customWorkerTools(ctx,previewCwd)];
+ const custom=role==='pentest'&&!taskBound?[]:await customWorkerTools(ctx,previewCwd);
+ const candidate=[...domain,...native().filter(t=>nativeNames.includes(t.name)&&!disabled.has(t.name)),...(agent.interactiveShell&&['worker','planner','mainagent'].includes(role)?terminalToolDefinitions():[]),...custom];
  if(['worker','planner','mainagent'].includes(role)){const bash=candidate.find(t=>t.name==='bash');if(bash)bash.description=await platformBashDescription(ctx,bash.description,agent.interactiveShell);}
  const permitted=new Set((await applyToolBindings(db,role,candidate.map(t=>({name:t.name})))).map(t=>t.name));
  const bound=candidate.filter(t=>permitted.has(t.name)),policy=await platformPolicy(db,role),prompt=await resolveRolePrompt(db,role),resources=await roleResources(db,role,skillDir());
- const loadout=await prepareToolLoading(db,role,{customTools:bound,legacyTools:taskBound?legacyReadCandidates(ctx):[],toolAllowlist:bound.map(t=>t.name),systemPrompt:prompt.template,...resources} as never,policy.builtinLoading==='direct',policy.fallback);
+ const loadout=await prepareToolLoading(db,role,{customTools:bound,legacyTools:taskBound?legacyReadCandidates(ctx):[],toolAllowlist:bound.map(t=>t.name),systemPrompt:prompt.template,...resources},policy.builtinLoading==='direct',policy.fallback);
  const definitions=new Map(loadout.customTools.map(t=>[t.name,t]));
  const initial=loadout.toolLoading.initialActive.map(n=>definitions.get(n)!).filter(Boolean);
  if(loadout.toolLoading.deferred.length||hasDeferredMcp(resources))initial.push(searchDefinition());
