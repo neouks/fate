@@ -972,6 +972,8 @@ export interface Audit {
 // ---- Traffic ----
 export interface TrafficExchange {
   id: string;
+  task_id?: string;
+  intent_id?: string;
   ts: string;
   host: string;
   method: string;

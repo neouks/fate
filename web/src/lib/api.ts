@@ -863,7 +863,8 @@ export const api = {
   trafficForTask: (task:string) => get<TrafficResp>(`/traffic?task=${encodeURIComponent(task)}&size=200`),
   stopRetestConversation: (id:number) => post<{status:string}>(`/conversations/${id}/stop`,{}),
   trafficExchange: (id: string, task?:string) => get<TrafficDetail>(`/traffic/exchange?id=${encodeURIComponent(id)}${task?`&task=${encodeURIComponent(task)}`:""}`),
-  trafficHosts: () => get<{ hosts: TrafficHost[] }>(`/traffic/hosts`),
+  trafficHosts: (task?:string) => get<{ hosts: TrafficHost[] }>(`/traffic/hosts${task?`?task=${encodeURIComponent(task)}`:""}`),
+  trafficPaths: (task:string,host:string,page=0) => get<{paths:{path:string;count:number}[];total:number;page:number;size:number}>(`/traffic/paths?${new URLSearchParams({task,host,page:String(page)})}`),
   trafficDeleteHost: (host: string) => del<{ deleted: number }>(`/traffic?host=${encodeURIComponent(host)}`),
   trafficDeleteHosts: (hosts: string[]) => del<{ deleted: number }>(`/traffic/hosts`, { hosts }),
   // Purges every exchange and compacts the index; `reclaimed` is the bytes of
