@@ -1,3 +1,4 @@
+import {TOOL_POLICY_VERSION,ACTIVE_ROLES} from '../agent/tool-registry.js';
 import {migrateConstraintProvenance} from './constraint-provenance.js';
 import {migrateConstraintPrompts} from '../agent/constraint-migration.js';
 import {migrateArtex} from './artex-migration.js';
@@ -1016,6 +1017,8 @@ export async function seedBuiltins(db: Database): Promise<void> {
   await db.query(`INSERT INTO agents(key,name,role,builtin,enabled,trigger_run_mode,trigger_merge_mode,trigger_max_parallel)
     VALUES ('reporter','Reporter','assistant',false,true,'parallel','none',5) ON CONFLICT(key) DO NOTHING`);
   await seedBuiltinTools(db);
+  await db.query(`INSERT INTO settings(key,value) SELECT 'tool_catalog_before_'||$1,jsonb_agg(to_jsonb(t) ORDER BY key)::text FROM tools t WHERE kind='builtin' ON CONFLICT(key) DO NOTHING`,[TOOL_POLICY_VERSION]);
+  await db.query(`INSERT INTO tools(key,system,kind,description,schema,agents,enabled) VALUES('tool_search',true,'builtin','按需发现已绑定工具；使用英文工具名或关键词','{}',$1::jsonb,true) ON CONFLICT(key) DO NOTHING`,[JSON.stringify(ACTIVE_ROLES)]);
   await db.transaction(async tx=>{
     // Retire the active catalog entries, preserving customized historical metadata.
     const retired=['checkpoint_intent','complete_intent'];

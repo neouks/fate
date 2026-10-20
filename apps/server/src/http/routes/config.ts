@@ -1,3 +1,4 @@
+import {toolIdentity} from '../../agent/tool-registry.js';
 import {assertActiveRole} from '../../agent/retired-roles.js';
 import {resolveRolePrompt,PROMPT_VERSION,hostProtocol} from '../../agent/prompts.js';
 import {runtimeConfiguration} from '../../engine/runtime-config.js';
@@ -49,11 +50,13 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   // ─── 内置工具目录 ───
   app.get("/api/tools", async () => {
     const rows = await app.db.query(`SELECT key, system, description, schema, agents, enabled, kind, exec, deferred, directory, usage_help, when_to_use, executable FROM tools ORDER BY kind, key`);
-    return { tools: rows.rows.map((r) => ({ ...r, schema: r["schema"] ?? {}, agents: r["agents"] ?? [], deferred: r["deferred"] === true })) };
+    return { tools: rows.rows.map((r) => ({ ...r, ...toolIdentity(String(r.key),String(r.kind)), schema: r["schema"] ?? {}, agents: r["agents"] ?? [], deferred: r["deferred"] === true })) };
   });
 
   app.put("/api/tools/:key", async (req) => {
     const p = req.params as { key: string };
+    const catalogRow=(await app.db.query('SELECT kind FROM tools WHERE key=$1',[p.key])).rows[0];
+    if(catalogRow&&['retired','unsupported'].includes(toolIdentity(p.key,String(catalogRow.kind)).implementation_status))throw Object.assign(new Error('当前版本不支持此历史工具，不能重新启用'),{statusCode:410});
     const b = (req.body ?? {}) as Record<string, unknown>;
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -68,6 +71,8 @@ export function registerConfigRoutes(app: FastifyInstance): void {
 
   app.post("/api/tools/:key/reset", async (req) => {
     const p = req.params as { key: string };
+    const catalogRow=(await app.db.query('SELECT kind FROM tools WHERE key=$1',[p.key])).rows[0];
+    if(catalogRow&&['retired','unsupported'].includes(toolIdentity(p.key,String(catalogRow.kind)).implementation_status))throw Object.assign(new Error('当前版本不支持此历史工具，不能重新启用'),{statusCode:410});
     const r = await app.db.query(`UPDATE tools SET enabled=true WHERE key=$1`, [p["key"]]);
     return { ok: (r.rowCount ?? 0) === 1 };
   });
