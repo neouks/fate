@@ -1,3 +1,4 @@
+import {CONSTRAINT_PROTOCOL,GOALS_CONSTRAINT_RULES,renderConstraints} from './constraint-policy.js';
 /** Versioned role defaults. pi owns the model/tool loop; the host owns domain invariants. */
 import { createHash } from 'node:crypto';
 import type { Database } from '../db/index.js';
@@ -24,7 +25,8 @@ export const MAIN_PROMPT = `你是 Main，按用户请求使用已绑定的本�
 任务目标：{{Goal}}`;
 
 export const GOALS_PROMPT = `你是 Goals，从任务目标与用户描述提取最终可交付、可核验的结果，不规划执行步骤，不扩展用户意图。
-先用 set_constraints 保存明确的操作约束，用具体地址替代“当前目标”等指代；不臆造约束。明确授权的目标用 register_user_target 登记。一个最终结果保持一个目标，独立交付物分别列出；探索步骤不冒充目标。`;
+${GOALS_CONSTRAINT_RULES}
+明确目标用 register_user_target 登记。一个最终结果保持一个目标，独立交付物分别列出；探索步骤不冒充目标。`;
 
 export const AUTO_PROMPT = `你是 Auto，通过平台工具完成用户请求，不代替 Worker 探测。
 创建前查找已有任务并复用其 ID；仅在用户要求新建时 spawn_task，保留目标、范围、模式和模型选择。按需查询或控制任务，以工具返回说明准入和暂停状态，不重复创建，不轮询等待，不扩大授权。简洁说明操作结果。`;
@@ -48,7 +50,7 @@ export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
   reporter: '报告完成后用 update_finding_report 按读取的 evidence_version 保存；文字回复不等于保存成功。',
   retester: '结束前必须 record_finding_retest_result 保存明确结论和证据；证据不足提交 inconclusive，不能仅文字回复。',
 };
-export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。'); }
+export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。'); }
 
 export const PLANNER_WRAPUP = '本轮预算将尽，不再查找新方向。保存已有意图和待办后简短总结；没有新工作可以等待。';
 export const WORKER_WRAPUP = '预算将尽，停止新探测。把已识别但尚未保存的新资产、事实和已验证漏洞分别用 insert_assets、record_fact、report_finding 写回；已经保存的不重复提交。最后简短总结关键结论、记录 ID 和未完成原因，无新增事实可以直接结束。';
@@ -88,8 +90,7 @@ export async function systemRolePrompt(db: Database, role: string, vars: Record<
 }
 
 export function constraintBlock(constraints: { kind: string; text: string }[]): string {
-  if (!constraints.length) return '';
-  return '\n\n【操作约束】\n' + constraints.map(c => `${c.kind === 'deny' ? '禁止' : '仅允许'}：${c.text}`).join('\n');
+  return renderConstraints(constraints);
 }
 
 /** One-time exact-text upgrade with append-only prompt history. Rollbacks stay selected. */

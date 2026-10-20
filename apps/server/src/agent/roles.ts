@@ -462,7 +462,7 @@ export async function runMainChat(input: MainChatInput): Promise<WorkerRunResult
   const { db, taskID, expID, goal, model, dataDir } = input;
   const receipts:unknown[]=[];
   const hooks:EngineHooks={...input.hooks,dispatchIntent:input.hooks.dispatchIntent?async(exp,id)=>{const receipt=await input.hooks.dispatchIntent!(exp,id);receipts.push(receipt??{intent_id:id,status:'submitted'});return receipt;}:undefined};
-  const ctx: ToolRunContext = runContext(db, taskID, expID, "mainagent", { hooks,mainSegment:input.segment??0 });
+  const ctx: ToolRunContext = runContext(db, taskID, expID, "mainagent", { hooks,mainSegment:input.segment??0,userMessage:input.message });
   const tools = await applyToolBindings(db, "mainagent", mainTools(ctx));
   const disabled = await disabledBuiltinTools(db, "mainagent");
   const system = await systemRolePrompt(db, "mainagent", { Goal: goal });

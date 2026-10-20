@@ -1,3 +1,5 @@
+import {migrateConstraintProvenance} from './constraint-provenance.js';
+import {migrateConstraintPrompts} from '../agent/constraint-migration.js';
 import {migrateArtex} from './artex-migration.js';
 import {migrateBuiltinPrompts} from '../agent/prompts.js';
 // 平台配置 store：settings KV / agent 提示词 / 工具目录 / MCP / LLM profile / 内置种子。
@@ -1100,6 +1102,8 @@ export async function seedBuiltins(db: Database): Promise<void> {
   );
 
   await migrateBuiltinPrompts(db);
+  await migrateConstraintProvenance(db);
+  await migrateConstraintPrompts(db);
   await migrateArtex(db);
 
   // 5. 内置 MCP 只是配置预设：disabled 且不授予任何 agent。ON CONFLICT 保证重启不覆盖用户改动。

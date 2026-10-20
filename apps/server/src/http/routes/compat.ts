@@ -643,13 +643,14 @@ export function registerCompatRoutes(app: FastifyInstance): void {
   app.get("/api/tasks/:id/constraints", async (req) => {
     const p = req.params as Record<string, string>;
     const expID = await expOf(Number(p["id"]));
-    const rows = await db().query(`SELECT id, kind, text, COALESCE(origin,'') AS origin, created_at FROM task_constraints WHERE exploration_id=$1 ORDER BY id`, [expID]);
+    const rows = await db().query(`SELECT id, kind, text, COALESCE(origin,'') AS origin, source, created_at FROM task_constraints WHERE exploration_id=$1 ORDER BY id`, [expID]);
     return {
       constraints: rows.rows.map((r) => ({
         id: String(r["id"]),
         kind: r["kind"],
         text: r["text"],
         origin: r["origin"],
+        source: r["source"],
         ts: r["created_at"] instanceof Date ? (r["created_at"] as Date).toISOString() : String(r["created_at"]),
       })),
     };
@@ -670,7 +671,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
   app.patch("/api/tasks/:id/constraints/:cid", async (req) => {
     const p = req.params as Record<string, string>;
     const b = (req.body ?? {}) as Record<string, unknown>;
-    const changed=await db().query(`UPDATE task_constraints SET kind=$1, text=$2 WHERE id=$3 AND exploration_id=$4`, [String(b["kind"] ?? "deny"), String(b["text"] ?? ""), Number(p["cid"]),await expOf(Number(p["id"]))]);
+    const changed=await db().query(`UPDATE task_constraints SET kind=$1, text=$2,origin='user',source='{}'::jsonb,updated_at=now() WHERE id=$3 AND exploration_id=$4`, [String(b["kind"] ?? "deny"), String(b["text"] ?? ""), Number(p["cid"]),await expOf(Number(p["id"]))]);
     if(!changed.rowCount)throw Object.assign(new Error("constraint not found"),{statusCode:404});
     return { id: p["cid"], ...b };
   });

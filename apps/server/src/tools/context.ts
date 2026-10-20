@@ -49,6 +49,8 @@ export interface EngineHooks {
 }
 
 export interface ToolRunContext {
+  /** Actual current human request, bound by the host; never supplied in tool arguments. */
+  userMessage?:string;
   collaborationPolicy?: "blackboard-v1";
   planningRoundID?: string;
   conversationID?: number;

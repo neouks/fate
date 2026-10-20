@@ -1,3 +1,4 @@
+import {CONSTRAINT_TOOL_DESCRIPTION} from './constraint-policy.js';
 import { LEGACY_TOOL_DESCRIPTIONS } from './prompt-legacy.js';
 import type {Database} from '../db/index.js';
 export const ARTEX_PREVIOUS_TOOL_DESCRIPTIONS:Record<string,string>={"add_intent": "创建探索意图。先检索已有工作；Planner 提供稳定 work 身份、验收条件和依据，只派前置已满足的工作。Main 提交会请求宿主下发；以返回的准入状态为准。", "dispatch_intents": "请求宿主下发已有待执行意图，仅 Main 可用；不能绕过封禁或授权检查。", "record_fact": "执行中边发现边写回新结论，提交成功立即入图。summary 概括，detail 合并同一结论的观察，evidence 保存真实证据；已保存的不重复提交，无新增事实不必写。", "insert_assets": "登记新资产及关系到资产图；登记不等于获准访问。探索结论使用 record_fact。", "report_finding": "提交本次亲自验证且可复现的漏洞与真实证据，成功后立即入图。先 list_findings 查重；疑似问题用 record_fact 记录并注明不确定性。", "record_plan_decision": "每轮规划结束前保存决策、依据和恢复条件。已派单用 dispatched，否则如实等待依赖、请求输入或结束方向；不要为保持运行凑单。", "context_search": "检索授权范围内的意图、事实、漏洞及冷图原文，返回摘要、稳定引用和版本。来源任务只读；按 next_cursor 续读。", "context_get": "按稳定引用和版本分页读取完整节点及关系。版本冲突重新检索；使用返回的游标续读，不自行估算偏移。", "read_tool_output": "按返回引用与游标续读完整工具 JSON；未读取的内容不能当作已确认信息。", "graph_overview": "读取有界态势摘要：目标、待执行和运行中意图、近期结果、覆盖及待办；详情按节点引用读取。", "node_detail": "读取指定授权节点的详情、来源和关联；按返回游标续读。", "search_worker_traces": "按需检索 Worker 的历史执行过程；优先查事实与结果，定位阻塞时再读轨迹。", "get_worker_trace": "读取指定意图的进度与执行轨迹；需要原始过程时启用 include_output，按返回游标续读。", "prove_goal": "用仍获授权的 confirmed 事实或漏洞证明目标；任务原文、线索及撤回记录不能作证。证据须支持该目标，量化条件核对实测值。", "kill_work": "终止指定运行意图；先确认当前进度和原因，以返回状态确认结果。", "steer_work": "已停用 Agent 间消息；用户调整须通过黑板目标、约束或意图控制记录。", "todo_write": "保存跨轮依赖待办；有依赖的步骤仅在前置满足后下发。", "set_goals": "保存任务的最终可验收目标，不把探索步骤当作目标；遵循用户明确要求。", "set_constraints": "保存用户明确的允许或禁止约束，写明具体目标；约束不替代资产授权。", "register_user_target": "登记用户明确授权的目标边界；不得从发现结果推断授权。", "update_finding_report": "以读取的 evidence_version 保存报告；版本冲突先重读证据，成功返回才算保存。", "get_finding": "读取漏洞、证据版本和证据引用，按 next_offset 续读完整内容。", "get_finding_retest_context": "分页读取本次漏洞复测的固定快照、证据和范围，仅限当前漏洞。", "record_finding_retest_result": "保存复测结论及证据：实际复现才 reproduced，证据充分才 fixed，否则 inconclusive；宿主负责更新原漏洞状态。", "record_conversation_fact": "向当前绑定任务保存有来源的新事实及真实证据，未绑定任务不能写入。", "report_conversation_finding": "向当前绑定任务提交已复现漏洞及证据，先查重；疑似问题记录为事实。"};
@@ -21,7 +22,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   steer_work: '给所属运行中 Worker 追加纠偏，PI 在工具回合边界交付；不扩大授权。',
   todo_write: '保存跨轮依赖待办；有依赖的步骤仅在前置满足后下发。',
   set_goals: '保存任务的最终可验收目标，不把探索步骤当作目标；遵循用户明确要求。',
-  set_constraints: '保存用户明确的允许或禁止约束，写明具体目标；约束不替代资产授权。',
+  set_constraints: CONSTRAINT_TOOL_DESCRIPTION,
   register_user_target: '登记用户明确授权的目标边界；不得从发现结果推断授权。',
   update_finding_report: '以读取的 evidence_version 保存报告；版本冲突先重读证据，成功返回才算保存。',
   get_finding: '读取漏洞、证据版本和证据引用，按 next_offset 续读完整内容。',
@@ -31,6 +32,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   report_conversation_finding: '向当前绑定任务提交已复现漏洞及证据，先查重；疑似问题记录为事实。',
 };
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
+  if(name==='set_constraints'&&stored==='保存用户明确的允许或禁止约束，写明具体目标。')return {description:CONSTRAINT_TOOL_DESCRIPTION,source:'builtin'};
   const priorPagedDefault = '按 items 批量读取引用。summary 只读索引，detail 读详情，output 读结果；field 选 JSON Pointer 字段。parents/members 每页最多 20 条；有 next_offset 时用 page_cursor 和 offset 读完本页，再用 next_cursor 翻页并重置 offset。沿用 version，冲突重新检索。';
   const priorDefaults:Record<string,string>={
     context_get:'批量读取 items 中的 node:/activity: 引用。detail 读详情，output 读执行结果，parents 读上游，members 读摘要成员；field 选 JSON Pointer 字段，按返回的 Unicode next_offset 续读。版本冲突重新检索。',
