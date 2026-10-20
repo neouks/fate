@@ -23,6 +23,14 @@ import type { Agent, Tool, RoleToolPreview } from "@/lib/types";
 
 const historic = (t: Tool) => t.implementation_status === "retired" || t.implementation_status === "unsupported";
 const stateLabel = { active: "当前实现", compatibility: "兼容入口", retired: "已退役", unsupported: "无当前实现" };
+// Older catalogs may omit source. Keep their platform entries visible without
+// exposing pi or MCP helpers in this management view.
+const NON_PLATFORM_LEGACY_KEYS = new Set([
+  "read", "bash", "write", "edit", "tool_search",
+  "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource",
+]);
+const isPlatformTool = (tool: Tool) =>
+  tool.system && (tool.source ? tool.source === "platform" : !NON_PLATFORM_LEGACY_KEYS.has(tool.key));
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep in sync with traffic.SeedToolMetas.
@@ -310,7 +318,7 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
         <span className="font-mono text-sm font-medium">{tool.key}</span>
         {tool.system ? (
           <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
-            系统
+            平台
           </Badge>
         ) : (
           <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
@@ -382,7 +390,9 @@ export default function ToolsPage() {
 
   const [query, setQuery] = React.useState("");
 
-  const selected = tools.find((t) => t.key === selectedKey) ?? null;
+  const platformTools = tools.filter(isPlatformTool);
+  const platformKeys = new Set(platformTools.map((t) => t.key));
+  const selected = platformTools.find((t) => t.key === selectedKey) ?? null;
   const matchTool = React.useCallback(
     (t: Tool) => {
       const q = query.trim().toLowerCase();
@@ -395,10 +405,12 @@ export default function ToolsPage() {
     },
     [query],
   );
-  const systemTools = tools.filter((t) => t.system && !historic(t) && t.implementation_status !== "compatibility" && matchTool(t));
+  const currentPlatformTools = platformTools.filter((t) => !historic(t) && t.implementation_status !== "compatibility");
+  const historicPlatformTools = platformTools.filter((t) => historic(t) || t.implementation_status === "compatibility");
+  const systemTools = currentPlatformTools.filter(matchTool);
   const customTools = tools.filter((t) => !t.system && matchTool(t));
-  const historyTools = tools.filter((t) => t.system && (historic(t) || t.implementation_status === "compatibility") && matchTool(t));
-  const allSystemCount = tools.filter((t) => t.system && !historic(t) && t.implementation_status !== "compatibility").length;
+  const historyTools = historicPlatformTools.filter(matchTool);
+  const allSystemCount = currentPlatformTools.length;
   const allCustomCount = tools.filter((t) => !t.system).length;
   // clicking a built-in tool opens the binding drawer; a custom tool opens its full editor.
   const openTool = (t: Tool) => (t.system ? setSelectedKey(t.key) : setCustomEdit(t));
@@ -409,7 +421,7 @@ export default function ToolsPage() {
         <div>
           <PageHeading title={<>工具</>}/>
           <p className="text-muted-foreground text-sm">
-            系统工具的描述/绑定，以及自定义工具(shell/command/script/http)
+            平台内置工具的描述/绑定，以及自定义工具(shell/command/script/http)
           </p>
         </div>
         <div className="relative w-64">
@@ -423,7 +435,27 @@ export default function ToolsPage() {
         </div>
       </div>
 
-      {roles.length > 0 && <Card><CardHeader><CardTitle>角色装配预览</CardTitle><CardDescription>新会话的当前绑定；独立会话按已绑定任务预览。MCP Schema 未连接、不计入。旧会话及自定义提示词可能保留兼容工具。</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{roles.map(r => <div key={r.role} className="rounded-md border p-3 text-sm"><strong>{r.role}</strong><p>常驻 {r.resident.length} · 按需 {r.deferred.length}</p><p className="text-muted-foreground text-xs">Schema {(r.schema_bytes.resident / 1024).toFixed(1)} KiB · {r.policy_version}</p>{r.fallback && <p className="text-xs">{r.fallback}</p>}</div>)}</CardContent></Card>}
+      {roles.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>角色装配预览</CardTitle>
+            <CardDescription>
+              工具数量仅统计平台内置工具；运行 Schema 含 pi 和自定义工具。新会话使用当前绑定，独立会话按已绑定任务预览。MCP Schema 未连接、不计入。旧会话及自定义提示词可能保留兼容工具。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {roles.map((r) => (
+              <div key={r.role} className="rounded-md border p-3 text-sm">
+                <strong>{r.role}</strong>
+                <p>平台常驻 {r.resident.filter((key) => platformKeys.has(key)).length} · 平台按需 {r.deferred.filter((key) => platformKeys.has(key)).length}</p>
+                <p className="text-muted-foreground text-xs">运行 Schema（含 pi 和自定义工具）{(r.schema_bytes.resident / 1024).toFixed(1)} KiB</p>
+                <p className="text-muted-foreground text-xs">{r.policy_version}</p>
+                {r.fallback && <p className="text-xs">{r.fallback}</p>}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
       <Tabs defaultValue="system">
         <TabsList>
           <TabsTrigger value="system">现行工具</TabsTrigger>
@@ -434,7 +466,7 @@ export default function ToolsPage() {
         <TabsContent value="system">
           <Card>
             <CardHeader>
-              <CardTitle>系统工具</CardTitle>
+              <CardTitle>平台内置工具</CardTitle>
               <CardDescription>
                 {query.trim()
                   ? `${systemTools.length} / ${allSystemCount} 个匹配，点击卡片编辑描述、只读参数及 Agent 绑定`
@@ -444,7 +476,7 @@ export default function ToolsPage() {
             <CardContent>
               {systemTools.length === 0 ? (
                 <p className="text-muted-foreground py-6 text-center text-sm">
-                  {query.trim() ? "没有匹配的系统工具" : "（暂无系统工具，等待后端 seed）"}
+                  {query.trim() ? "没有匹配的平台内置工具" : "暂无平台内置工具"}
                 </p>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -457,7 +489,25 @@ export default function ToolsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="history"><Card><CardHeader><CardTitle>历史与兼容工具</CardTitle><CardDescription>兼容入口保留旧绑定和子能力开关；已退役及无实现条目不可运行，原配置仍可查阅。</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{historyTools.map(t => <ToolGridCard key={t.key} tool={t} onClick={() => openTool(t)} />)}{historyTools.length === 0 && <p className="text-muted-foreground text-sm">没有匹配的历史工具</p>}</CardContent></Card></TabsContent>
+        <TabsContent value="history">
+          <Card>
+            <CardHeader>
+              <CardTitle>平台历史与兼容工具</CardTitle>
+              <CardDescription>
+                {query.trim() ? `${historyTools.length} / ${historicPlatformTools.length} 个匹配。` : `共 ${historicPlatformTools.length} 个。`}
+                兼容入口保留旧绑定和子能力开关；已退役及无实现条目不可运行，原配置仍可查阅。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {historyTools.map((t) => <ToolGridCard key={t.key} tool={t} onClick={() => openTool(t)} />)}
+              {historyTools.length === 0 && (
+                <p className="text-muted-foreground text-sm">
+                  {query.trim() ? "没有匹配的平台历史工具" : "暂无平台历史与兼容工具"}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
         <TabsContent value="custom">
           <Card>
             <CardHeader>
