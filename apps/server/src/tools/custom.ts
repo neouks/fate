@@ -15,7 +15,7 @@ export function renderToolTemplate(template: string, args: Record<string, unknow
 
 /** Share eligibility with planning; loading this catalog does not execute tools. */
 export async function boundCustomTools(db: import('../db/index.js').Database, role: string) {
-  if (!["worker", "planner", "mainagent", "pentest", "retester"].includes(role)) return [];
+  if (!["worker", "planner", "mainagent", "pentest"].includes(role)) return [];
   const catalog = await db.platform().listTools();
   const reserved = new Set(catalog.filter(t => t.system || t.kind === 'builtin').map(t => t.key));
   return catalog.filter(t => t.enabled && t.agents.includes(role) && !t.system && t.kind !== 'builtin' && t.kind !== 'shell' && !reserved.has(t.key));

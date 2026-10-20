@@ -9,21 +9,25 @@ export interface PlatformPolicy {
   version: typeof PLATFORM_POLICY_VERSION;
   compaction: 'domain' | 'native';
   mcpLoading: 'deferred' | 'direct';
+  builtinLoading?: 'deferred' | 'direct';
+  toolPolicyVersion?: string;
   fallback?: string;
 }
 
 /** Settings are read once per new runner, never mutate an active SDK session. */
 export async function platformPolicy(db: Database, role: string): Promise<PlatformPolicy> {
   assertActiveRole(role);
-  const [compression, loading, search] = await Promise.all([
+  const [compression, loading, search, builtin] = await Promise.all([
     db.platform().getSetting('pi_context_policy'), db.platform().getSetting('pi_mcp_loading'),
-    db.query('SELECT enabled,agents FROM tools WHERE key=$1',['tool_search']),
+    db.query('SELECT enabled,agents FROM tools WHERE key=$1',['tool_search']),db.platform().getSetting('pi_builtin_loading'),
   ]);
   if (compression && !['domain','native'].includes(compression)) throw new Error('无效 pi_context_policy');
   if (loading && !['deferred','direct'].includes(loading)) throw new Error('无效 pi_mcp_loading');
+  if(builtin&&!['direct','deferred'].includes(builtin))throw new Error('无效 pi_builtin_loading');
   const binding = search.rows[0];
   const disabled = binding && (!binding.enabled || !Array.isArray(binding.agents) || !binding.agents.includes(role));
   return {version:PLATFORM_POLICY_VERSION, compaction:compression === 'domain' ? 'domain':'native',
+    toolPolicyVersion:'lean-tools-v1',builtinLoading:disabled||builtin==='direct'?'direct':'deferred',
     mcpLoading: disabled || loading === 'direct' ? 'direct':'deferred',
     ...(disabled ? {fallback:'tool_search 已禁用或未绑定，使用直接装配'}:{})};
 }

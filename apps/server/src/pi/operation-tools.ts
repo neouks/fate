@@ -41,3 +41,11 @@ export function wrapRegisteredTools(factory:ExtensionFactory,wrap:(tool:ToolDefi
     return Reflect.get(target,key);
   }}));
 }
+
+/** The default-loadout SDK mode restores native declarations; registration still obeys the host allowlist. */
+export function restrictRegisteredTools(factory:ExtensionFactory,permitted:(name:string)=>boolean):ExtensionFactory{
+ return pi=>factory(new Proxy(pi,{get(target,key){
+  if(key==='registerTool')return (tool:Parameters<ExtensionAPI['registerTool']>[0])=>{if(permitted(tool.name))target.registerTool(tool);};
+  return Reflect.get(target,key);
+ }}));
+}

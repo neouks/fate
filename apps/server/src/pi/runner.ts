@@ -1,9 +1,10 @@
+import type {ToolLoading} from '../agent/tool-loading.js';
 import {platformMcpExtension,hasDeferredMcp,MCP_RESOURCE_TOOLS} from './platform-mcp.js';
 import {domainCompactionExtension,type CompactionHealth} from './domain-compaction.js';
 import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
 import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
 import {stableToolPayload,hostTaskContext} from './request-prefix.js';
-import {wrapRegisteredTools} from './operation-tools.js';
+import {restrictRegisteredTools,wrapRegisteredTools} from './operation-tools.js';
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -108,6 +109,8 @@ export interface AgentRunnerOptions {
   stopWhen?: () => Promise<boolean>;
   reserveSettlementTurns?: number;
   boundaryContext?: () => Promise<string>;
+  toolLoading?: ToolLoading;
+  discoveryGuard?: (name:string)=>Promise<void>;
   platform?: {role:string;taskID:number;conversationID?:number;policy:PlatformPolicy};
   /** Size-only provider boundary instrumentation; never stores request content/credentials. */
   loadDomainState?: () => Promise<Record<string,unknown>>;
@@ -252,7 +255,11 @@ export class AgentRunner {
         return payload;
       });
     };
+    const declared=[...new Set([...(opts.toolAllowlist??[]),...(hasDeferredMcp(opts)||opts.toolLoading?.deferred.length?['tool_search']:[]),...(opts.mcpEntries?.length&&opts.toolAllowlist?.includes('mcp__*')?(opts.mcpResourceTools??MCP_RESOURCE_TOOLS):[])])];
+    const permitted=(name:string)=>declared.includes(name)||name.startsWith('mcp__')&&declared.includes('mcp__*');
+
 		const settings = SettingsManager.inMemory({
+      ...(opts.toolLoading?{defaultTools:declared.filter(n=>!opts.toolLoading!.deferred.includes(n)&&!n.includes('*'))}:{}),
 			// pi owns conversation compaction; graph compaction remains a separate domain projection.
 			retry: { enabled: false },
 			compaction: { enabled: true,...opts.compactionSettings },
@@ -347,7 +354,8 @@ export class AgentRunner {
 			});
 		};
 
-		const mcpFactory=opts.mcpEntries?.length?platformMcpExtension(opts):undefined;
+		const mcpFactory=opts.mcpEntries?.length||opts.toolLoading?.deferred.length?platformMcpExtension(opts):undefined;
+
 
 		const compactionHealth:CompactionHealth={requests:0,completed:0,failed:0};
     const compactionExtension=opts.platform?domainCompactionExtension(opts,compactionHealth,()=>opts.maxTurns?opts.maxTurns+(opts.wrapup?(opts.maxWrapupTurns??1):0)-turns-compactionHealth.requests:Infinity):undefined;
@@ -358,7 +366,10 @@ export class AgentRunner {
 			noExtensions: true,
 			extensionFactories: [diagnosticsExtension, modelPolicyExtension, compactionExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory,...(opts.extensionFactories??[])].filter(
 				(e): e is ExtensionFactory => typeof e === 'function',
-			).map(factory=>opts.wrapExecutionTool?wrapRegisteredTools(factory,opts.wrapExecutionTool):factory),
+			).map(factory=>wrapRegisteredTools(opts.toolLoading?restrictRegisteredTools(factory,permitted):factory,tool=>{
+        const wrapped=opts.wrapExecutionTool?.(tool)??tool;
+        return opts.toolLoading?.deferred.includes(tool.name)?{...wrapped,exposure:'deferred'}:wrapped;
+      })),
 			noSkills: !opts.skillsDir,
 			skillsOverride: opts.skillsDir
 				? (base) => {
@@ -394,11 +405,9 @@ export class AgentRunner {
 			settingsManager: settings,
 			sessionManager,
 			resourceLoader: loader,
-			tools: opts.toolAllowlist?[...new Set([...opts.toolAllowlist,
-        ...(hasDeferredMcp(opts)?['tool_search']:[]),
-        ...(opts.mcpEntries?.length&&opts.toolAllowlist.includes('mcp__*')?(opts.mcpResourceTools??MCP_RESOURCE_TOOLS):[]),
-      ])]:opts.toolAllowlist,
-			customTools: opts.wrapExecutionTool?customTools.map(opts.wrapExecutionTool):customTools,
+			tools:opts.toolLoading?undefined:opts.toolAllowlist?declared:undefined,
+      excludeTools:opts.toolLoading?['read','bash','write','edit','grep','find','ls'].filter(n=>!permitted(n)):undefined,
+			customTools:(opts.toolLoading?customTools.filter(t=>permitted(t.name)):customTools).map(t=>opts.wrapExecutionTool?.(t)??t),
 		});
 
 		const runner = new AgentRunner(session, opts);
@@ -408,6 +417,11 @@ export class AgentRunner {
     runner.compactionHealth=compactionHealth;
 		try {
 			await session.bindExtensions({}); // Fires session_start: native MCP connects here.
+      if(opts.toolLoading){
+        const entries=sessionManager.getEntries();
+        if(!entries.some(e=>e.type==='message'))sessionManager.appendCustomEntry(opts.toolLoading.version,{initial_active:session.getActiveToolNames()});
+        // pi restores its transcript loadout and pending MCP names. No host replay of tools or messages.
+      }
 			return runner;
 		} catch (err) { await runner.dispose(); throw err; }
 	}

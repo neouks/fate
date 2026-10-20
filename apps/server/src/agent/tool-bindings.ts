@@ -1,4 +1,4 @@
-import {RETIRED_TOOLS} from './tool-registry.js';
+import {RETIRED_TOOLS,TOOL_ALIASES} from './tool-registry.js';
 import { effectiveToolDescription } from './tool-descriptions.js';
 
 /** DB 工具目录过滤：按 tools.agents 绑定与 enabled 开关过滤角色可用工具（绑定 DB 可管）。 */
@@ -17,6 +17,8 @@ export async function applyToolBindings<T extends { name: string }>(db: import("
   }
   return tools.filter((t) => {
     if(RETIRED_TOOLS.has(t.name))return false;
+    const canonical=byKey.get(TOOL_ALIASES[t.name]??'');
+    if(canonical&&(canonical.enabled===false||!Array.isArray(canonical.agents)||!canonical.agents.includes(role)))return false;
     const row = byKey.get(t.name);
     if (!row) return true;
     if (row["enabled"] === false) return false;
