@@ -3,6 +3,7 @@ import {createServerTransport} from './mcpTransport.js';
 import type {AgentRunnerOptions} from './runner.js';
 
 export const MCP_RESOURCE_TOOLS=['list_mcp_resources','list_mcp_resource_templates','read_mcp_resource'];
+export const TOOL_SEARCH_HINT=' 使用服务器名、工具名或英文关键词检索；只有获授权的工具会被加载。';
 
 export function hasDeferredMcp(opts:Pick<AgentRunnerOptions,'mcpEntries'>) {
   return opts.mcpEntries?.some(e=>e.config.exposure==='deferred'||Object.values(e.config.toolExposure??{}).includes('deferred'))??false;
@@ -72,7 +73,7 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
         if(key==='getAllTools')return ()=>target.getAllTools().filter(t=>permitted.has(t.name));
         if(key==='registerTool')return ((definition:Parameters<ExtensionAPI['registerTool']>[0])=>{
           const execute=definition.execute;
-          target.registerTool({...definition,description:definition.description+' 使用服务器名、工具名或英文关键词检索；只有获授权的工具会被加载。',
+          target.registerTool({...definition,description:definition.description+TOOL_SEARCH_HINT,
             execute:async(...args)=>{
               args[2]?.throwIfAborted();
               // The native MCP tool_call readiness hook has run before execute.

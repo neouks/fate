@@ -123,8 +123,8 @@ export default function ChatPage() {
                 <span className="block truncate text-sm font-medium">{row.title || "新对话"}</span>
                 <span className="mt-0.5 block truncate text-xs text-muted-foreground">{name}{(selected===row.id?running:row.running) ? " · 运行中" : ""}{row.task_id ? ` · 任务 #${row.task_id}` : ""}</span>
               </button>
-              <Button size="icon" variant="ghost" className="size-8 opacity-70" onClick={() => void togglePin(row)} title={row.pinned ? "取消置顶" : "置顶"}>{row.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}</Button>
-              <Button size="icon" variant="ghost" className="size-8 opacity-70" onClick={() => void remove(row)} title="删除对话"><Trash2 className="size-3.5" /></Button>
+              <>{!row.read_only && <><Button size="icon" variant="ghost" className="size-8 opacity-70" onClick={() => void togglePin(row)} title={row.pinned ? "取消置顶" : "置顶"}>{row.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}</Button>
+              <Button size="icon" variant="ghost" className="size-8 opacity-70" onClick={() => void remove(row)} title="删除对话"><Trash2 className="size-3.5" /></Button></>}</>
             </div>;
           })}
           {!conversations.length && <p className="px-3 py-8 text-center text-sm text-muted-foreground">新建一个 Agent 对话开始使用。</p>}

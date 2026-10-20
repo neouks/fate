@@ -1304,7 +1304,18 @@ export interface MissingSkill {
 // key + handler live in Go; only these fields are page-editable. system tools lock
 // the key and the parameter *structure* (name/type/required) — the per-param
 // description/default and the agent binding are what move.
+export interface RoleToolPreview {
+  role: string; scope: string; policy_version: string; resident: string[]; deferred: string[]; compatibility: string[]; fallback?: string;
+  schema_bytes: { before: number; resident: number; registered: number };
+}
 export interface Tool {
+  implementation_status?: "active" | "compatibility" | "retired" | "unsupported";
+  canonical_name?: string;
+  source?: string;
+  aliases?: string[];
+  schema_source?: string;
+  schema_read_only?: boolean;
+  loading?: Record<string, "resident" | "deferred">;
   key: string;
   system: boolean;
   description: string;

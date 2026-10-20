@@ -75,6 +75,7 @@ it('native Main binds the current request without treating task facts as new ins
   const t=await fixture(),faux=fauxProvider({provider:'constraints-main'}),modelRuntime=await ModelRuntime.create({refreshOnCreate:false});
   await modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('tool_search',{query:'set_constraints'})]),
     fauxAssistantMessage([fauxToolCall('set_constraints',{constraints:[{kind:'allow',text:'仅允许被动侦察。'}]})]),
     fauxAssistantMessage('已保存本轮用户限制。'),
   ]);

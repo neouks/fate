@@ -1097,8 +1097,9 @@ export const api = {
     put<{ ok: boolean }>(`/agents/${key}/visibility`, { mcp, skill }),
 
   // ---- tools (内置工具目录) ----
+  toolCatalog: () => get<{ tools: Tool[]; roles: import("./types").RoleToolPreview[] }>("/tools"),
   tools: () => get<{ tools: Tool[] }>("/tools").then((r) => arr(r.tools)),
-  saveTool: (key: string, patch: Pick<Tool, "description" | "schema" | "agents" | "enabled">) =>
+  saveTool: (key: string, patch: Partial<Pick<Tool, "description" | "schema" | "agents" | "enabled">>) =>
     put<{ ok: boolean }>(`/tools/${key}`, patch),
   resetTool: (key: string) => post<{ ok: boolean }>(`/tools/${key}/reset`, {}),
   // custom tools (自定义工具)

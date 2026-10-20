@@ -32,7 +32,7 @@ it('Planner ends on one normal response without a decision tool or an extra mode
 });
 it('Main receives a host dispatch receipt with one model request and keeps the real source on writes',async()=>{
  const {task,s}=await fixture(),{f,source}=await model('artex-main-receipt');
- f.setResponses([ctx=>{expect(ctx.messages.flatMap(m=>m.role==='system'?m.toolsAdded?.map(t=>t.name)??[]:[])).toEqual(expect.arrayContaining(['bash','write','edit','record_fact','shell_open']));return fauxAssistantMessage([fauxToolCall('record_fact',{summary:'Main LOCAL evidence',evidence:'fixture',confidence:'high'}),fauxToolCall('add_intent',{intents:[{summary:'Main explicit LOCAL work'}]})]);}]);
+ f.setResponses([ctx=>{expect(ctx.messages.flatMap(m=>m.role==='system'?m.toolsAdded?.map(t=>t.name)??[]:[])).toEqual(expect.arrayContaining(['bash','write','edit','record_fact','tool_search']));return fauxAssistantMessage([fauxToolCall('record_fact',{summary:'Main LOCAL evidence',evidence:'fixture',confidence:'high'}),fauxToolCall('add_intent',{intents:[{summary:'Main explicit LOCAL work'}]})]);}]);
  const r=await runMainChat({db,taskID:task.id,expID:task.exploration_id,goal:task.goal,model:source,dataDir:dir,segment:7,message:'LOCAL request',maxTurns:5,hooks:{assertOwnership:async()=>{},dispatchIntent:async(_,id)=>({intent_id:id,status:'waiting_for_worker'})},onActivity:()=>{}});
  expect(f.state.callCount).toBe(1);expect(r.lastAssistantText).toContain('waiting_for_worker');
  const fact=(await s.listByKind('fact')).find(n=>n.payload.summary==='Main LOCAL evidence')!;expect(fact.payload).toMatchObject({source_main_segment:7,source_task_id:task.id});expect(fact.payload.from_intent).toBeUndefined();
@@ -90,7 +90,7 @@ it('limits concurrent Planner probes to three and stops probing once Worker evid
 
 it('Main goal editing does not start a Worker pool',async()=>{
  const {task,s}=await fixture('managed'),{f,source}=await model('artex-main-goal');
- f.setResponses([fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:'LOCAL deliverable'}]})]),fauxAssistantMessage('Goal saved')]);
+ f.setResponses([fauxAssistantMessage([fauxToolCall('tool_search',{query:'set_goals'})]),fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:'LOCAL deliverable'}]})]),fauxAssistantMessage('Goal saved')]);
  const e=new Engine(db,defaultEngineConfig(),async()=>source,dir);engines.push(e);await e.mainChat(task.id,'Save this LOCAL goal only');
  expect((await s.listByKind('goal')).length).toBe(1);
  expect((await db.query('SELECT 1 FROM engine_task_leases WHERE task_id=$1',[task.id])).rowCount).toBe(0);

@@ -1,3 +1,4 @@
+import {legacyReadCandidates} from '../tools/legacy-reads.js';
 import {assertActiveRole} from '../agent/retired-roles.js';
 import {WorkerOperationJournal} from '../db/operation-journal.js';
 import {journalTools} from '../pi/operation-tools.js';
@@ -13,7 +14,7 @@ import {workerLaunchContext} from '../tools/context-read.js';
 import {randomUUID} from 'node:crypto';
 import {resolveGraphNode} from '../db/graph_view.js';
 import {clampOutput} from '../tools/define.js';
-import { customWorkerTools, shellEnvironmentNotes } from "../tools/custom.js";
+import { customWorkerTools, platformBashDescription } from "../tools/custom.js";
 import { roleResources } from "./resources.js";
 // 四角色装配：把提示词 + 领域工具 + 预算/guard 接到 AgentRunner 上。
 // 角色不感知引擎的调度细节，引擎不感知提示词内容——只经由本文件的四个入口函数交互。
@@ -206,9 +207,8 @@ export function workerEgressBashTool(runDir:string,egressAddr:string|undefined,t
 async function executionTools(ctx:ToolRunContext,cwd:string,input:{egressAddr?:string;egressScope?:string;signal?:AbortSignal;extraGuard?:ToolGuard}){
   const env=executionEnvironment(input.egressAddr,ctx.taskID,input.egressScope??`${ctx.role}:${ctx.intentID??0}`);
   const bash=createBashToolDefinition(cwd,{spawnHook:spawn=>({...spawn,env:{...spawn.env,...env}})}) as unknown as ToolDefinition;
-  const notes=await shellEnvironmentNotes(ctx);if(notes)bash.description+=`\n可用命令环境：\n${notes}`;
   const interactive=(await ctx.db.platform().getAgentByKey(ctx.role))?.interactiveShell===true;
-  if(interactive)bash.description+='\n需要持续交互时用 shell_open，后续 shell_send/read/close/list；句柄仅属于当前执行会话。';
+  bash.description=await platformBashDescription(ctx,bash.description,interactive);
   return {tools:[bash,...await customWorkerTools(ctx,cwd,bash,input.extraGuard??interceptGate(ctx.db,{taskID:ctx.taskID,agentName:ctx.role}))],
     names:interactive?TERMINAL_TOOLS:[],extensions:interactive?[terminalExtension(cwd,env,input.signal)]:[]};
 }
@@ -298,6 +298,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     streaming: model.streaming,
     systemPrompt: system+'\n\n'+CONTEXT_RETENTION_RULES,
     customTools: tools,
+    legacyTools: legacyReadCandidates(ctx),
     extensionFactories:execution.extensions,
     ...await roleResources(db, "worker", agentEnv.skillsDir),
     signal: input.signal, maxTurns, maxDurationMs,
@@ -435,6 +436,7 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
     streaming: model.streaming,
     systemPrompt: system+'\n\n'+CONTEXT_RETENTION_RULES,
     customTools: tools,
+    legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db, "planner", agentEnv.skillsDir),
     signal: input.signal, ...plannerBudget,
     toolAllowlist: ["read",...(!input.terminalOnly?["write","edit","bash","mcp__*",...execution.names]:[]), ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
@@ -502,6 +504,7 @@ export async function runMainChat(input: MainChatInput): Promise<WorkerRunResult
     streaming: model.streaming,
     systemPrompt: system,
     customTools: tools,
+    legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db, "mainagent", agentEnv.skillsDir),
     signal: input.signal, ...agentBudgets(rc,{maxTurns:input.maxTurns,maxDurationMs:120_000}),
     toolAllowlist: ["read","write","edit","bash","mcp__*",...execution.names, ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
@@ -562,6 +565,7 @@ export async function runGoalsDecompose(input: GoalsRunInput): Promise<WorkerRun
     streaming: model.streaming,
     systemPrompt: system,
     customTools: tools,
+    legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db,"goals",agentEnv.skillsDir),
     toolAllowlist: ['read',...tools.map((t) => t.name)].filter(name=>!disabled.has(name)),
     signal: input.signal, ...agentBudgets(gc,{maxTurns:input.maxTurns??8,maxDurationMs:120_000}),

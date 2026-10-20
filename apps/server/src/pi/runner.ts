@@ -140,6 +140,8 @@ export interface AgentRunnerOptions {
 	toolAllowlist?: string[];
 	/** 服务端自定义工具 */
 	customTools?: ToolDefinition[];
+	/** Read-only compatibility candidates; the host filters these before registration. */
+	legacyTools?: ToolDefinition[];
   extensionFactories?: ExtensionFactory[];
 	/** 工具门控（等价 norma 的 guard） */
 	guard?: ToolGuard;

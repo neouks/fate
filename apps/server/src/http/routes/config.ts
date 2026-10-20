@@ -1,3 +1,4 @@
+import {catalogTools} from '../../agent/tool-catalog.js';
 import {toolIdentity} from '../../agent/tool-registry.js';
 import {assertActiveRole} from '../../agent/retired-roles.js';
 import {resolveRolePrompt,PROMPT_VERSION,hostProtocol} from '../../agent/prompts.js';
@@ -48,10 +49,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   app.get('/api/conversations/:id/runtime-config',async(req,reply)=>{const id=Number((req.params as {id:string}).id);if(!(await app.db.query('SELECT id FROM conversations WHERE id=$1',[id])).rowCount)return reply.code(404).send({error:'conversation not found'});return runtimeConfiguration(app.db,{conversationID:id});});
   // ─── LLM 测试连接：按 body 参数（或已存 profile id）构造 provider 做一次最小补全 ───
   // ─── 内置工具目录 ───
-  app.get("/api/tools", async () => {
-    const rows = await app.db.query(`SELECT key, system, description, schema, agents, enabled, kind, exec, deferred, directory, usage_help, when_to_use, executable FROM tools ORDER BY kind, key`);
-    return { tools: rows.rows.map((r) => ({ ...r, ...toolIdentity(String(r.key),String(r.kind)), schema: r["schema"] ?? {}, agents: r["agents"] ?? [], deferred: r["deferred"] === true })) };
-  });
+  app.get("/api/tools", async () => catalogTools(app.db));
 
   app.put("/api/tools/:key", async (req) => {
     const p = req.params as { key: string };

@@ -42,6 +42,8 @@ it('blocks new runs, messages, resume-like controls and configuration bypasses',
     ['POST','/api/conversations',{agent_key:'retester'}],
     ['POST',`/api/conversations/${conversation}/messages`,{message:'LOCAL'}],
     ['PATCH',`/api/conversations/${conversation}/profile`,{llm_profile_id:null}],
+    ['PATCH',`/api/conversations/${conversation}`,{title:'must not rewrite history'}],
+    ['DELETE',`/api/conversations/${conversation}`,undefined],
     ['POST',`/api/conversations/${conversation}/stop`,{}],
     ['PUT','/api/agents/retester/config',{enabled:true}],
     ['POST','/api/agents/retester/triggers',{on_finding:true}],
@@ -50,6 +52,9 @@ it('blocks new runs, messages, resume-like controls and configuration bypasses',
     const r=await app.inject({method,url,headers,payload});expect(r.statusCode,`${method} ${url}: ${r.body}`).toBe(410);
   }
   expect(calls).toBe(0);
+  const batch=(await app.inject({method:'POST',url:'/api/conversations/delete/batch',headers,payload:{ids:[conversation]}})).json();
+  expect(batch.items[0]).toMatchObject({id:conversation,ok:false});
+  expect((await db.query('SELECT 1 FROM conversation_activities WHERE conversation_id=$1',[conversation])).rowCount).toBe(1);
 });
 it('cannot resurrect a retired role through seeded configuration or queued triggers',async()=>{
   await db.query("INSERT INTO agents(key,name,role,enabled) VALUES('retester','Retester','assistant',true) ON CONFLICT(key) DO UPDATE SET enabled=true");

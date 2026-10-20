@@ -33,7 +33,7 @@ async function fixture(maxTurns=30){
   const e=new Engine(db,{...defaultEngineConfig(),workers:1,debounceMs:5,workerMaxTurns:30},async()=>m.model,dir);engines.push(e);
   return {task,s,id,e,...m};
 }
-const readExisting=()=>fauxAssistantMessage([fauxToolCall('list_assets',{})]);
+const readExisting=()=>fauxAssistantMessage([fauxToolCall('context_search',{query:'LOCAL'})]);
 const fact=()=>fauxAssistantMessage([fauxToolCall('record_fact',{summary:'LOCAL observation',evidence:'Synthetic local observation; no external request',confidence:'high'})]);
 async function completion(f:Awaited<ReturnType<typeof fixture>>){
   const n=(await f.s.listByKind('fact')).find(n=>n.payload.from_intent===f.id)!;

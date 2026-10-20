@@ -70,3 +70,9 @@ export async function shellEnvironmentNotes(ctx:ToolRunContext){
  const entries=(await ctx.db.platform().listTools()).filter(t=>t.kind==='shell'&&t.enabled&&t.agents.includes(ctx.role));
  return entries.map(t=>`${t.key}: ${t.description}\n${t.usageHelp??''} ${t.whenToUse??''}`).join('\n').slice(0,8000);
 }
+
+export async function platformBashDescription(ctx:ToolRunContext,base:string,interactive:boolean){
+ const notes=await shellEnvironmentNotes(ctx);
+ return base+(notes?`\n可用命令环境：\n${notes}`:'')+
+  (interactive?'\n需要持续交互时用 shell_open，后续 shell_send/read/close/list；句柄仅属于当前执行会话。':'');
+}
