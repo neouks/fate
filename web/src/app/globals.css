@@ -373,3 +373,21 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .model-option strong { font-size: 14px; font-weight: 500; display: block; }
 .model-option small { font-size: 12px; font-weight: 400; display: block; color: var(--muted-foreground); margin-top: 3px; overflow-wrap: anywhere; }
 @media (max-width:767px) { .settings-dialog[data-slot="dialog-content"] { width: calc(100vw - 24px); max-width: calc(100vw - 24px); height: calc(100dvh - 32px); border-radius: 16px; } .settings-layout { grid-template-columns: minmax(0,1fr); grid-template-rows: auto minmax(0,1fr); } .settings-sidebar { padding: 12px; border-right: 0; border-bottom: 1px solid var(--border); } .settings-kicker { margin: 0 4px 8px; } .settings-nav[data-slot="tabs-list"] { flex-direction: row; justify-content: flex-start; overflow-x: auto; } .settings-nav [data-slot="tabs-trigger"] { flex: 0 0 auto; width: auto; min-width: max-content; gap: 6px; font-size: 13px; padding: 8px 10px; } .settings-links { display: none; } .settings-heading { padding: 16px; } .settings-body { padding: 20px 16px; } .settings-footer { padding: 14px 16px; } }
+
+/* Neo findings: keep custom theme tokens and existing interaction contracts. */
+.task-findings-panel { padding: 32px 28px; }
+.findings-search { display: grid; grid-template-columns: minmax(0,1fr) 210px; gap: 12px; }
+.findings-search [data-slot="input-group"], .findings-search [data-slot="select-trigger"] { width: 100%; height: 50px; border-radius: 16px; background: var(--card); box-shadow: none; }
+.findings-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: -16px; margin-bottom: 12px; }
+.findings-filters [data-slot="select-trigger"] { min-width: 126px; height: 44px; border-radius: 14px; background: var(--card); box-shadow: none; }
+.finding-list { display: flex; flex-direction: column; gap: 12px; }
+.finding-list-row[data-slot="button"] { width: 100%; min-height: 76px; height: auto; padding: 18px; gap: 16px; border-radius: 18px; background: var(--card); box-shadow: none; text-align: left; justify-content: flex-start; }
+.finding-list-row[aria-pressed="true"] { border-color: var(--ring); }
+.finding-list-row:hover { background: var(--accent); }
+.finding-list-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 6px; }
+.finding-list-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 500; }
+.finding-list-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: 12px; font-weight: 400; white-space: normal; overflow-wrap: anywhere; }
+.finding-severity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-info); flex-shrink: 0; }
+.finding-severity-dot[data-severity="critical"],.finding-severity-dot[data-severity="high"] { background: var(--destructive); }
+.finding-severity-dot[data-severity="medium"] { background: var(--status-warning); }
+@media (max-width:639px) { .task-findings-panel { padding: 24px 16px; } .findings-search { grid-template-columns: minmax(0,1fr); } .findings-search [data-slot="select-trigger"] { height: 40px; } .findings-filters { margin-top: -12px; } .finding-list-row[data-slot="button"] { padding: 14px; gap: 10px; } }
