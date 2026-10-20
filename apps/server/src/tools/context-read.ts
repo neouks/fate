@@ -1,3 +1,4 @@
+import {contextEvidence} from './context-evidence.js';
 import {contextNeeds} from '../agent/context-needs.js';
 import {readOperations} from '../db/operation-journal.js';
 import {boundedContextPage,contextNode,contextRelations} from './context-pages.js';
@@ -129,8 +130,8 @@ function pointer(value:unknown,field?:string):unknown{
   return value;
 }
 export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({name:'context_get',readOnly:true,
-  description:'批量读取 node:ID、activity:ID 或 operation:ID；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
-  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^(node|activity|operation):[1-9][0-9]*$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string'},offset:{type:'integer',minimum:0},version:{type:'integer',minimum:0},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref']}},max_chars:{type:'integer',minimum:256,maximum:24000}},required:['items']},
+  description:'批量读取 node:ID、activity:ID、operation:ID、output:UUID、attachment:URL编码路径、traffic:UUID:request|response；证据引用按返回 offset_unit/next_item 续读；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
+  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^((node|activity|operation):[1-9][0-9]*|(output|attachment|traffic):.+)$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string'},offset:{type:'integer',minimum:0},version:{type:'integer',minimum:0},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref']}},max_chars:{type:'integer',minimum:256,maximum:24000}},required:['items']},
   async run(args,ctx){
     if(!args.items&&args.ref){const result=await legacyContextGetTool(ctx).execute(ctx.toolCallID??'legacy-read',args as never,ctx.signal,undefined,{} as never);if(result.isError)throw new Error((result.content[0] as {text:string}).text);return JSON.parse((result.content[0] as {text:string}).text);}
     if(!args.items?.length||args.items.length>5)throw new Error('items 需要 1–5 个引用');
@@ -140,6 +141,8 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
       const item=args.items[i]!,view=item.view??'detail';
       try{
         await recallPermission(ctx,'context_get');
+        const evidence=await contextEvidence(ctx,item);
+        if(evidence){items.push(evidence);bytes-=Buffer.byteLength(JSON.stringify(evidence));budget-=400;continue;}
         if((view==='parents'||view==='members')&&(item.offset??0)>0&&!item.cursor)
           throw new Error('关系分页请从 offset 0 重新读取，再沿用 page_cursor 和 next_offset 续读');
         const match=/^(node|activity|operation):([1-9][0-9]*)$/.exec(item.ref);if(!match)throw new Error('无效引用');

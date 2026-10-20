@@ -1,3 +1,4 @@
+import {mergedAssetSearchTool as assetSearchTool} from './asset-search-compat.js';
 import {httpRequestTool,trafficBodyTool,readAttachmentTool} from "./evidence.js";
 import {toolOutputTool} from './output.js';
 import {contextSearchTool,contextGetTool} from './context-read.js';

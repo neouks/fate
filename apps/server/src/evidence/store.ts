@@ -12,11 +12,11 @@ export async function recordExchange(db:Database,input:ExchangeInput){
   await tx.query(`INSERT INTO traffic_exchanges(id,task_id,intent_id,host,truncated) VALUES($1,$2,$3,$4,$5)`,[id,input.taskID,input.intentID??null,url.hostname,input.truncated===true]);
  });return id;
 }
-export async function evidenceBody(db:Database,snapshotID:string,side:string,offset=0){
+export async function evidenceBody(db:Database,snapshotID:string,side:string,offset=0,limit=8192){
  const column=side==='request'?'req_hash':'resp_hash';
  const r=await db.query(`SELECT ${column} AS hash FROM traffic_evidence_snapshots WHERE id=$1`,[snapshotID]);
  if(!r.rows[0])throw Object.assign(new Error('证据正文不存在'),{statusCode:404});
- const page=await readBlobRange(db,String(r.rows[0].hash),Math.max(0,Math.floor(Number.isFinite(offset)?offset:0)),8192);
+ const page=await readBlobRange(db,String(r.rows[0].hash),Math.max(0,Math.floor(Number.isFinite(offset)?offset:0)),limit);
  const bytes=page.bytes,start=page.start;
  // Base64 pages preserve every byte, including invalid UTF-8 and split multibyte characters.
  let end=bytes.length;

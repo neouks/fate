@@ -33,6 +33,8 @@ export function contextContinuations(entries:readonly SessionEntry[]):ContextNee
         if(item.error||typeof item.ref!=='string')continue;
         const key=JSON.stringify([item.ref,item.view,item.field??'']);
         // Intra-field gaps are handled by interval receipts. This preserves the next relation page.
+        if(item.next_item&&/^(output|attachment|traffic):/.test(item.ref)){pending.set(key,{ref:item.ref,priority:70,reason:'evidence_has_more',read:{tool:'context_get',args:{items:[item.next_item]}}});continue;}
+        if(!item.next_item&&/^(output|attachment|traffic):/.test(item.ref)){pending.delete(key);continue;}
         if(item.next_offset===null&&item.next_cursor&&item.next_item)pending.set(key,{ref:item.ref,version:item.version,priority:70,
           reason:'relation_has_more',read:{tool:'context_get',args:{items:[item.next_item]}}});
         else if(item.next_offset===null&&item.next_cursor===null)pending.delete(key);

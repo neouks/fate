@@ -3,8 +3,8 @@ import type {Database} from '../db/index.js';
 
 export function outputPage(id:string,body:string,offset=0){
  const start=Math.min(body.length,Math.max(0,Math.floor(Number.isFinite(offset)?offset:0))),end=Math.min(body.length,start+2000);
- return {output_ref:id,format:'json',content:body.slice(start,end),offset:start,total:body.length,next_offset:end<body.length?end:null,
-  hint:'content 是完整工具 JSON 的一段；用 read_tool_output(output_ref, offset=next_offset) 续读，不会省略数组成员。'};
+ return {ref:`output:${id}`,read:{items:[{ref:`output:${id}`,offset:start}]},output_ref:id,format:'json',content:body.slice(start,end),offset:start,total:body.length,next_offset:end<body.length?end:null,
+  hint:'content 是完整工具 JSON 的一段；用 context_get(items=[{ref:"output:"+output_ref,offset:next_offset}]) 续读（UTF-16 偏移），不会省略数组成员。'};
 }
 async function authorizationFingerprint(db:Database,taskID:number){
  const owners=[taskID,...(await db.query('SELECT source_task_id FROM task_relations WHERE task_id=$1 ORDER BY source_task_id',[taskID])).rows.map(r=>Number(r.source_task_id))];

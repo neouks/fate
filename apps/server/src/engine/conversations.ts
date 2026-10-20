@@ -140,8 +140,8 @@ export class ConversationService {
    const cwd=path.join(this.dataDir,'conversations',String(id));await mkdir(cwd,{recursive:true});
    const ctx=runContext(this.db,taskID,task?.exploration_id??0,role as AgentRole,{conversationID:id,hooks:{assertOwnership:lease.assert}});
    const gate=interceptGate(this.db,{taskID,agentName:role,worker:`conversation#${id}`});
-   const tools=[readAttachmentTool(ctx),toolOutputTool(ctx)];
-   if(task)tools.push(contextSearchTool(ctx),contextGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
+   const tools=[contextGetTool(ctx),readAttachmentTool(ctx),toolOutputTool(ctx)];
+   if(task)tools.push(contextSearchTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
    if(role==='auto'){
     const make=(name:string,description:string,properties:Record<string,unknown>,run:(a:Record<string,unknown>)=>Promise<Record<string,unknown>>,required:string[]=[])=>domainTool({name,description,transactional:false,parameters:{type:'object',properties,required},run},ctx);
     tools.push(make('list_tasks','分页列出平台任务',{after_id:{type:'integer'}},async a=>({tasks:(await this.db.query('SELECT id,name,goal,status,paused,queued FROM tasks WHERE deleted_at IS NULL AND id>$1 ORDER BY id LIMIT 10',[Number(a.after_id)||0])).rows})),
