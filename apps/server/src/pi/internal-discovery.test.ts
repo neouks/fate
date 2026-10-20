@@ -33,3 +33,16 @@ it('preserves explicit legacy references and direct fallback, removes duplicate 
  expect(toolLoadout('worker',options,{direct:true}).toolLoading.deferred).toEqual([]);
  expect(toolLoadout('worker',options,{legacy:true}).toolAllowlist).toContain('read_tool_output');
 });
+it.each(['record_fact','tool_search'])('restores current resident %s missing from the previous loadout',async missing=>{
+ const f=await fixture();
+ const oldTools=f.opts.customTools.filter(t=>missing==='record_fact'?t.name!=='record_fact':t.name!=='asset_get');
+ let r=await AgentRunner.create({...f.opts,...toolLoadout('worker',{customTools:oldTools,toolAllowlist:oldTools.map(t=>t.name)})});
+ try{f.faux.setResponses([fauxAssistantMessage('old session settled')]);await r.prompt('LOCAL old loadout');}finally{await r.dispose();}
+ r=await AgentRunner.create(f.opts);
+ try{
+  expect(r.activeToolNames).toContain(missing);
+  expect(r.activeToolNames).not.toContain('asset_get');
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall('record_fact',{}),fauxToolCall('tool_search',{query:'asset details'})]),fauxAssistantMessage([fauxToolCall('asset_get',{})]),fauxAssistantMessage('done')]);
+  await r.prompt('LOCAL resume');expect(f.counts()).toEqual({reads:1,writes:1});
+ }finally{await r.dispose();}
+});

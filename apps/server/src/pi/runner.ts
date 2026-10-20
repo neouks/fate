@@ -420,6 +420,14 @@ export class AgentRunner {
 		try {
 			await session.bindExtensions({}); // Fires session_start: native MCP connects here.
       if(opts.toolLoading){
+        // Native recovery restores the previous declaration, which can be an old
+        // or budget-closing loadout. Add today's permitted resident tools while
+        // retaining discovered tools; never reactivate an unregistered binding.
+        const registered=new Set(session.getAllTools().map(tool=>tool.name));
+        session.setActiveToolsByName([...new Set([
+          ...session.getActiveToolNames(),
+          ...declared.filter(name=>!opts.toolLoading!.deferred.includes(name)),
+        ])].filter(name=>permitted(name)&&registered.has(name)));
         const entries=sessionManager.getEntries();
         if(!entries.some(e=>e.type==='message'))sessionManager.appendCustomEntry(opts.toolLoading.version,{initial_active:session.getActiveToolNames()});
         // pi restores its transcript loadout and pending MCP names. No host replay of tools or messages.
