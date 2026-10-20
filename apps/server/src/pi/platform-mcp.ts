@@ -57,6 +57,10 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
         return Reflect.get(target,key);
       },
     }));
+    pi.on('tool_call',async event=>{
+      const owner=owners.get(event.toolName);
+      if(owner)await opts.mcpGuard?.(owner.server,'tools/call',owner.tool);
+    });
     if(!hasDeferredMcp(opts))return;
     let permitted=new Set<string>();
     await createToolSearchExtension()(new Proxy(pi,{

@@ -1,3 +1,4 @@
+import {readOperations} from '../db/operation-journal.js';
 import {boundedContextPage,contextNode,contextRelations} from './context-pages.js';
 import {ownObservations} from '../db/worker-drafts.js';
 import {createHash} from 'node:crypto';
@@ -7,9 +8,14 @@ import {graphSources,resolveGraphNode,authorizedNodes} from '../db/graph_view.js
 import {nodeDetailTool} from './graph.js';
 import {progressSummary,resultSummary,stopSummary} from '../agent/context-projection.js';
 
-interface Search {q?:string;types?:string[];state?:string;asset_id?:number;intent_id?:number;task_id?:number;limit?:number;cursor?:string;}
+interface Search {source?:'graph'|'operations';q?:string;types?:string[];state?:string;asset_id?:number;intent_id?:number;task_id?:number;limit?:number;cursor?:string;}
 export async function searchContext(c:ToolRunContext,args:Search) {
   await recallPermission(c,'context_search');
+  if(args.source==='operations'){
+    if(args.task_id&&args.task_id!==c.taskID)throw new Error('操作记录仅限当前任务');
+    const page=await readOperations(c,{intent_id:args.intent_id,after:args.cursor?Number(args.cursor):undefined,limit:args.limit});
+    return {...page,has_more:page.next_cursor!==null,next_cursor:page.next_cursor===null?null:String(page.next_cursor),detail_tool:'context_get'};
+  }
   if(Array.from(args.q??'').length>200)throw new Error('q 最多 200 字符');
   const source=args.task_id&&args.task_id!==c.taskID?(await graphSources(c.db,c.taskID)).find(s=>s.taskID===args.task_id):{taskID:c.taskID,expID:c.expID};
   if(!source)throw new Error('仅可检索本任务及直接来源任务');
@@ -40,7 +46,7 @@ export async function searchContext(c:ToolRunContext,args:Search) {
 }
 
 export function contextSearchTool(c:ToolRunContext){return domainTool<Search>({name:'context_search',description:'按全文、类型、资产、意图和状态检索授权探索图。包含冷图原始节点；返回稳定引用和内容版本。继续分页时保留原查询参数。来源任务只读。',readOnly:true,
-  parameters:{type:'object',properties:{q:{type:'string',maxLength:200},types:{type:'array',items:{type:'string',enum:['fact','finding','intent','goal','hint','digest','activity']}},state:{type:'string'},asset_id:{type:'integer',minimum:1},intent_id:{type:'integer',minimum:1},task_id:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:50},cursor:{type:'string'}}},run:(args,ctx)=>searchContext(ctx,args)},c);}
+  parameters:{type:'object',properties:{source:{type:'string',enum:['graph','operations'],description:'默认 graph；operations 查询本任务工具执行记录，Worker 仅能读取自己的记录'},q:{type:'string',maxLength:200},types:{type:'array',items:{type:'string',enum:['fact','finding','intent','goal','hint','digest','activity']}},state:{type:'string'},asset_id:{type:'integer',minimum:1},intent_id:{type:'integer',minimum:1},task_id:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:50},cursor:{type:'string'}}},run:(args,ctx)=>searchContext(ctx,args)},c);}
 
 function legacyContextGetTool(c:ToolRunContext){return domainTool<{ref:string;version?:number;offset?:number;after_edge?:number;anchor_offset?:number}>({name:'context_get',description:'读取 node:ID 的详情、证据和图关系。超过单页时继续 offset/after_edge/anchor_offset；version 可拒绝读取过程中被修改的节点。',readOnly:true,
   parameters:{type:'object',properties:{ref:{type:'string',pattern:'^node:[1-9][0-9]*$'},version:{type:'integer',minimum:0},offset:{type:'integer',minimum:0},after_edge:{type:'integer',minimum:0},anchor_offset:{type:'integer',minimum:0}},required:['ref']},
@@ -117,8 +123,8 @@ function pointer(value:unknown,field?:string):unknown{
   return value;
 }
 export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({name:'context_get',readOnly:true,
-  description:'批量读取 node:ID 或 activity:ID；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
-  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^(node|activity):[1-9][0-9]*$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string'},offset:{type:'integer',minimum:0},version:{type:'integer',minimum:0},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref']}},max_chars:{type:'integer',minimum:256,maximum:24000}},required:['items']},
+  description:'批量读取 node:ID、activity:ID 或 operation:ID；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
+  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^(node|activity|operation):[1-9][0-9]*$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string'},offset:{type:'integer',minimum:0},version:{type:'integer',minimum:0},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref']}},max_chars:{type:'integer',minimum:256,maximum:24000}},required:['items']},
   async run(args,ctx){
     if(!args.items&&args.ref){const result=await legacyContextGetTool(ctx).execute(ctx.toolCallID??'legacy-read',args as never,ctx.signal,undefined,{} as never);if(result.isError)throw new Error((result.content[0] as {text:string}).text);return JSON.parse((result.content[0] as {text:string}).text);}
     if(!args.items?.length||args.items.length>5)throw new Error('items 需要 1–5 个引用');
@@ -130,9 +136,15 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
         await recallPermission(ctx,'context_get');
         if((view==='parents'||view==='members')&&(item.offset??0)>0&&!item.cursor)
           throw new Error('关系分页请从 offset 0 重新读取，再沿用 page_cursor 和 next_offset 续读');
-        const match=/^(node|activity):([1-9][0-9]*)$/.exec(item.ref);if(!match)throw new Error('无效引用');
+        const match=/^(node|activity|operation):([1-9][0-9]*)$/.exec(item.ref);if(!match)throw new Error('无效引用');
         const id=Number(match[2]);let data:unknown,version:number|undefined,sourceTask=ctx.taskID,nextCursor:string|null=null,pageCursor:string|undefined;
-        if(match[1]==='activity'){
+        if(match[1]==='operation'){
+          const page=await readOperations(ctx,{id});
+          if(!page.items[0])throw new Error('当前任务或意图没有该操作记录');
+          if(!['summary','detail','output'].includes(view))throw new Error('操作记录不支持关系视图');
+          data=page.items[0];
+          if(view==='summary'){const {result,...meta}=data as Record<string,unknown>;data=meta;}
+        }else if(match[1]==='activity'){
           await recallPermission(ctx,'get_worker_trace');
           const a=(await ctx.db.query("SELECT * FROM activity WHERE id=$1 AND node_id IS NOT NULL AND kind NOT IN ('thinking','usage','round')",[id])).rows[0];
           if(!a)throw new Error('活动不存在');

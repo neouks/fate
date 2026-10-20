@@ -1,3 +1,4 @@
+import {registerOperationRoutes} from './operations.js';
 import {executionSnapshot} from '../../engine/coordinator.js';
 import {prepareAttachments} from "../../evidence/attachments.js";
 // 任务路由：CRUD + 生命周期（start/pause/resume/stop|finish|control/delete）+ 意图控制 + 主对话。
@@ -25,6 +26,7 @@ async function engineNoop(p: unknown): Promise<void> {
 }
 
 export function registerTaskRoutes(app: FastifyInstance): void {
+  registerOperationRoutes(app);
   const tasks = () => app.db.tasks();
   const serializeTask = async (task: Task) => {
     const dto = taskDTO(task);

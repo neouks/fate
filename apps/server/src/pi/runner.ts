@@ -3,6 +3,7 @@ import {domainCompactionExtension,type CompactionHealth} from './domain-compacti
 import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
 import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
 import {stableToolPayload,hostTaskContext} from './request-prefix.js';
+import {wrapRegisteredTools} from './operation-tools.js';
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -24,6 +25,7 @@ import path from 'node:path';
 
 import {
 	createAgentSession,
+  createWriteToolDefinition,createEditToolDefinition,
 	DefaultResourceLoader,
 	loadSkillsFromDir,
 	ModelRuntime,
@@ -95,6 +97,10 @@ export type RunnerActivity =
 	| { kind: 'queue_update'; steering: readonly string[]; followUp: readonly string[] };
 
 export interface AgentRunnerOptions {
+  /** Host execution receipts; never wraps model requests or changes pi's tool loop. */
+  wrapExecutionTool?: (tool:ToolDefinition)=>ToolDefinition;
+  /** Unknown external effects end at the native batch boundary, without a retry loop. */
+  stopOnRecoveryBlock?:()=>boolean;
   contextLayout?: 'stable-prefix-v1';
   /** Host mandate at the request tail; rebuilt on session restore, never compacted away. */
   taskContext?: string;
@@ -317,6 +323,7 @@ export class AgentRunner {
       });
 			pi.on('turn_end', async (_event, context) => {
 				turns++;
+        if(opts.stopOnRecoveryBlock?.()){context.abort();return;}
         if(await opts.stopWhen?.()){domainCompletion.done=true;context.abort();return;}
         if(closing.active)enterClosing();
 				if (!opts.maxTurns) return;
@@ -351,7 +358,7 @@ export class AgentRunner {
 			noExtensions: true,
 			extensionFactories: [diagnosticsExtension, modelPolicyExtension, compactionExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory,...(opts.extensionFactories??[])].filter(
 				(e): e is ExtensionFactory => typeof e === 'function',
-			),
+			).map(factory=>opts.wrapExecutionTool?wrapRegisteredTools(factory,opts.wrapExecutionTool):factory),
 			noSkills: !opts.skillsDir,
 			skillsOverride: opts.skillsDir
 				? (base) => {
@@ -373,6 +380,11 @@ export class AgentRunner {
 				? SessionManager.inMemory(opts.cwd)
 				: SessionManager.create(opts.cwd, opts.sessionDir);
 
+    const customTools=[...(opts.customTools??[])];
+    if(opts.wrapExecutionTool)for(const factory of [createWriteToolDefinition,createEditToolDefinition]){
+      const tool=factory(opts.cwd) as ToolDefinition;
+      if(opts.toolAllowlist?.includes(tool.name)&&!customTools.some(t=>t.name===tool.name))customTools.push(tool);
+    }
 		const { session } = await createAgentSession({
 			cwd: opts.cwd,
 			agentDir: opts.agentDir,
@@ -386,7 +398,7 @@ export class AgentRunner {
         ...(hasDeferredMcp(opts)?['tool_search']:[]),
         ...(opts.mcpEntries?.length&&opts.toolAllowlist.includes('mcp__*')?(opts.mcpResourceTools??MCP_RESOURCE_TOOLS):[]),
       ])]:opts.toolAllowlist,
-			customTools: opts.customTools,
+			customTools: opts.wrapExecutionTool?customTools.map(opts.wrapExecutionTool):customTools,
 		});
 
 		const runner = new AgentRunner(session, opts);

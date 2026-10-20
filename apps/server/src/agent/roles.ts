@@ -1,3 +1,5 @@
+import {WorkerOperationJournal} from '../db/operation-journal.js';
+import {journalTools} from '../pi/operation-tools.js';
 import {terminalExtension,TERMINAL_TOOLS} from '../pi/terminal.js';
 import {interceptGate} from '../intercept/gate.js';
 import { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
@@ -272,7 +274,11 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   // 出口网关注入的 bash（名字保持 "bash"，customTools 同名覆盖内置；allowlist 不变）。
   const execution=await executionTools(ctx,runDir,input);
   tools.push(...execution.tools);
+  const journal=new WorkerOperationJournal(ctx);
+  await journal.start();
   const runner = await createTrackedRunner(db,taskID,"worker",{
+    wrapExecutionTool:journalTools(journal,ctx,new Set(['bash','write','edit','http_request','shell_open','shell_send',...execution.tools.map(t=>t.name)])),
+    stopOnRecoveryBlock:()=>journal.recoveryBlocked,
     contextLayout: CONTEXT_LAYOUT_VERSION,
     taskContext,
     reserveSettlementTurns: 2,
