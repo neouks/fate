@@ -89,7 +89,7 @@ These serve as the fallback; there is no separate default.css file. */
   --sidebar-ring: oklch(0.708 0 0);
 
   /* fonts */
-  --font-sans: var(--font-geist);
+  --font-sans: var(--font-public-sans), var(--font-geist);
   --font-mono: var(--font-geist-mono);
   --background: oklch(0.988 0.002 260);
   --foreground: oklch(0.145 0 0);
@@ -319,3 +319,29 @@ html {
 .task-header-tabs { grid-column: 1 / -1; }
 @media (min-width:1280px) { .task-header { grid-template-columns: minmax(120px, 1fr) auto auto; min-height: 56px; padding-block: 0; } .task-header-tabs { grid-column: 2; grid-row: 1; } .task-header-actions { grid-column: 3; } }
 @media (max-width:639px) { .task-header-tabs { grid-row: 2; grid-column: 1 / -1; } .task-header-title > a, .task-header-title > span { display:none; } }
+
+/* Neo core: keep custom theme tokens and existing interaction contracts. */
+body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
+:root { --composer-radius: 28px; --workspace-canvas: color-mix(in oklch, var(--muted) 42%, var(--card)); }
+.task-workspace { background: var(--workspace-canvas); }
+.task-header-tabs [data-slot="tabs-list"] { height: 44px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: var(--muted); gap: 2px; }
+.task-header-tabs [data-slot="tabs-trigger"] { height: 34px; padding-inline: 16px; border-radius: 8px; font-size: 14px; font-weight: 400; }
+.task-header-tabs [data-slot="tabs-trigger"][data-state="active"] { background: var(--card); box-shadow: 0 1px 3px color-mix(in oklch,var(--foreground) 6%,transparent); color: var(--foreground); }
+.task-header .lucide { stroke-width: 1.65; }
+.task-main-conversation { background: var(--workspace-canvas); }
+.task-main-conversation [data-slot="message-scroller-content"] { max-width: 920px; padding: 28px 28px 36px; gap: 32px; }
+.conversation-user-bubble > [data-slot="bubble-content"] { border-radius: 20px; padding: 14px 18px; background: var(--card); border-color: var(--border); }
+.execution-status { display: inline-flex; align-items: center; gap: 9px; }
+.execution-status-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; flex-shrink: 0; }
+.task-composer { max-width: 960px; padding: 12px 20px 20px; background: linear-gradient(transparent,var(--workspace-canvas) 35%); }
+.task-composer [data-slot="input-group"] { border-color: color-mix(in oklch,var(--foreground) 25%,var(--border)); padding: 10px 12px; box-shadow: 0 8px 24px color-mix(in oklch,var(--foreground) 7%,transparent); }
+.task-composer textarea { min-height: 96px; padding: 12px 4px; font-size: 18px; line-height: 1.6; }
+.task-composer .composer-config { border-radius: 999px; background: var(--card); }
+.task-composer .composer-send { border-radius: 999px; width: 36px; height: 36px; }
+.task-composer [data-slot="input-group-addon"] { padding: 2px 0; }
+@media (min-width:960px) { .task-header { grid-template-columns: minmax(80px,1fr) auto auto; min-height: 56px; padding-block: 4px; } .task-header-tabs { grid-column: 2; grid-row: 1; } .task-header-actions { grid-column: 3; } }
+@media (max-width:639px) { .task-main-conversation [data-slot="message-scroller-content"] { padding: 20px 16px; gap: 24px; } .task-composer { padding: 8px 10px 12px; } .task-composer textarea { min-height: 76px; font-size: 16px; } .task-header-tabs [data-slot="tabs-list"] { width: 100%; } .task-header-tabs [data-slot="tabs-trigger"] { flex: 1; padding-inline: 12px; } }
+.task-findings { min-height: 100%; }
+[data-slot="sidebar-content"] [data-slot="sidebar-menu-button"], [data-slot="sidebar"] > [data-slot="sidebar-menu"] [data-slot="sidebar-menu-button"] { min-height: 40px; font-size: 14px; }
+[data-slot="sidebar-menu-button"] > .lucide { width: 18px; height: 18px; stroke-width: 1.6; }
+[data-slot="sidebar-header"] { min-height: 56px; justify-content: center; }

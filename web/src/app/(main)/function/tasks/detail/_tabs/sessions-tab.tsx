@@ -14,6 +14,8 @@ import { SourceTranscript } from "@/components/source-transcript";
 
 import {
   ArrowUpIcon,
+  SlidersHorizontalIcon,
+  GaugeIcon,
   BrainIcon,
   ChevronDownIcon,
   CircleCheckIcon,
@@ -501,12 +503,13 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
 export function SessionsTab({
   taskId,
   pendingIntercepts,
-  processOpen, onProcessOpenChange,
+  processOpen, onProcessOpenChange, onOpenSettings,
   workerExecutionAllowed = true,
 }: {
   taskId: string;
   workerExecutionAllowed?: boolean;
   processOpen: boolean; onProcessOpenChange: (open:boolean)=>void;
+  onOpenSettings?:()=>void;
   pendingIntercepts: InterceptApprovalRow[];
 }) {
   const [relatedSession,setRelatedSession]=React.useState<import("@/lib/types").Conversation|null>(null);
@@ -1784,6 +1787,7 @@ export function SessionsTab({
                   onChange={(e) => void pickFiles(e.target.files)}
                 />
                 <InputGroup className="min-h-9 has-disabled:opacity-100">
+                  {onOpenSettings && <InputGroupAddon align="block-start"><InputGroupButton variant="outline" className="composer-config" onClick={onOpenSettings}><GaugeIcon data-icon="inline-start"/>任务配置</InputGroupButton></InputGroupAddon>}
                   <MentionTextarea
                     inputGroup
                     rows={1}
@@ -1802,6 +1806,7 @@ export function SessionsTab({
                     className="max-h-36 min-h-9 overflow-y-auto"
                   />
                   <InputGroupAddon align="block-end">
+                    {onOpenSettings && <InputGroupButton size="icon-sm" variant="ghost" onClick={onOpenSettings} aria-label="打开任务设置"><SlidersHorizontalIcon/></InputGroupButton>}
                     <InputGroupButton
                       size="icon-xs"
                       variant="ghost"
@@ -1819,8 +1824,8 @@ export function SessionsTab({
                     )}
                     {mainBusy ? (
                       <InputGroupButton
-                        className="ml-auto"
-                        size="icon-xs"
+                        className="composer-send ml-auto"
+                        size="icon-sm"
                         variant="destructive"
                         onClick={stop}
                         disabled={stopping}
@@ -1831,8 +1836,8 @@ export function SessionsTab({
                       </InputGroupButton>
                     ) : (
                       <InputGroupButton
-                        className="ml-auto"
-                        size="icon-xs"
+                        className="composer-send ml-auto"
+                        size="icon-sm"
                         variant="default"
                         onClick={send}
                         disabled={(!input.trim() && attachments.length === 0) || sending}

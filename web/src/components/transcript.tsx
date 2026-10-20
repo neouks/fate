@@ -676,7 +676,7 @@ function UserRow({
           </div>
         )}
         {text && (
-          <Bubble align="end" className="max-w-full"><BubbleContent className="whitespace-pre-wrap [overflow-wrap:anywhere]">{text}</BubbleContent></Bubble>
+          <Bubble variant="outline" align="end" className="conversation-user-bubble max-w-full"><BubbleContent className="whitespace-pre-wrap [overflow-wrap:anywhere]">{text}</BubbleContent></Bubble>
         )}
         <MessageFooter><ActivityTime ts={step.ts} /></MessageFooter>
       </MessageContent>
@@ -909,15 +909,15 @@ function ExecutionTurn({turn,summary,latest,...props}:ExecutionProps&{turn:Retur
   const open=(focusInside&&manualOpen?.focus!==focus)||(manualOpen?.open??(live||!summary?.started_at));
   const errorText=summary?.error??(failed?terminal?.detail||terminal?.summary:undefined);
   const failedTools=summary?.failed_tool_calls??new Set(processSteps.filter(s=>s.kind==='tool_result'&&s.is_error).map(s=>s.tool_use_id??s.seq)).size;
-  const statusClass=cn('text-sm',failed||status==='exhausted'?'text-destructive':'text-muted-foreground',live&&'shimmer');
+  const statusClass=cn('execution-status text-sm',failed||status==='exhausted'?'text-destructive':status==='completed'||status==='done'?'text-[var(--status-success)]':'text-muted-foreground',live&&'shimmer');
   async function copy(){try{const entries=final?[final]:processSteps.filter(s=>['text','assistant','result'].includes(s.kind));const bodies=await Promise.all(entries.map(s=>s.detail??(s.seq>0?getDetail(s.seq):Promise.resolve(s.summary))));await navigator.clipboard.writeText(bodies.join('\n\n'));toast.success('已复制');}catch{toast.error('复制失败');}}
   if(turn.user)return <UserRow step={last} intent={last.kind==='intent'} getDetail={getDetail}/>;
   if(last.metadata?.worker_feedback||last.worker==='system')return <Message align="start"><MessageContent><Bubble variant="muted"><BubbleContent><ActivitySteps {...props} activity={turn.steps}/></BubbleContent></Bubble></MessageContent></Message>;
   return <Message data-turn-id={turn.key} data-run-status={label} align="start"><MessageContent>
     <Bubble variant="ghost" className="w-full max-w-full"><BubbleContent className="flex w-full min-w-0 flex-col gap-4 py-2">
-      <div className="flex flex-wrap items-center gap-2"><span role="status" className={statusClass}>{ended&&!failed&&status!=='exhausted'&&status!=='interrupted'?<CheckIcon className="mr-1 inline size-4"/>:null}{label}</span><span aria-hidden="true" className="text-muted-foreground">/</span><span className="text-sm text-muted-foreground tabular-nums">{elapsed}</span><TurnDetails summary={summary} label={label} elapsed={elapsed} conversationId={props.conversationId}/></div>
+      <div className="flex flex-wrap items-center gap-2"><span role="status" className={statusClass}><span className="execution-status-dot" aria-hidden="true"/>{label}</span><span aria-hidden="true" className="text-muted-foreground">/</span><span className="text-sm text-muted-foreground tabular-nums">{elapsed}</span><TurnDetails summary={summary} label={label} elapsed={elapsed} conversationId={props.conversationId}/></div>
       {hasProcess?<Collapsible open={open} onOpenChange={open=>setManualOpen({open,focus})}>
-        <CollapsibleTrigger asChild><Button variant="ghost" className="h-auto w-full justify-start whitespace-normal px-0 py-2 text-left"><ChevronRight className={cn('transition-transform',open&&'rotate-90')}/><span>{live?'执行中':ended?'执行记录':'历史过程'}</span><span className="font-normal text-muted-foreground">{summary?.steps==null?'步骤未记录':`${summary.steps} 步`} · {summary?.tool_calls==null?'调用数未记录':`${summary.tool_calls} 次工具调用`}{failedTools>0?` · ${failedTools} 次失败`:''}</span></Button></CollapsibleTrigger>
+        <CollapsibleTrigger asChild><Button variant="ghost" className="h-auto w-full justify-start whitespace-normal px-0 py-2 text-left"><ChevronRight className={cn('transition-transform',open&&'rotate-90')}/><span>{live?'执行中':ended?(failed?'执行失败':['completed','done'].includes(status??'')?'执行完成':'执行记录'):'历史过程'}</span><span className="font-normal text-muted-foreground">{summary?.steps==null?'步骤未记录':`${summary.steps} 步`} · {summary?.tool_calls==null?'调用数未记录':`${summary.tool_calls} 次工具调用`}{failedTools>0?` · ${failedTools} 次失败`:''}</span></Button></CollapsibleTrigger>
         <CollapsibleContent className="min-w-0 border-l pl-3 sm:pl-5"><ActivitySteps {...props} activity={processSteps}/></CollapsibleContent>
       </Collapsible>:processSteps.length>0?<ActivitySteps {...props} activity={processSteps}/>:null}
       {hasProcess&&!open&&processSteps.filter(s=>s.kind==='intercept_request').map(s=><InterceptCard key={s.seq} step={s} getDetail={getDetail}/>)}
