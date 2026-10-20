@@ -1,3 +1,4 @@
+import {contextNeeds} from '../agent/context-needs.js';
 import {readOperations} from '../db/operation-journal.js';
 import {boundedContextPage,contextNode,contextRelations} from './context-pages.js';
 import {ownObservations} from '../db/worker-drafts.js';
@@ -8,9 +9,14 @@ import {graphSources,resolveGraphNode,authorizedNodes} from '../db/graph_view.js
 import {nodeDetailTool} from './graph.js';
 import {progressSummary,resultSummary,stopSummary} from '../agent/context-projection.js';
 
-interface Search {source?:'graph'|'operations';q?:string;types?:string[];state?:string;asset_id?:number;intent_id?:number;task_id?:number;limit?:number;cursor?:string;}
+interface Search {source?:'graph'|'operations'|'needs';q?:string;types?:string[];state?:string;asset_id?:number;intent_id?:number;task_id?:number;limit?:number;cursor?:string;}
 export async function searchContext(c:ToolRunContext,args:Search) {
   await recallPermission(c,'context_search');
+  if(args.source==='needs'){
+    if(args.task_id&&args.task_id!==c.taskID)throw new Error('上下文清单仅限当前任务');
+    const page=await contextNeeds(c,{intent_id:args.intent_id,limit:args.limit,cursor:args.cursor});
+    return {...page,has_more:page.next_cursor!==null};
+  }
   if(args.source==='operations'){
     if(args.task_id&&args.task_id!==c.taskID)throw new Error('操作记录仅限当前任务');
     const page=await readOperations(c,{intent_id:args.intent_id,after:args.cursor?Number(args.cursor):undefined,limit:args.limit});
@@ -46,7 +52,7 @@ export async function searchContext(c:ToolRunContext,args:Search) {
 }
 
 export function contextSearchTool(c:ToolRunContext){return domainTool<Search>({name:'context_search',description:'按全文、类型、资产、意图和状态检索授权探索图。包含冷图原始节点；返回稳定引用和内容版本。继续分页时保留原查询参数。来源任务只读。',readOnly:true,
-  parameters:{type:'object',properties:{source:{type:'string',enum:['graph','operations'],description:'默认 graph；operations 查询本任务工具执行记录，Worker 仅能读取自己的记录'},q:{type:'string',maxLength:200},types:{type:'array',items:{type:'string',enum:['fact','finding','intent','goal','hint','digest','activity']}},state:{type:'string'},asset_id:{type:'integer',minimum:1},intent_id:{type:'integer',minimum:1},task_id:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:50},cursor:{type:'string'}}},run:(args,ctx)=>searchContext(ctx,args)},c);}
+  parameters:{type:'object',properties:{source:{type:'string',enum:['graph','operations','needs'],description:'默认 graph；needs 返回按优先级排序的依赖缺口、未读区间和直接读取参数；operations 查询本任务工具执行记录，Worker 仅能读取自己的记录'},q:{type:'string',maxLength:200},types:{type:'array',items:{type:'string',enum:['fact','finding','intent','goal','hint','digest','activity']}},state:{type:'string'},asset_id:{type:'integer',minimum:1},intent_id:{type:'integer',minimum:1},task_id:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:50},cursor:{type:'string'}}},run:(args,ctx)=>searchContext(ctx,args)},c);}
 
 function legacyContextGetTool(c:ToolRunContext){return domainTool<{ref:string;version?:number;offset?:number;after_edge?:number;anchor_offset?:number}>({name:'context_get',description:'读取 node:ID 的详情、证据和图关系。超过单页时继续 offset/after_edge/anchor_offset；version 可拒绝读取过程中被修改的节点。',readOnly:true,
   parameters:{type:'object',properties:{ref:{type:'string',pattern:'^node:[1-9][0-9]*$'},version:{type:'integer',minimum:0},offset:{type:'integer',minimum:0},after_edge:{type:'integer',minimum:0},anchor_offset:{type:'integer',minimum:0}},required:['ref']},

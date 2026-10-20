@@ -1,5 +1,6 @@
 import {WorkerOperationJournal} from '../db/operation-journal.js';
 import {journalTools} from '../pi/operation-tools.js';
+import {contextNeedBoundary,CONTEXT_RETENTION_RULES} from './context-needs.js';
 import {terminalExtension,TERMINAL_TOOLS} from '../pi/terminal.js';
 import {interceptGate} from '../intercept/gate.js';
 import { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
@@ -282,7 +283,9 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     contextLayout: CONTEXT_LAYOUT_VERSION,
     taskContext,
     reserveSettlementTurns: 2,
-    boundaryContext: async()=>constraintBlock(await loadConstraints(db,expID)),
+    boundaryContext: async()=>constraintBlock(await loadConstraints(db,expID))+'\n'+await contextNeedBoundary(ctx),
+    compactionInstructions:CONTEXT_RETENTION_RULES,
+    loadDomainState:async()=>({context_needs:await contextNeedBoundary(ctx)}),
     intentID:intent.id,
     cwd: runDir,
     agentDir: path.join(dataDir, "pi-agent"),
@@ -291,7 +294,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     model: model.model,
     thinkingLevel: model.thinkingLevel,
     streaming: model.streaming,
-    systemPrompt: system,
+    systemPrompt: system+'\n\n'+CONTEXT_RETENTION_RULES,
     customTools: tools,
     extensionFactories:execution.extensions,
     ...await roleResources(db, "worker", agentEnv.skillsDir),
@@ -346,6 +349,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     onActivity: (a) => counter.wrapped(a, { intentID: intent.id, worker: workerName }),
   });
   try {
+    ctx.sessionEntries=()=>runner.sessionEntries;
     await input.onRunner?.({ abort: () => runner.abort(),steer:async message=>{await runner.steer(message);} });
     const res = await runner.prompt(firstUser);
     return { ...res, usage: counter.usage() };
@@ -420,19 +424,20 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
     extensionFactories:input.terminalOnly?[]:execution.extensions,
     guard:roleExecutionGuard(ctx,input.extraGuard),
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
-    boundaryContext:async()=>constraintBlock(await loadConstraints(db,expID)),
+    boundaryContext:async()=>constraintBlock(await loadConstraints(db,expID))+'\n'+await contextNeedBoundary(ctx),
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
     modelPolicy: model.modelPolicy,
     model: model.model,
     thinkingLevel: model.thinkingLevel,
     streaming: model.streaming,
-    systemPrompt: system,
+    systemPrompt: system+'\n\n'+CONTEXT_RETENTION_RULES,
     customTools: tools,
     ...await roleResources(db, "planner", agentEnv.skillsDir),
     signal: input.signal, ...plannerBudget,
     toolAllowlist: ["read",...(!input.terminalOnly?["write","edit","bash","mcp__*",...execution.names]:[]), ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     inMemory: true,
+    compactionInstructions:CONTEXT_RETENTION_RULES,
     wrapup: ({reason}) => reason==='settled'?undefined:{prompt:input.wrapupPromptOverride??(input.terminalOnly?PLANNER_TASK_TIMEOUT_WRAPUP:prc.wrapupPrompt||'预算将尽，停止新探测，保存已确定的规划并简述结果。')},
     maxWrapupTurns: prc.wrapupMaxTurns || 1,
     onRawEvent: (ev) => {
@@ -441,6 +446,7 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
     onActivity: (a) => plannerCounter.wrapped(a, { worker: "planner" }),
   });
   try {
+    ctx.sessionEntries=()=>runner.sessionEntries;
     const res = await runner.prompt(firstUser);
     return { ...res, usage: plannerCounter.usage() };
   } finally { await runner.dispose(); }
