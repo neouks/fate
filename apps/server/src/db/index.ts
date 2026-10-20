@@ -14,6 +14,7 @@ import { TaskScopeStore } from "./task_scope.js";
 import { PlatformStore, seedBuiltins } from "./platform.js";
 import { InterceptStore } from "./intercept.js";
 import {migrateOperationJournal} from './operation-journal.js';
+import {retireRetester} from './retire-retester.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -173,6 +174,7 @@ export async function openDatabase(): Promise<Database> {
       await migrateOperationJournal(db);
       // 内置种子（agents/规则/MCP/技能可见性）在迁移锁内执行，与 Go 同构。
       await seedBuiltins(db);
+      await retireRetester(db);
     } finally {
       await client.query("SELECT pg_advisory_unlock($1)", [SCHEMA_MIGRATION_LOCK_KEY]).catch(() => undefined);
     }

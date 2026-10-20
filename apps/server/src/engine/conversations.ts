@@ -1,3 +1,4 @@
+import {assertActiveRole} from '../agent/retired-roles.js';
 import {randomUUID} from 'node:crypto';
 import {LiveStreamWriter,runnerActivityMetadata} from './live-stream.js';
 import {createTrackedRunner} from './runtime-config.js';
@@ -41,6 +42,7 @@ export class ConversationService {
   return rows.rows;
  }
  async create(key:string,title='',profile?:number|null,taskID?:number){
+  assertActiveRole(key);
   const agent=await this.db.platform().getAgentByKey(key);
   if(!agent||!agent.enabled||ORCHESTRATORS.has(key))throw Object.assign(new Error('该角色不能创建独立对话'),{statusCode:400});
   const cleanTitle=title.trim()||'新对话';
@@ -56,14 +58,14 @@ export class ConversationService {
    WHERE id=$1 RETURNING *`,[id,title??null,patch.pinned??null])).rows[0];
   if(!row)throw Object.assign(new Error('conversation not found'),{statusCode:404});return row;
  }
+ async assertWritable(id:number){const row=(await this.db.query('SELECT agent_key FROM conversations WHERE id=$1',[id])).rows[0];if(row)assertActiveRole(String(row.agent_key));}
  async setProfile(id:number,profile:number|null){
+  await this.assertWritable(id);
   if(profile!==null&&!(await this.db.query('SELECT id FROM llm_profiles WHERE id=$1',[profile])).rowCount)throw Object.assign(new Error('指定的 LLM 配置不存在'),{statusCode:400});
   const r=await this.db.query('UPDATE conversations SET llm_profile_id=$2 WHERE id=$1 RETURNING id',[id,profile]);
   if(!r.rowCount)throw Object.assign(new Error('conversation not found'),{statusCode:404});return {ok:true};
  }
  async remove(id:number){
-  const retest=await this.db.query("SELECT id FROM finding_retests WHERE conversation_id=$1 AND status IN ('pending','running')",[id]);
-  if(retest.rowCount&&(await this.engine.retests.stop(id)).status==='stopping')return {status:'stopping'};
   if((await this.stop(id)).status==='stopping')return {status:'stopping'};
   const r=await this.db.query('DELETE FROM conversations WHERE id=$1 RETURNING id',[id]);
   if(!r.rowCount)throw Object.assign(new Error('conversation not found'),{statusCode:404});return {deleted:Number(r.rows[0]!.id)};
@@ -73,6 +75,7 @@ export class ConversationService {
   const row=await this.db.transaction(async tx=>{
    const conv=(await tx.query('SELECT * FROM conversations WHERE id=$1 FOR UPDATE',[id])).rows[0];
    if(!conv)throw Object.assign(new Error('conversation not found'),{statusCode:404});
+   assertActiveRole(String(conv.agent_key));
    const existing=await tx.query('SELECT id FROM conversation_runs WHERE conversation_id=$1 AND turn_id=$2',[id,requestID]);
    if(existing.rows[0])return existing.rows[0];
    if(ORCHESTRATORS.has(String(conv.agent_key)))throw Object.assign(new Error('请通过该角色的专用入口执行'),{statusCode:409});
@@ -98,7 +101,7 @@ export class ConversationService {
   // Interrupted runs are visible; the next user turn resumes native history without replaying tool effects.
   await this.db.query(`UPDATE conversation_runs r SET status='failed',error='执行器已离线；会话历史已保留，可发送新消息继续',finished_at=now()
    WHERE status='running' AND NOT EXISTS(SELECT 1 FROM runtime_session_leases l WHERE l.key='conversation:'||r.conversation_id AND l.token=r.token AND l.expires_at>now())`);
-  const rows=await this.db.query("SELECT DISTINCT conversation_id FROM conversation_runs WHERE status='queued' ORDER BY conversation_id LIMIT 32");
+  const rows=await this.db.query("SELECT DISTINCT r.conversation_id FROM conversation_runs r JOIN conversations c ON c.id=r.conversation_id WHERE r.status='queued' AND c.agent_key<>'retester' ORDER BY r.conversation_id LIMIT 32");
   for(const r of rows.rows){const id=Number(r.conversation_id);if(this.active.has(id))continue;
    const controller=new AbortController();const done=this.run(id,controller).catch(()=>{}).finally(()=>this.active.delete(id));this.active.set(id,{controller,done});}
  }
@@ -120,7 +123,7 @@ export class ConversationService {
    const claimed: (Record<string, unknown> & {run:Record<string, unknown>}) | undefined = await this.db.transaction(async tx=>{
     await tx.query('SELECT pg_advisory_xact_lock(4200000003)');
     const c=(await tx.query('SELECT c.*,a.enabled,a.trigger_run_mode,a.trigger_max_parallel FROM conversations c JOIN agents a ON a.key=c.agent_key WHERE c.id=$1',[id])).rows[0];
-    if(!c||!c.enabled)return;
+    if(!c||!c.enabled)return;assertActiveRole(String(c.agent_key));
     const count=await tx.query("SELECT count(*) n FROM conversation_runs r JOIN conversations c ON c.id=r.conversation_id WHERE c.agent_key=$1 AND r.trigger_id IS NOT NULL AND r.status='running'",[c.agent_key]);
     const configured=Number(c.trigger_max_parallel);
     const limit=c.trigger_run_mode==='parallel'?(Number.isFinite(configured)?Math.max(0,configured):5):1;

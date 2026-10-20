@@ -1,3 +1,4 @@
+import {assertActiveRole} from '../agent/retired-roles.js';
 import {registerTurnRoutes} from './routes/turns.js';
 import {registerTaskFileRoutes} from "./routes/task-files.js";
 import {configureEvidenceStore} from '../evidence/blobs.js';
@@ -150,6 +151,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerExplorationRoutes(app);
   registerInterceptRoutes(app);
   registerAssetRoutes(app);
+  app.addHook('preHandler',async req=>{const key=(req.params as {key?:string})?.key;if(req.url.startsWith('/api/agents/')&&key)assertActiveRole(key);});
   registerConfigRoutes(app);
   registerEvidenceRoutes(app);
   registerRetestRoutes(app);

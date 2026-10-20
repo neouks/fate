@@ -1,3 +1,4 @@
+import {assertActiveRole} from '../../agent/retired-roles.js';
 import {resolveRolePrompt,PROMPT_VERSION,hostProtocol} from '../../agent/prompts.js';
 import {runtimeConfiguration} from '../../engine/runtime-config.js';
 // 系统配置路由：settings KV / agents（列表+提示词）/ LLM profiles / MCP / skills 文件树。
@@ -236,6 +237,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     const key = typeof b["key"] === "string" ? b["key"].trim() : "";
     const name = typeof b["name"] === "string" ? b["name"].trim() : "";
     const description = typeof b["description"] === "string" ? b["description"] : "";
+    assertActiveRole(key);
     if (!/^[a-z0-9_-]{1,64}$/i.test(key) || name === "") {
       return reply.code(400).send({ error: "key 仅限字母数字/_/-（<=64），name 不能为空" });
     }

@@ -10,7 +10,7 @@ import {pendingPlannerContext,acknowledgePlannerContext} from '../db/planner-con
 import {TriggerScheduler} from './triggers.js';
 import {acquireSessionLease} from './session-lease.js';
 import {leaseWatchdog} from './lease-watchdog.js';
-import {RetestService} from "./retests.js";
+
 import type {ChatImage} from "../evidence/attachments.js";
 import { Coordinator } from "./coordinator.js";
 import { compactColdGraph } from "../agent/coldgraph.js";
@@ -110,7 +110,7 @@ export type EngineActivity = {
 export type ModelResolver = (taskID: number, role: string, context?: {conversationID?:number;profileID?:number}) => Promise<ModelSource>;
 
 export class Engine {
-  readonly retests:RetestService;
+
   readonly conversations:ConversationService;
   private triggerScheduler:TriggerScheduler;
   readonly bus = new EventEmitter(); // activity 广播（M5 SSE 接这里）
@@ -157,7 +157,7 @@ export class Engine {
     this.coordinator = new Coordinator(db,cfg.workers);
     this.conversations=new ConversationService(db,modelResolver,dataDir,this,egressAddr);
     this.triggerScheduler=new TriggerScheduler(db);
-    this.retests=new RetestService(db,modelResolver,dataDir,cfg.workers,egressAddr);
+
   }
 
   // ─── 任务运行时 ───────────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ export class Engine {
       await recoverExpiredRuntimes(this.db);
       await this.coordinator.promote();
       await this.triggerScheduler.tick();
-      await this.retests.pump();
+
       await this.conversations.pump();
       const rows=await this.db.query(`SELECT id,description,queue_mode FROM tasks WHERE status='running' AND NOT paused AND NOT queued AND deleted_at IS NULL ORDER BY created_at,id`);
       for(const row of rows.rows){
@@ -853,7 +853,7 @@ export class Engine {
 
   async shutdown(): Promise<void> {
     this.closing=true;clearInterval(this.scheduler);
-    await this.retests.shutdown();
+
     await this.conversations.shutdown();
     await Promise.all([...this.tasks.keys()].map((id) => this.stop(id,'shutdown')));
   }

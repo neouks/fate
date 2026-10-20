@@ -1,3 +1,4 @@
+import {assertActiveRole} from '../agent/retired-roles.js';
 import {WorkerOperationJournal} from '../db/operation-journal.js';
 import {journalTools} from '../pi/operation-tools.js';
 import {contextNeedBoundary,CONTEXT_RETENTION_RULES} from './context-needs.js';
@@ -51,6 +52,7 @@ export interface AgentRunConfig {
   llmProfileID: number; // 0=全局激活
 }
 export async function agentRunConfig(db: import("../db/index.js").Database, key: string): Promise<AgentRunConfig> {
+  assertActiveRole(key);
   try {
     const r = await db.query(
       `SELECT enabled, max_turns, run_seconds, wrapup_prompt, wrapup_max_turns, COALESCE(llm_profile_id,0) llm_profile_id FROM agents WHERE key=$1`,

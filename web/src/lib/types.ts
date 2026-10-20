@@ -823,6 +823,8 @@ export interface FindingRetest {
 }
 
 export interface Conversation {
+  read_only?: boolean;
+  retired?: boolean;
   id: number;
   running?: boolean; // live server state, returned with the conversation list
   agent_key: string;

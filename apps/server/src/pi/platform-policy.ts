@@ -1,9 +1,10 @@
+import {assertActiveRole} from '../agent/retired-roles.js';
 import type { Database } from '../db/index.js';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 export const PLATFORM_POLICY_VERSION = 'domain-v1';
-export const PLATFORM_ROLES = ['goals','planner','mainagent','worker','auto','pentest','reporter','retester'] as const;
+export const PLATFORM_ROLES = ['goals','planner','mainagent','worker','auto','pentest','reporter'] as const;
 export interface PlatformPolicy {
   version: typeof PLATFORM_POLICY_VERSION;
   compaction: 'domain' | 'native';
@@ -13,6 +14,7 @@ export interface PlatformPolicy {
 
 /** Settings are read once per new runner, never mutate an active SDK session. */
 export async function platformPolicy(db: Database, role: string): Promise<PlatformPolicy> {
+  assertActiveRole(role);
   const [compression, loading, search] = await Promise.all([
     db.platform().getSetting('pi_context_policy'), db.platform().getSetting('pi_mcp_loading'),
     db.query('SELECT enabled,agents FROM tools WHERE key=$1',['tool_search']),
@@ -27,6 +29,7 @@ export async function platformPolicy(db: Database, role: string): Promise<Platfo
 }
 
 export function validatePlatformRunner(role: string, options: {systemPrompt?:string;toolAllowlist?:string[];cwd:string}, taskID:number) {
+  assertActiveRole(role);
   if (!PLATFORM_ROLES.includes(role as typeof PLATFORM_ROLES[number])) return;
   if (!options.systemPrompt?.trim()) throw new Error(`${role} 必须显式提供角色提示词`);
   if (!Array.isArray(options.toolAllowlist)) throw new Error(`${role} 必须显式提供工具集合`);

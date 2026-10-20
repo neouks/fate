@@ -1,3 +1,4 @@
+import {assertActiveRole} from '../../agent/retired-roles.js';
 import {platformPolicy} from '../../pi/platform-policy.js';
 import {builtinPrompt,renderPrompt,hostProtocol,PROMPT_VERSION,resolveRolePrompt} from '../../agent/prompts.js';
 import {textSize} from '../../agent/prompt-diagnostics.js';
@@ -291,6 +292,8 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
 
   app.patch("/api/triggers/:id", async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
+    const trigger=(await db().query('SELECT agent_key FROM agent_triggers WHERE id=$1',[id])).rows[0];
+    if(trigger)assertActiveRole(String(trigger.agent_key));
     const b = (req.body ?? {}) as Record<string, unknown>;
     const r = triggerSets(b);
     if ("error" in r) return reply.code(400).send({ error: r.error });

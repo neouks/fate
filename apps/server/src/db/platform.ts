@@ -433,7 +433,7 @@ export class PlatformStore {
   }
 
   async listAgents(): Promise<Agent[]> {
-    const res = await this.db.query<Record<string, unknown>>(`SELECT ${AGENT_COLS} FROM agents ORDER BY id`);
+    const res = await this.db.query<Record<string, unknown>>(`SELECT ${AGENT_COLS} FROM agents WHERE key<>'retester' ORDER BY id`);
     return res.rows.map((r) => this.mapAgent(r));
   }
 
@@ -979,7 +979,7 @@ export async function seedBuiltinTools(db: Database): Promise<void> {
   const ALL = ["planner", "worker", "mainagent", "goals"];
   const seeds: Array<[string, string, string[]]> = [
     ["bash", "执行 shell 命令（经出口网关做任务级授权）", ALL],
-    ["read", "读取文件", [...ALL,"auto","reporter","pentest","retester"]],
+    ["read", "读取文件", [...ALL,"auto","reporter","pentest"]],
     ["write", "写入文件", ["worker"]],
     ["edit", "编辑文件（字符串替换）", ["worker"]],
     ["graph_overview", "读取探索态势总览（目标/frontier/在跑/近期事实/覆盖度）", SHARED],
@@ -1014,7 +1014,7 @@ export async function seedBuiltinTools(db: Database): Promise<void> {
 export async function seedBuiltins(db: Database): Promise<void> {
   // New roles are insert-only: operator prompts, budgets and bindings survive upgrades.
   await db.query(`INSERT INTO agents(key,name,role,builtin,enabled,trigger_run_mode,trigger_merge_mode,trigger_max_parallel)
-    VALUES ('reporter','Reporter','assistant',false,true,'parallel','none',5),('retester','Retester','assistant',false,true,'parallel','none',5) ON CONFLICT(key) DO NOTHING`);
+    VALUES ('reporter','Reporter','assistant',false,true,'parallel','none',5) ON CONFLICT(key) DO NOTHING`);
   await seedBuiltinTools(db);
   await db.transaction(async tx=>{
     // Retire the active catalog entries, preserving customized historical metadata.
@@ -1028,15 +1028,13 @@ export async function seedBuiltins(db: Database): Promise<void> {
   const store = new PlatformStore(db);
   const extensionTools:Array<[string,string,string[]]>=[
    ...['shell_open','shell_send','shell_read','shell_close','shell_list'].map(key=>[key,'当前 PI 执行会话的交互终端',['worker','planner','mainagent']] as [string,string,string[]]),
-   ['context_search','检索授权探索节点、执行结果与冷图原文',['worker','planner','mainagent','pentest','auto','goals','reporter','retester']],
-   ['context_get','按稳定引用分页读取节点详情与血缘',['worker','planner','mainagent','pentest','auto','goals','reporter','retester']],
-   ['read_tool_output','续读完整工具 JSON 原文',['goals','planner','mainagent','worker','auto','pentest','reporter','retester']],
-   ['http_request','执行授权 HTTP 请求并保存证据',['worker','pentest','retester']],
-   ['traffic_body','分页读取流量证据',['worker','pentest','reporter','retester']],
-   ['read_attachment','分页读取当前会话附件',['worker','mainagent','auto','pentest','reporter','retester']],
-   ['record_finding_retest_result','保存明确的复测结论',['retester']],
-   ['get_finding_retest_context','读取原漏洞与复测约束',['retester']],
-   ['get_finding','读取漏洞和证据版本',['reporter','retester','auto','pentest']],
+   ['context_search','检索授权探索节点、执行结果与冷图原文',['worker','planner','mainagent','pentest','auto','goals','reporter']],
+   ['context_get','按稳定引用分页读取节点详情与血缘',['worker','planner','mainagent','pentest','auto','goals','reporter']],
+   ['read_tool_output','续读完整工具 JSON 原文',['goals','planner','mainagent','worker','auto','pentest','reporter']],
+   ['http_request','执行授权 HTTP 请求并保存证据',['worker','pentest']],
+   ['traffic_body','分页读取流量证据',['worker','pentest','reporter']],
+   ['read_attachment','分页读取当前会话附件',['worker','mainagent','auto','pentest','reporter']],
+   ['get_finding','读取漏洞和证据版本',['reporter','auto','pentest']],
    ['update_finding_report','以证据版本更新报告',['reporter','auto']],
    ['list_tasks','列出平台任务',['auto']],['get_task','查询任务状态',['auto']],
    ['record_conversation_fact','绑定任务的 Pentest 写回有来源的事实',['pentest']],['report_conversation_finding','绑定任务的 Pentest 原子提交有证据的漏洞',['pentest']],['resume_task','恢复任务并查询准入结果',['auto']],
@@ -1047,10 +1045,10 @@ export async function seedBuiltins(db: Database): Promise<void> {
     const legacyShared=['planner','worker','mainagent'],legacyAll=[...legacyShared,'goals'];
     const bindings:Array<[string[],string[],string[]]>=[
       [['bash'],legacyAll,['pentest']],
-      [['read'],legacyAll,['pentest','retester','auto','reporter']],
+      [['read'],legacyAll,['pentest','auto','reporter']],
       [['write','edit'],['worker'],['pentest']],
       [['graph_overview','node_detail'],legacyShared,['pentest']],
-      [['list_assets'],legacyShared,['pentest','retester','auto']],
+      [['list_assets'],legacyShared,['pentest','auto']],
       [['list_findings'],['worker','planner','mainagent'],['pentest','reporter','auto']],
     ];
     // Only recognize untouched legacy defaults; never broaden a custom binding.

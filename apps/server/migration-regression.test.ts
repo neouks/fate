@@ -9,7 +9,7 @@ import { fauxProvider,fauxAssistantMessage,fauxToolCall } from '@earendil-works/
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { openDatabase,type Database } from './src/db/index.js';
 import { Engine,defaultEngineConfig } from './src/engine/engine.js';
-import { RetestService } from './src/engine/retests.js';
+import {retireRetester} from './src/db/retire-retester.js';
 import { buildApp } from './src/http/app.js';
 import { signJWT } from './src/http/auth.js';
 import { interceptGate } from './src/intercept/gate.js';
@@ -258,19 +258,13 @@ describe('migration invariants',()=>{
    expect(row.rows[0]).toMatchObject({status:'acknowledged',detail:'superseded by explicit task resume'});
   }finally{await e.stop(t.id);}
  });
- it('G6 retest completion changes only the finding triage version captured at start',async()=>{
-  const {t}=await fixture();const retests=new RetestService(db,async()=>{throw new Error('not used');},dir,1);
-  const create=async(manualChange:boolean)=>{
-   const f=(await db.query("INSERT INTO findings(task_id,name,status) VALUES($1,'retest fixture','pending') RETURNING *",[t.id])).rows[0]!;
-   const token='fixture-'+String(f.id),snapshot=JSON.stringify(f);
-   const row=await db.query(`INSERT INTO finding_retests(finding_id,status,verdict,snapshot,lease_token,lease_until)
-    VALUES($1,'running','fixed',$2::jsonb,$3,now()+interval '1 minute') RETURNING id`,[f.id,snapshot,token]);
-   if(manualChange)await db.query("UPDATE findings SET status='confirmed' WHERE id=$1",[f.id]);
-   await retests.finish(Number(row.rows[0]!.id),token,'completed');
-   return (await db.query('SELECT status FROM findings WHERE id=$1',[f.id])).rows[0]!.status;
-  };
-  expect(await create(false)).toBe('fixed');
-  expect(await create(true)).toBe('confirmed');
+ it('retirement preserves saved verdicts without updating the finding status',async()=>{
+  const {t}=await fixture();
+  const f=(await db.query("INSERT INTO findings(task_id,name,status) VALUES($1,'LOCAL retirement','confirmed') RETURNING *",[t.id])).rows[0]!;
+  const r=(await db.query("INSERT INTO finding_retests(finding_id,status,verdict,snapshot) VALUES($1,'pending','fixed',$2::jsonb) RETURNING id",[f.id,JSON.stringify(f)])).rows[0]!;
+  await retireRetester(db);await retireRetester(db);
+  expect((await db.query('SELECT status,verdict FROM finding_retests WHERE id=$1',[r.id])).rows[0]).toEqual({status:'stopped',verdict:'fixed'});
+  expect((await db.query('SELECT status FROM findings WHERE id=$1',[f.id])).rows[0]?.status).toBe('confirmed');
  });
  it('G5 an admitted Planner actually executing a model request starts the task deadline',async()=>{
   const {t,s,e,faux}=await fixture();await s.addGoal({text:'planner-only fixture'},'user');
@@ -475,16 +469,15 @@ describe('restored feature contracts',()=>{
    await runner.prompt('invoke fixture');expect(executed).toBe(0);
   }finally{await runner.dispose();await db.query("DELETE FROM tools WHERE key='runtime_fixture'");}
  });
- it('a remote Retester stop stays pending until the executor acknowledges or its lease expires',async()=>{
-  const {t}=await fixture();const service=new RetestService(db,async()=>{throw new Error('unused');},dir,1);
-  const fid=Number((await db.query("INSERT INTO findings(task_id,name) VALUES($1,'LOCAL stop fixture') RETURNING id",[t.id])).rows[0]!.id);
-  const cid=Number((await db.query("INSERT INTO conversations(agent_key,title) VALUES('retester','LOCAL stop fixture') RETURNING id")).rows[0]!.id);
-  const rid=Number((await db.query("INSERT INTO finding_retests(finding_id,conversation_id,snapshot,status,lease_token,lease_until) VALUES($1,$2,'{}','running','other-instance',now()+interval '15 seconds') RETURNING id",[fid,cid])).rows[0]!.id);
-  expect(await service.stop(cid)).toEqual({status:'stopping'});
-  expect((await db.query('SELECT status,stop_requested FROM finding_retests WHERE id=$1',[rid])).rows[0]).toEqual({status:'running',stop_requested:true});
-  expect(await service.finish(rid,'other-instance','completed')).toBeUndefined();
-  await db.query("UPDATE finding_retests SET lease_until=now()-interval '1 second' WHERE id=$1",[rid]);
-  await service.pump();expect(await service.stop(cid)).toEqual({status:'stopped'});
+ it('retirement waits for a remote executor lease before freeing its occupancy',async()=>{
+  const {t}=await fixture();const f=(await db.query("INSERT INTO findings(task_id,name) VALUES($1,'LOCAL retirement') RETURNING id",[t.id])).rows[0]!;
+  const r=(await db.query("INSERT INTO finding_retests(finding_id,snapshot,status,lease_token,lease_until) VALUES($1,'{}','running','old',now()+interval '1 minute') RETURNING id",[f.id])).rows[0]!;
+  try{
+   await expect(retireRetester(db)).rejects.toThrow('等待旧 Retester');
+   expect((await db.query('SELECT status,stop_requested,lease_token FROM finding_retests WHERE id=$1',[r.id])).rows[0]).toEqual({status:'running',stop_requested:true,lease_token:'old'});
+   await db.query("UPDATE finding_retests SET lease_until=now()-interval '1 second' WHERE id=$1",[r.id]);await retireRetester(db);
+   expect((await db.query('SELECT status,lease_until FROM finding_retests WHERE id=$1',[r.id])).rows[0]).toEqual({status:'stopped',lease_until:null});
+  }finally{await db.query('DELETE FROM finding_retests WHERE id=$1',[r.id]);}
  });
  it('a bound native Pentest writes facts with conversation provenance without creating runnable intents',async()=>{
   const {t,e,faux,post}=await fixture();
@@ -588,17 +581,11 @@ describe('restored feature contracts',()=>{
   const activity=await db.query("SELECT metadata FROM activity WHERE exploration_id=$1 AND kind='user'",[t.exploration_id]);
   expect(activity.rows[0]?.metadata.attachments[0].path).toBe(attachments[0].path);
  });
- it('runs an independent native pi retest and retains the original finding status',async()=>{
-  const {t,post,faux}=await fixture();
-  const row=await db.query("INSERT INTO findings(task_id,name,status) VALUES($1,'fixture','confirmed') RETURNING id",[t.id]);
-  const fid=Number(row.rows[0]!.id);
-  faux.setResponses([fauxAssistantMessage([fauxToolCall('record_finding_retest_result',{verdict:'inconclusive',summary:'fixture has no target',evidence:'offline fixture'})]),fauxAssistantMessage('recorded')]);
-  const started=await post(`/api/exploration/findings/${fid}/retests`,{notes:'do not access network'});
-  expect(started.statusCode).toBe(200);const retestID=Number(started.json().retest.id);
-  await until(async()=>!(await db.query("SELECT id FROM finding_retests WHERE id=$1 AND status IN ('pending','running')",[retestID])).rowCount);
-  const retest=(await db.query('SELECT status,verdict,error FROM finding_retests WHERE id=$1',[retestID])).rows[0];
-  expect(retest).toMatchObject({status:'completed',verdict:'inconclusive',error:''});
-  expect((await db.query('SELECT status FROM findings WHERE id=$1',[fid])).rows[0]?.status).toBe('confirmed');
+ it('rejects a retired retest without invoking pi or changing a finding',async()=>{
+  const {t,post,faux}=await fixture();const f=(await db.query("INSERT INTO findings(task_id,name,status) VALUES($1,'LOCAL','confirmed') RETURNING id",[t.id])).rows[0]!;
+  const started=await post(`/api/exploration/findings/${f.id}/retests`,{notes:'LOCAL'});
+  expect(started.statusCode).toBe(410);expect(started.json()).toMatchObject({code:'RETESTER_RETIRED'});expect(faux.state.callCount).toBe(0);
+  expect((await db.query('SELECT status FROM findings WHERE id=$1',[f.id])).rows[0]?.status).toBe('confirmed');
  });
  it('prevents a second engine from resetting another owner’s running intent',async()=>{
   const {t,s,e,faux,source}=await fixture();await db.tasks().setExecutionMode(t.exploration_id,'manual');

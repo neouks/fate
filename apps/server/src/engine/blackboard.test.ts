@@ -173,16 +173,14 @@ it('recovers a legacy committed-but-unreleased result without a model or duplica
  expect((await f.s.getNode(f.id))?.payload.execution_stop).toMatchObject({accepted_result:true,reason:'completed'});
 });
 
-it.each([1,2,3])('counts actual executions and live Retesters within global quota %i',async limit=>{
+it.each([1,2,3])('counts actual Worker executions within global quota %i',async limit=>{
  await db.platform().setSetting('workers',String(limit));const f=await fixture(false),other=await fixture(false);
  const a=new Coordinator(db,3),b=new Coordinator(db,3),ta=(await a.acquire(f.task.id))!,tb=(await b.acquire(other.task.id))!;
- const finding=(await db.query("INSERT INTO findings(task_id,vulnclass,summary,evidence) VALUES($1,'LOCAL','LOCAL','LOCAL') RETURNING id",[f.task.id])).rows[0]!;
- const retest=(await db.query("INSERT INTO finding_retests(finding_id,status,snapshot,lease_until) VALUES($1,'running','{}',now()+interval '1 minute') RETURNING id",[finding.id])).rows[0]!;
  try{
   await db.query("UPDATE tasks SET status='running' WHERE id=ANY($1::bigint[])",[[f.task.id,other.task.id]]);
-  for(let i=0;i<limit-1;i++)expect(await a.workerSlot(f.task.id,ta)).toBeTruthy();
+  for(let i=0;i<limit;i++)expect(await a.workerSlot(f.task.id,ta)).toBeTruthy();
   expect(await b.workerSlot(other.task.id,tb)).toBeUndefined();
- }finally{await db.query('DELETE FROM finding_retests WHERE id=$1',[retest.id]);await a.release(f.task.id,ta);await b.release(other.task.id,tb);}
+ }finally{await a.release(f.task.id,ta);await b.release(other.task.id,tb);}
 });
 
 it('keeps a submitted intent executable after unrelated graph changes',async()=>{
