@@ -86,7 +86,7 @@ export function WorkerWritebacks({task,turn,status,revision}:{task:string;turn:s
     {current&&<><WritebackTable task={task} page={current}/>{current.next_cursor&&<Button variant="outline" size="sm" disabled={busy} onClick={()=>void load('current',current.next_cursor!)}>加载更多写回记录</Button>}</>}
     {error&&<Alert variant="destructive"><AlertDescription><span>写回记录读取失败，原始总结仍可查看。</span><Button variant="outline" size="sm" disabled={busy} onClick={()=>void load(error,error==='current'?current?.next_cursor??undefined:previous?.next_cursor??undefined)}>重试</Button></AlertDescription></Alert>}
     {current&&current.counts.previous.total>0&&<Collapsible open={previousOpen} onOpenChange={open=>{setPreviousOpen(open);if(open&&!previous&&!busy)void load('previous');}}>
-      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-auto whitespace-normal text-left"><ChevronRight data-icon="inline-start"/>此前执行已保存（{current.counts.previous.total}）</Button></CollapsibleTrigger>
+      <CollapsibleTrigger asChild><Button variant="ghost" size="sm" disabled={busy} className="h-auto whitespace-normal text-left"><ChevronRight data-icon="inline-start" className={previousOpen?'rotate-90':undefined}/>此前执行已保存（{current.counts.previous.total}）</Button></CollapsibleTrigger>
       <CollapsibleContent className="min-w-0 pt-2">{previous?<WritebackTable task={task} page={previous}/>:!error&&<Skeleton className="h-20 w-full"/>}{previous?.next_cursor&&<Button variant="outline" size="sm" disabled={busy} onClick={()=>void load('previous',previous.next_cursor!)}>加载更多此前记录</Button>}</CollapsibleContent>
     </Collapsible>}
   </section>;
