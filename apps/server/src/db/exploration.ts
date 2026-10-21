@@ -93,10 +93,6 @@ export interface Node {
 export function nodeDispatchRequested(n: Node): boolean {
   return n.payload["dispatch_requested"] === true;
 }
-export function nodeAllowsPendingAssets(n: Node): boolean {
-  const p = n.payload["pending_asset_execution"];
-  return typeof p === "object" && p !== null && (p as Record<string, unknown>)["issuer"] === "mainagent";
-}
 export function nodeCancelledByUser(n: Node): boolean {
   return n.payload["cancelled_by_user"] === true;
 }
@@ -122,12 +118,8 @@ export interface Activity {
 
 // ─── SQL 片段（db/main_execution.go / db/execution_mode.go）─────────────────
 
-function intentAssetAllowedSQL(task: string, asset: string, node: string): string {
-  return (
-    `(CASE WHEN ${node}.payload->'pending_asset_execution'->>'issuer'='mainagent' ` +
-    `THEN task_asset_worker_executable(${task},${asset}) ` +
-    `ELSE task_asset_effectively_approved(${task},${asset}) END)`
-  );
+function intentAssetAllowedSQL(task: string, asset: string, _node: string): string {
+  return `task_asset_linked(${task},${asset})`;
 }
 
 const INTENT_DISPATCH_PREDICATE =
@@ -328,7 +320,7 @@ export class ExplorationStore {
       for(const ref of contract.basis){
         const basis=await tx.query(`SELECT 1 FROM exploration_nodes n WHERE n.id=$2 AND n.content_version=$3 AND n.kind IN ('fact','finding') AND n.state IN ('confirmed','origin')
           AND (n.exploration_id=$1 OR n.exploration_id IN (SELECT src.exploration_id FROM tasks current JOIN task_relations r ON r.task_id=current.id JOIN tasks src ON src.id=r.source_task_id WHERE current.exploration_id=$1 AND src.deleted_at IS NULL))
-          AND exploration_node_readable(n.exploration_id,n.id,$4)`,[this.expID,ref.node_id,ref.version,(payload.pending_asset_execution as {issuer?:string}|undefined)?.issuer==='mainagent']);
+          AND exploration_node_readable(n.exploration_id,n.id)`,[this.expID,ref.node_id,ref.version]);
         if(!basis.rowCount)throw new Error(`依据 #${ref.node_id} 已变化或不再授权，请刷新上下文后重新规划`);
       }
       const rows = await tx.query<{ id: string; state:string; payload: Record<string, unknown>; anchors: string }>(
@@ -604,26 +596,6 @@ export class ExplorationStore {
     return res.rows[0]?.ok === true;
   }
 
-  async waitingForAssetApproval(): Promise<boolean> {
-    const res = await this.db.query<{ ok: boolean }>(
-      `WITH current_task AS (SELECT id FROM tasks WHERE exploration_id=$1),
-       host_states AS MATERIALIZED (
-         SELECT task_asset_effective_approval_state(t.id,a.id) state
-         FROM current_task t JOIN task_asset_links l ON l.task_id=t.id OR l.task_id IN
-           (SELECT source_task_id FROM task_relations WHERE task_id=t.id)
-         JOIN assets a ON a.id=l.asset_id WHERE a.type IN ('root_domain','subdomain','ip')
-       )
-       SELECT (EXISTS(SELECT 1 FROM host_states WHERE state='pending')
-       AND NOT EXISTS(SELECT 1 FROM host_states WHERE state='approved')
-       AND NOT EXISTS(SELECT 1 FROM exploration_nodes n WHERE n.exploration_id=$1 AND n.kind='intent'
-        AND (n.state='running' OR (n.state='open' AND NOT EXISTS(
-         SELECT 1 FROM exploration_anchors ea CROSS JOIN current_task t
-         WHERE ea.node_id=n.id AND NOT ${intentAssetAllowedSQL("t.id", "ea.asset_id", "n")})))) ) AS ok`,
-      [this.expID],
-    );
-    return res.rows[0]?.ok === true;
-  }
-
   async executionCounts(): Promise<{ running: number; goals: number; met: number }> {
     const res = await this.db.query<{ running: string; goals: string; met: string }>(
       `SELECT count(*) FILTER (WHERE kind='intent' AND state='running') AS running,
@@ -718,10 +690,10 @@ export class ExplorationStore {
         const contract=normalizeContract(n.payload.contract,String(n.payload.summary??''));
         let stale=false;
         for(const ref of contract.basis){
-          if(!(await tx.query("SELECT 1 FROM exploration_nodes n WHERE n.id=$1 AND n.content_version=$2 AND n.kind IN ('fact','finding') AND n.state IN ('confirmed','origin') AND exploration_node_readable(n.exploration_id,n.id,$4) AND (n.exploration_id=$3 OR n.exploration_id IN (SELECT src.exploration_id FROM tasks current JOIN task_relations r ON r.task_id=current.id JOIN tasks src ON src.id=r.source_task_id WHERE current.exploration_id=$3 AND src.deleted_at IS NULL))",[ref.node_id,ref.version,this.expID,nodeAllowsPendingAssets(n)])).rowCount){stale=true;break;}
+          if(!(await tx.query("SELECT 1 FROM exploration_nodes n WHERE n.id=$1 AND n.content_version=$2 AND n.kind IN ('fact','finding') AND n.state IN ('confirmed','origin') AND exploration_node_readable(n.exploration_id,n.id) AND (n.exploration_id=$3 OR n.exploration_id IN (SELECT src.exploration_id FROM tasks current JOIN task_relations r ON r.task_id=current.id JOIN tasks src ON src.id=r.source_task_id WHERE current.exploration_id=$3 AND src.deleted_at IS NULL))",[ref.node_id,ref.version,this.expID])).rowCount){stale=true;break;}
         }
         if(stale){await tx.query("UPDATE exploration_nodes SET payload=payload||'{\"needs_replanning\":true}'::jsonb WHERE id=$1",[n.id]);continue;}
-        if(q.executionMode!==EXECUTION_MANUAL&&n.origin==='planner'&&n.payload.resume_requested!==true&&(n.payload.pending_asset_execution as {issuer?:string}|undefined)?.issuer!=='mainagent'){
+        if(q.executionMode!==EXECUTION_MANUAL&&n.origin==='planner'&&n.payload.resume_requested!==true&&n.payload.dispatch_source!=='mainagent'){
           // Serialize the final goal proof with the actual claim, not only the
           // earlier reservation. No new automatic work after goal completion.
           const met=await tx.query("SELECT 1 WHERE EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal') AND NOT EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND state<>'met')",[this.expID]);

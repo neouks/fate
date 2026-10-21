@@ -28,7 +28,7 @@ export async function workerStopReceipt(db:Database,expID:number,node:Node,reaso
   const refs=await db.query(`SELECT DISTINCT n.id,n.content_version FROM exploration_edges e JOIN exploration_nodes n ON n.id=e.dst_id
     WHERE e.exploration_id=$1 AND e.src_id=$2 AND e.rel='yields' AND n.kind IN ('fact','finding')
     AND ($3::bigint[] IS NULL OR n.id=ANY($3))
-    AND n.state='confirmed' AND exploration_node_readable($1,n.id,true) ORDER BY n.id LIMIT 40`,[expID,node.id,finalIDs]);
+    AND n.state='confirmed' AND exploration_node_readable($1,n.id) ORDER BY n.id LIMIT 40`,[expID,node.id,finalIDs]);
   const saved=(await db.query('SELECT progress FROM worker_checkpoints WHERE intent_id=$1',[node.id])).rows[0]?.progress;
   const progress=(saved??node.payload.progress) as Record<string,unknown>|undefined;
   const operations=(await db.query(`SELECT id,tool_name,status FROM worker_operations WHERE intent_id=$1

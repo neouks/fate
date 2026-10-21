@@ -189,12 +189,11 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   // ─── settings KV（保留键的最小面）─────────────────────────────────────────
 
   app.get("/api/settings", async () => {
-    const [workers, activeTask, enabledTools] = await Promise.all([
+    const [workers, activeTask] = await Promise.all([
       platform().workers(),
       platform().getSetting("active_task"),
-      platform().getEnabledTools(),
     ]);
-    return { workers, pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"global; next claim",role_settings:"next session",task_concurrency:"next admission"}, active_task: activeTask ?? "", intercept_enabled_tools: enabledTools };
+    return { workers, pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"global; next claim",role_settings:"next session",task_concurrency:"next admission"}, active_task: activeTask ?? "" };
   });
 
   const setSettings = async (req: { body?: unknown }, reply: { code(c: number): { send(v: unknown): unknown } }): Promise<unknown> => {
@@ -215,12 +214,6 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     if (typeof b["active_task"] === "string") {
       await platform().setSetting("active_task", b["active_task"]);
       out["active_task"] = b["active_task"];
-    }
-    if (Array.isArray(b["intercept_enabled_tools"])) {
-      const tools = b["intercept_enabled_tools"].map(String);
-      await platform().setEnabledTools(tools);
-      app.interceptor.invalidate();
-      out["intercept_enabled_tools"] = tools;
     }
     return out;
   };

@@ -9,12 +9,7 @@ export async function evidenceRequest(ctx:ToolRunContext,input:{url:string;metho
   const target=new URL(url);if(!['http:','https:'].includes(target.protocol))throw new Error('仅支持 HTTP/HTTPS');
   const host=target.hostname.replace(/^\[|\]$/g,''),port=Number(target.port)||(target.protocol==='https:'?443:80);
   if(ctx.networkTargets!==undefined&&!ctx.networkTargets.some(t=>t.host.replace(/^\[|\]$/g,'')===host.toLowerCase()&&(t.port===null||t.port===port)))throw new Error('请求或重定向超出本次定向复测范围');
-  if(ctx.intentID){
-   const intent=await ctx.db.exploration(ctx.expID).getNode(ctx.intentID);
-   if(!intent||intent.kind!=='intent')throw new Error('执行意图不存在');
-   await ctx.db.taskScope().validateIntentHostPort(ctx.taskID,intent,host,port);
-  }else if(ctx.role==='mainagent'&&ctx.mainSegment!==undefined&&ctx.hooks.assertOwnership){await ctx.hooks.assertOwnership(ctx.db);await ctx.db.taskScope().validateWorkerHostPort(ctx.taskID,host,port);}
-  else await ctx.db.taskScope().validateTaskHostPort(ctx.taskID,host,port);
+  await ctx.hooks.assertOwnership?.(ctx.db);
   await check?.({url,method,body});
   const response=await fetch(url,{method,headers,body,signal,redirect:'manual'});
   const reader=response.body?.getReader(),chunks:Buffer[]=[];let length=0,truncated=false;

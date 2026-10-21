@@ -7,9 +7,9 @@ export const ARTEX_PREVIOUS_TOOL_DESCRIPTIONS:Record<string,string>={"add_intent
 /** Only behavioral hints belong here; parameter shapes and limits live in the schema. */
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
   add_intent: '创建探索意图。先检索已有工作；提供 summary、asset_ids、parent_ids、priority；执行约定可选，宿主记录引用版本，只派前置已满足的工作。Main 提交会请求宿主下发；以返回的准入状态为准。',
-  dispatch_intents: '请求宿主下发已有待执行意图，仅 Main 可用；不能绕过封禁或授权检查。',
+  dispatch_intents: '请求宿主下发已有待执行意图，仅 Main 可用；执行前检查任务状态和意图归属。',
   record_fact: '执行中边发现边写回新结论，提交成功立即入图。summary 概括，detail 合并同一结论的观察，evidence 保存真实证据；已保存的不重复提交，无新增事实不必写。',
-  insert_assets: '登记新资产及关系到资产图；登记不等于获准访问。探索结论使用 record_fact。',
+  insert_assets: '边发现边用 assets 数组登记资产。按 Schema 填写各类型字段：record_value 必须为数组，endpoint 使用 url/method/params，HTTP service 使用 url 和指纹，app 使用 app_name。results/errors 逐项返回，成功即入图，探索结论用 record_fact。',
   report_finding: '提交本次亲自验证且可复现的漏洞与真实证据，成功后立即入图。先 context_search 按 finding 类型 查重；疑似问题用 record_fact 记录并注明不确定性。',
   context_search: '检索授权节点及冷图原文；types 显式包含 activity 才查询 Worker 活动。返回摘要、稳定引用和快照游标；来源任务只读，按 next_cursor 续读。',
   context_get: '按 items 读取引用；summary 索引、detail 详情、output 结果，field 选择字段。续读优先将返回的 next_item 原样放入 items；缺省 offset 会重读首页。正文只需 offset=next_offset；仅 parents/members 还需 cursor=page_cursor，读完本页再按 next_cursor 翻页。沿用 version，冲突重新检索。',
@@ -44,7 +44,8 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
     steer_work:'给指定运行意图追加纠偏要求，在后续动作边界生效；不改变授权范围。',
   };
   const blackboardDefaults:Record<string,string>={record_fact:'Worker 暂存本意图的新事实或负面观察，最终 complete_intent 集中发布：summary 简述结论，evidence 保存真实证据，confidence 区分直接观察与推断。',report_finding:'提交本次已验证且可复现的漏洞和证据，Worker 先暂存，complete_intent 集中发布到探索图并连接资产。先 context_search 按 finding 类型 查重；疑似问题用事实记录。',checkpoint_intent:'阶段变化、连续操作或阻塞时保存当前意图进度、已尝试方法和下一步；进度不等于事实或完成。',complete_intent:'结束当前意图前保存逐项验收结果。criteria.index 从零开始，事实引用必须属于本意图；完整回答并有证据才 complete，否则 partial/blocked 并写 remaining。成功后停止操作。'};
-  const previous = name==='context_get' && stored===priorPagedDefault || stored===ARTEX_PREVIOUS_TOOL_DESCRIPTIONS[name] || stored===DIRECT_WRITE_PREVIOUS[name] || stored===priorDefaults[name] || stored===blackboardDefaults[name] || name === 'prove_goal' && stored === '用仍获授权的事实或漏洞证明目标；证据必须支持该目标，量化条件须核对实测值。';
+  const retiredApprovalDefaults:Record<string,string>={"dispatch_intents": "请求宿主下发已有待执行意图，仅 Main 可用；不能绕过封禁或授权检查。", "insert_assets": "登记新资产及关系到资产图；登记不等于获准访问。探索结论使用 record_fact。", "set_constraints": "保存用户明确的允许或禁止约束，写明具体目标；约束不替代资产授权。"};
+  const previous = name==='context_get' && stored===priorPagedDefault || stored===retiredApprovalDefaults[name]||stored===ARTEX_PREVIOUS_TOOL_DESCRIPTIONS[name] || stored===DIRECT_WRITE_PREVIOUS[name] || stored===priorDefaults[name] || stored===blackboardDefaults[name] || name === 'prove_goal' && stored === '用仍获授权的事实或漏洞证明目标；证据必须支持该目标，量化条件须核对实测值。';
   if (typeof stored === 'string' && stored.trim() && stored !== LEGACY_TOOL_DESCRIPTIONS[name] && stored !== TOOL_DESCRIPTIONS[name] && !previous)
     return { description: stored, source: 'custom' };
   return { description: TOOL_DESCRIPTIONS[name] ?? code, source: 'builtin' };
@@ -63,4 +64,18 @@ export async function migrateDirectWorkerToolDescriptions(db:Database) {
     }
   }
   await db.platform().setSetting('pi_worker_direct_tool_descriptions_previous',JSON.stringify(previous));
+}
+
+/** Replace recognized built-in descriptions only; keep custom text and disabled bindings. */
+export async function migrateRetiredApprovalToolDescriptions(db: Database) {
+  const rows = (await db.query("SELECT key,description FROM tools WHERE system AND kind='builtin' AND key=ANY($1::text[])",
+    [['dispatch_intents', 'insert_assets', 'set_constraints']])).rows;
+  const previous: Record<string, string> = {};
+  for (const row of rows) {
+    const key = String(row.key), resolved = effectiveToolDescription(key, TOOL_DESCRIPTIONS[key]!, row.description);
+    if (resolved.source !== 'builtin' || row.description === resolved.description) continue;
+    previous[key] = String(row.description);
+    await db.query('UPDATE tools SET description=$2 WHERE key=$1', [key, resolved.description]);
+  }
+  await db.platform().setSetting('pi_no_approvals_tool_descriptions_previous', JSON.stringify(previous));
 }

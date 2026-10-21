@@ -9,7 +9,6 @@ import {registerLLMManagementRoutes} from "./routes/llm-management.js";
 import multipart from "@fastify/multipart";
 import {registerAttachmentRoutes} from "./routes/attachments.js";
 import {registerEvidenceRoutes} from "./routes/evidence.js";
-import { interceptorFor } from "../intercept/gate.js";
 // Fastify 应用：M5 HTTP API + SSE，对齐现有 Next.js 前端契约（保留模块）。
 // 路由按模块拆分在 ./routes/ 下；本文件负责骨架、装饰注入、CORS 与 JWT 鉴权钩子。
 
@@ -17,20 +16,17 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
-import { EventEmitter } from "node:events";
 import type { Database } from "../db/index.js";
 import type { Engine } from "../engine/engine.js";
-import { Interceptor } from "../db/intercept.js";
 import { requireJWT } from "./auth.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerExplorationRoutes } from "./routes/exploration.js";
-import { registerInterceptRoutes } from "./routes/intercept.js";
 import { registerAssetRoutes } from "./routes/assets.js";
 import { registerConfigRoutes } from "./routes/config.js";
 import { registerRemovedRoutes } from "./routes/removed.js";
 import { registerCompatRoutes } from "./routes/compat.js";
-import { registerApprovalRoutes } from "./routes/approvals.js";
+import { registerAssetManagementRoutes } from "./routes/asset-management.js";
 import { registerCategoryRoutes } from "./routes/categories.js";
 import { registerSkillMgmtRoutes } from "./routes/skills-mgmt.js";
 import { registerAgentConfigRoutes } from "./routes/agents-config.js";
@@ -42,9 +38,6 @@ declare module "fastify" {
   interface FastifyInstance {
     db: Database;
     engine: Engine;
-    interceptor: Interceptor;
-    /** 拦截审批唤醒通道：decide 后 emit(`decided:${id}`, {id, allowed})。M6 接 HandleAsk。 */
-    pendingEvents: EventEmitter;
     skillsRoot: string;
     dataDir: string;
   }
@@ -78,8 +71,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(multipart);
   app.decorate("db", deps.db);
   app.decorate("engine", deps.engine);
-  app.decorate("interceptor", interceptorFor(deps.db));
-  app.decorate("pendingEvents", new EventEmitter());
   app.decorate("skillsRoot", deps.skillsRoot);
   app.decorate("dataDir", deps.dataDir);
 
@@ -149,7 +140,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerAuthRoutes(app, { jwtKey: deps.jwtKey });
   registerTaskRoutes(app);
   registerExplorationRoutes(app);
-  registerInterceptRoutes(app);
   registerAssetRoutes(app);
   app.addHook('preHandler',async req=>{const key=(req.params as {key?:string})?.key;if(req.url.startsWith('/api/agents/')&&key)assertActiveRole(key);});
   registerConfigRoutes(app);
@@ -161,7 +151,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerLLMManagementRoutes(app);
   registerRemovedRoutes(app);
   registerCompatRoutes(app);
-  registerApprovalRoutes(app);
+  registerAssetManagementRoutes(app);
   registerCategoryRoutes(app);
   registerSkillMgmtRoutes(app);
   registerAgentConfigRoutes(app);

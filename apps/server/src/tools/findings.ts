@@ -142,11 +142,8 @@ export function listFindingsTool(ctx: ToolRunContext) {
           const ownerTask=Number(row.task_id),owner=ownerTask===c.taskID?{taskID:c.taskID,expID:c.expID}:sourceByTask.get(ownerTask);
           if(!owner)continue;
           try{
-            if(row.node_id!==null){await resolveGraphNode(c.db,c.taskID,c.expID,Number(row.node_id),c.role==='worker');}
+            if(row.node_id!==null){await resolveGraphNode(c.db,c.taskID,c.expID,Number(row.node_id));}
             else{
-              const ids=Array.isArray(row.asset_ids)?row.asset_ids.map(Number):[];
-              const states=await c.db.taskScope().taskAssetApprovalStates(owner.taskID,ids);
-              if(!ids.every(id=>states.get(id)==='approved'||(c.role==='worker'&&states.get(id)==='pending')))continue;
             }
             visible.push(row);
           }catch{/* Unauthorized evidence is omitted from the role's projection. */}

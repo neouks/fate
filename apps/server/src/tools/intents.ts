@@ -72,7 +72,7 @@ export function addIntentTool(ctx: ToolRunContext) {
             payload.parent_ids=parentIDs;
             if(parentIDs.length)payload.parent_id=parentIDs[0];
             if(c.role==='planner')payload.dispatch_requested=true;
-            if(c.role==='mainagent'&&c.mainSegment!==undefined&&c.hooks.assertOwnership)payload.pending_asset_execution={issuer:'mainagent'};
+            if(c.role==='mainagent'&&c.mainSegment!==undefined&&c.hooks.assertOwnership)payload.dispatch_source='mainagent';
             const res = c.role === "planner"
               ? await s.addPlannerIntentDeduplicated(payload, item.priority ?? 5, item.asset_ids ?? [], "planner")
               : await s.addIntentDeduplicated(payload, item.priority ?? 5, item.asset_ids ?? [], c.role === "worker" ? "worker" : "user");

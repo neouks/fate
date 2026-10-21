@@ -26,7 +26,6 @@ import {graphOverviewTool} from '../tools/overview.js';
 import {httpRequestTool,trafficBodyTool,readAttachmentTool} from '../tools/evidence.js';
 import {customWorkerTools} from '../tools/custom.js';
 import {loadConstraints} from '../tools/index.js';
-import {interceptGate} from '../intercept/gate.js';
 import {findingEvidence} from '../evidence/store.js';
 import {prepareAttachments} from '../evidence/attachments.js';
 import {toolOutputTool} from '../tools/output.js';
@@ -145,7 +144,6 @@ export class ConversationService {
    const model=await this.resolve(taskID,role,{conversationID:id,profileID:Number(claimed.llm_profile_id)||undefined});
    const cwd=path.join(this.dataDir,'conversations',String(id));await mkdir(cwd,{recursive:true});
    const ctx=runContext(this.db,taskID,task?.exploration_id??0,role as AgentRole,{conversationID:id,hooks:{assertOwnership:lease.assert}});
-   const gate=interceptGate(this.db,{taskID,agentName:role,worker:`conversation#${id}`});
    const tools:import('@earendil-works/pi-coding-agent').ToolDefinition[]=[contextGetTool(ctx),readAttachmentTool(ctx),toolOutputTool(ctx)];
    if(task)tools.push(contextSearchTool(ctx),mergedAssetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
    const pendingReports=new Set<number>();
@@ -159,7 +157,7 @@ export class ConversationService {
    let reportSaved=false;
    tools.push(...conversationDomainTools(ctx,this.engine,{profileID:Number(claimed.llm_profile_id)||0,pendingReports,onSaved:()=>{reportSaved=true;}}));
    const bash=role==='pentest'?workerEgressBashTool(cwd,this.egress,taskID,0,`conversation:${id}:${lease.token}`):undefined;
-   if(role==='pentest'&&task){const pentestTools:unknown[]=[Object.assign(recordFactTool(ctx),{name:'record_conversation_fact'}),Object.assign(reportFindingTool(ctx),{name:'report_conversation_finding'}),httpRequestTool(ctx),...(bash?[bash]:[]),...await customWorkerTools(ctx,cwd,bash,gate)];tools.push(...pentestTools as never[]);}
+   if(role==='pentest'&&task){const pentestTools:unknown[]=[Object.assign(recordFactTool(ctx),{name:'record_conversation_fact'}),Object.assign(reportFindingTool(ctx),{name:'report_conversation_finding'}),httpRequestTool(ctx),...(bash?[bash]:[]),...await customWorkerTools(ctx,cwd,bash)];tools.push(...pentestTools as never[]);}
    const bound=await applyToolBindings(this.db,role,tools),disabled=await disabledBuiltinTools(this.db,role),resources=await roleResources(this.db,role,skillDir());
    if(role==='reporter'&&(!bound.some(t=>t.name==='get_finding')||!bound.some(t=>t.name==='update_finding_report')))throw new Error('Reporter 的必要读取或保存工具已禁用');
    const attachment=await prepareAttachments(this.db,this.dataDir,id,claimed.run.attachments,'conversation');
@@ -173,7 +171,7 @@ export class ConversationService {
     wrapup:()=>role==='reporter'&&pendingReports.size?{prompt:config.wrapupPrompt||hostProtocol('reporter')}:undefined,
     systemPrompt:prompt+taskContext+(task?constraintBlock(await loadConstraints(this.db,task.exploration_id)):''),customTools:bound,legacyTools:task?legacyReadCandidates(ctx):[],
     toolAllowlist:[...bound.map(t=>t.name),...(['auto','reporter','pentest'].includes(role)?['read',...(role==='pentest'&&task?['bash','write','edit']:[])].filter(n=>!disabled.has(n)):[]),...((role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
-    guard:async g=>{await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return gate(g);},onActivity:persist},id);
+    guard:async g=>{await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return;},onActivity:persist},id);
    await this.db.query('UPDATE conversations SET session_file=$2 WHERE id=$1',[id,runner.sessionFile??path.join(cwd,'session.jsonl')]);
    const triggerEvents=claimed.run.trigger_id?(await this.db.query('SELECT event_key,kind,task_id,payload FROM agent_trigger_events WHERE event_key=ANY($1::text[]) ORDER BY id',[claimed.run.event_keys??[]])).rows:null;
    const message=triggerEvents?JSON.stringify(triggerEvents.map(event=>({source:'blackboard',kind:event.kind,task_id:event.task_id,event_key:event.event_key,

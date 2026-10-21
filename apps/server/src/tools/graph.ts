@@ -5,11 +5,11 @@ import { resolveGraphNode, authorizedNodes } from "../db/graph_view.js";
 
 import { domainTool } from "./define.js";
 import type { ToolRunContext } from "./context.js";
-import { KindFact, RelYields, nodeAllowsPendingAssets } from "../db/exploration.js";
+import { KindFact, RelYields } from "../db/exploration.js";
 
 // ─── record_fact：worker 写回事实（intent --yields--> fact）─────────────────
 
-interface RecordFactArgs { facts?:RecordFactArgs[]; summary: string; evidence?: string; detail?:string; observation_type?:'observed'|'inferred'|'negative'|'unknown';confidence?: "low" | "medium" | "high"; asset_ids?: number[]; }
+interface RecordFactArgs { facts?:RecordFactArgs[]; summary: string; evidence?: string; detail?:string;  observation_type?:'observed'|'inferred'|'negative'|'unknown';confidence?: "low" | "medium" | "high"; asset_ids?: number[]; }
 
 export function recordFactTool(ctx: ToolRunContext) {
   const singleProperties = {
@@ -110,7 +110,7 @@ export function nodeDetailTool(ctx: ToolRunContext) {
       },
       readOnly: true,
       async run(args, c) {
-        const resolved = await resolveGraphNode(c.db, c.taskID, c.expID, args.node_id, c.role === 'worker');
+        const resolved = await resolveGraphNode(c.db, c.taskID, c.expID, args.node_id);
         const { node } = resolved;
         const s = c.db.exploration(resolved.expID);
         const edges = await c.db.query(
@@ -131,7 +131,7 @@ export function nodeDetailTool(ctx: ToolRunContext) {
         for(const edge of edges.rows.slice(0,10)){
           const otherID=Number(edge.src_id)===node.id?Number(edge.dst_id):Number(edge.src_id);
           const other=await s.getNode(otherID);
-          if(other&&(await authorizedNodes(c.db,resolved.taskID,resolved.expID,[other],c.role==='worker')).length)visibleEdges.push(edge);
+          if(other&&(await authorizedNodes(c.db,resolved.taskID,resolved.expID,[other])).length)visibleEdges.push(edge);
         }
         const payload=JSON.stringify(node.payload),offset=Math.max(0,args.offset??0),full=Buffer.byteLength(payload)<8000;
         return {
@@ -188,7 +188,7 @@ export function searchWorkerTracesTool(ctx: ToolRunContext) {
         );
         const visible=[];
         for(const row of res.rows.slice(0,limit)){
-          try{await resolveGraphNode(c.db,c.taskID,c.expID,Number(row.node_id),c.role==='worker');visible.push(row);}catch{ /* filtered */ }
+          try{await resolveGraphNode(c.db,c.taskID,c.expID,Number(row.node_id));visible.push(row);}catch{ /* filtered */ }
         }
         return {
           next_cursor:res.rows.length>limit?Number(res.rows[limit-1]!.id):null,
@@ -241,7 +241,7 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
       readOnly: true,
       async run(args, c) {
         const s = c.db.exploration(c.expID);
-        const resolved=await resolveGraphNode(c.db,c.taskID,c.expID,args.intent_id,c.role==='worker');
+        const resolved=await resolveGraphNode(c.db,c.taskID,c.expID,args.intent_id);
         const intent=resolved.node;
         if(intent.kind!=='intent')throw new Error('节点不是意图');
 
@@ -301,5 +301,3 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
     ctx,
   );
 }
-
-export { nodeAllowsPendingAssets };

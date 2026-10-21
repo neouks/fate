@@ -45,7 +45,7 @@ export async function searchContext(c:ToolRunContext,args:Search) {
       AND ($6='' OR n.state=$6)
       AND ($7::bigint=0 OR EXISTS(SELECT 1 FROM exploration_anchors a WHERE a.node_id=n.id AND a.asset_id=$7))
       AND ($8::bigint=0 OR n.id=$8 OR EXISTS(SELECT 1 FROM exploration_edges e WHERE e.exploration_id=$1 AND e.src_id=$8 AND e.dst_id=n.id AND e.rel='yields'))
-      AND exploration_node_readable($1,n.id,$9) ORDER BY n.id LIMIT $10`,[source.expID,after,upper,types,args.q??'',args.state??'',args.asset_id??0,args.intent_id??0,['worker','mainagent'].includes(c.role),limit+1]);
+      AND exploration_node_readable($1,n.id) ORDER BY n.id LIMIT $9`,[source.expID,after,upper,types,args.q??'',args.state??'',args.asset_id??0,args.intent_id??0,['worker','mainagent'].includes(c.role),limit+1]);
   const items=boundedContextPage(result.rows.slice(0,limit).map(n=>({ref:`node:${n.id}`,node_id:Number(n.id),version:Number(n.content_version),kind:n.kind,state:n.state,summary:n.summary,owner:String(n.owner??'').slice(0,100)})));
   return {source_task_id:source.taskID,inherited:source.taskID!==c.taskID,read_only:true,items,
     next_cursor:result.rows.length>items.length&&items.length?Buffer.from(JSON.stringify({signature,upper,after:items.at(-1)!.node_id})).toString('base64url'):null,
@@ -64,7 +64,7 @@ function legacyContextGetTool(c:ToolRunContext){return domainTool<{ref:string;ve
     const draft=(await ownObservations(ctx,id))[0];
     if(draft){if(args.version!==undefined&&args.version!==Number(draft.draft_version))throw new Error('私有记录版本已变化，请重新读取');const body=JSON.stringify(draft.payload),offset=args.offset??0;return {ref:args.ref,version:Number(draft.draft_version),staged:true,published:false,node:{id,kind:draft.kind,payload:body.length<6000?draft.payload:undefined},payload_json:body.length<6000?undefined:body.slice(offset,offset+1000),next_offset:body.length<6000||offset+1000>=body.length?null:offset+1000};}
     await db.query('SELECT id FROM exploration_nodes WHERE id=$1 FOR SHARE',[id]);
-    const resolved=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,id,['worker','mainagent'].includes(ctx.role));
+    const resolved=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,id);
     if(args.version!==undefined&&args.version!==resolved.node.content_version)throw new Error('节点版本已变化，请重新检索');
     const result=await nodeDetailTool(ctx).execute(ctx.toolCallID??'context-get',{node_id:id,offset:args.offset,after_edge:args.after_edge,anchor_offset:args.anchor_offset} as never,ctx.signal,undefined,{} as never);
     if(result.isError)throw new Error((result.content[0] as {text:string}).text);
@@ -157,7 +157,7 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
           await recallPermission(ctx,'get_worker_trace');
           const a=(await ctx.db.query("SELECT * FROM activity WHERE id=$1 AND node_id IS NOT NULL AND kind NOT IN ('thinking','usage','round')",[id])).rows[0];
           if(!a)throw new Error('活动不存在');
-          const resolved=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,Number(a.node_id),['worker','mainagent'].includes(ctx.role));
+          const resolved=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,Number(a.node_id));
           if(resolved.node.kind!=='intent')throw new Error('仅支持 Worker 活动');
           if(!['detail','output'].includes(view))throw new Error('活动不支持该视图');
           sourceTask=resolved.taskID;version=resolved.node.content_version;
@@ -175,7 +175,7 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
               await recallPermission(ctx,view==='members'?'expand_digest':'node_detail');
               const page=await contextRelations(ctx,meta,view,item.cursor);data=page.items;nextCursor=page.next_cursor;pageCursor=page.page_cursor;
             }else {
-            const r=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,id,['worker','mainagent'].includes(ctx.role));
+            const r=await resolveGraphNode(ctx.db,ctx.taskID,ctx.expID,id);
             version=r.node.content_version;
             if(view==='output'){
               await recallPermission(ctx,'get_worker_trace');
@@ -204,13 +204,13 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
 
 export async function workerLaunchContext(c:ToolRunContext,intentID:number){
   const rows=await c.db.query(`SELECT src_id FROM exploration_edges WHERE exploration_id=$1 AND dst_id=$2 AND rel='derived_from' ORDER BY id LIMIT 21`,[c.expID,intentID]);
-  const parents=await authorizedNodes(c.db,c.taskID,c.expID,await c.db.exploration(c.expID).nodesByIDs(rows.rows.slice(0,20).map(r=>Number(r.src_id))),true);
+  const parents=await authorizedNodes(c.db,c.taskID,c.expID,await c.db.exploration(c.expID).nodesByIDs(rows.rows.slice(0,20).map(r=>Number(r.src_id))));
   const node=await c.db.exploration(c.expID).getNode(intentID);
   const inherited=[];
   const basis=(node?.payload.contract as {basis?:{node_id:number}[]}|undefined)?.basis??[];
   for(const ref of basis){
     if(parents.some(n=>n.id===ref.node_id))continue;
-    try{const source=await resolveGraphNode(c.db,c.taskID,c.expID,ref.node_id,true);inherited.push({ref:`node:${source.node.id}`,version:source.node.content_version,summary:String(source.node.payload.summary??'').slice(0,600),source_task_id:source.taskID});}catch{/* Revoked references are never injected. */}
+    try{const source=await resolveGraphNode(c.db,c.taskID,c.expID,ref.node_id);inherited.push({ref:`node:${source.node.id}`,version:source.node.content_version,summary:String(source.node.payload.summary??'').slice(0,600),source_task_id:source.taskID});}catch{/* Revoked references are never injected. */}
   }
   const drafts=await ownObservations({...c,intentID});
   return {intent_id:intentID,private_observations:drafts.map(d=>({ref:`node:${d.node_id}`,kind:d.kind,summary:String((d.payload as Record<string,unknown>).summary??'').slice(0,300),staged:true,version:Number(d.draft_version)})),upstream:[...parents.map(n=>({ref:`node:${n.id}`,version:n.content_version,summary:String(n.payload.summary??'').slice(0,600)})),...inherited],more_parents:rows.rows.length>20,

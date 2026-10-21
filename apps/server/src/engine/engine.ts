@@ -27,7 +27,6 @@ import {
 } from "../agent/roles.js";
 import { TodoStore } from "../tools/context.js";
 import { PLANNER_TASK_TIMEOUT_WRAPUP } from "../agent/prompts.js";
-import { interceptGate } from "../intercept/gate.js";
 
 export interface EngineConfig {
   workers: number;
@@ -436,8 +435,6 @@ export class Engine {
         }
         continue;
       }
-      // 全部资产待审批：省一次模型调用。
-      if (await s.waitingForAssetApproval().catch(() => false)) continue;
       if(Date.now()<retryAfter)continue;
       const wakeups=(await this.db.query('SELECT id,node_id,kind FROM blackboard_wakeups WHERE exploration_id=$1 AND acknowledged_at IS NULL ORDER BY id LIMIT 50',[rt.expID])).rows;
       const revision=await blackboardRevision(this.db,rt.expID);
@@ -604,7 +601,7 @@ export class Engine {
         hooks: this.engineHooks(rt),
         extraGuard: async g => {
           try { await this.coordinator.assert(rt.taskID,rt.lease!); } catch { return {block:true,reason:"执行租约已失效"}; }
-          return interceptGate(this.db, { taskID: rt.taskID, agentName: "worker", worker: name })(g);
+          return;
         },
         onActivity: turn.onActivity,
         signal: controller.signal,
@@ -769,10 +766,10 @@ export class Engine {
         (selectingRunning&&n.state!=='running'))throw Object.assign(new Error(`意图 #${intentID} 不可下发或订阅`),{statusCode:409});
       if(segment!==undefined && (!Number.isSafeInteger(segment)||segment<0||(segment>0&&!(await db.query('SELECT 1 FROM main_sessions WHERE exploration_id=$1 AND seq=$2',[task.exploration_id,segment])).rowCount)))
         throw Object.assign(new Error('主会话不存在'),{statusCode:404});
-      if((await db.query('SELECT 1 FROM exploration_anchors WHERE node_id=$1 AND NOT task_asset_worker_executable($2,asset_id)',[intentID,taskID])).rowCount)
-        throw Object.assign(new Error('意图资产已封禁或撤权'),{statusCode:409});
+      if((await db.query('SELECT 1 FROM exploration_anchors WHERE node_id=$1 AND NOT task_asset_linked($2,asset_id)',[intentID,taskID])).rowCount)
+        throw Object.assign(new Error('意图资产不属于当前任务'),{statusCode:409});
       if(n.state==='open')await db.query(`UPDATE exploration_nodes SET payload=payload||jsonb_build_object('dispatch_requested',true,
-        'pending_asset_execution',jsonb_build_object('issuer','mainagent','granted_at',now())) WHERE id=$1`,[intentID]);
+        'dispatch_source','mainagent') WHERE id=$1`,[intentID]);
       if (segment !== undefined) await db.query(`INSERT INTO worker_feedback(exploration_id,task_id,intent_id,main_seg,after_activity)
         VALUES($1,$2,$3,$4,CASE WHEN $5 THEN COALESCE((SELECT after_activity FROM worker_feedback_run WHERE intent_id=$3),
           (SELECT max(id) FROM activity WHERE exploration_id=$1 AND node_id=$3),0)

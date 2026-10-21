@@ -4,7 +4,6 @@ import {WorkerOperationJournal} from '../db/operation-journal.js';
 import {journalTools} from '../pi/operation-tools.js';
 import {contextNeedBoundary,CONTEXT_RETENTION_RULES} from './context-needs.js';
 import {terminalExtension,TERMINAL_TOOLS} from '../pi/terminal.js';
-import {interceptGate} from '../intercept/gate.js';
 import { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
 export { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
 import { compactPlannerChanges, plannerRoundMessage, CONTEXT_LAYOUT_VERSION } from './prompt-context.js';
@@ -93,25 +92,15 @@ const GUARD_SKIP_TOOLS = new Set([
   "insert_assets", "record_fact", "report_finding", "add_intent", "dispatch_intents",
   "prove_goal", "set_goals", "set_constraints", "register_user_target", "add_task_scope",
   "graph_overview", "node_detail", "search_worker_traces", "get_worker_trace",
-  "list_findings", "list_assets", "list_untested_assets", "todo_write",
+  "asset_search", "asset_get", "list_findings", "list_assets", "list_untested_assets", "todo_write",
 ]);
 
 /** Closing reads existing evidence; it cannot launch commands, MCP or custom exploration. */
 const WORKER_SETTLEMENT_TOOLS = [
-  'record_fact','report_finding','insert_assets',
+  'record_fact','report_finding','insert_assets','asset_search','asset_get',
   'context_search','context_get','node_detail','list_facts','list_findings','list_assets',
   'read','read_tool_output','read_attachment','traffic_body','expand_index','expand_digest','shell_read','shell_close','shell_list',
 ];
-
-/** 从工具参数正向提取 host（绝不解释裸 shell 命令文本——与 Go guard/assets 同一克制）。 */
-function collectHosts(args: Record<string, unknown>): string[] {
-  const hosts: string[] = [];
-  for (const key of ["url", "host", "domain", "ip", "target", "endpoint"]) {
-    const v = args[key];
-    if (typeof v === "string" && v.trim() !== "") hosts.push(v.trim());
-  }
-  return hosts;
-}
 
 export interface WorkerRunInput {
   signal?: AbortSignal;
@@ -127,7 +116,7 @@ export interface WorkerRunInput {
   hooks: EngineHooks;
   /** Drain messages received before the native runner was ready. */
   onActivity: (activity: RunnerActivity, meta: { intentID: number; worker: string }) => void;
-  /** 引擎注入的额外 guard（审批门 M5 接入；测试用桩）。 */
+  /** 引擎注入的额外 guard（执行租约与生命周期校验）。 */
   extraGuard?: ToolGuard;
   /**
    * 出口网关地址（host:port，M6）。给出时 worker 的 bash 工具进程注入
@@ -209,15 +198,15 @@ async function executionTools(ctx:ToolRunContext,cwd:string,input:{egressAddr?:s
   const bash=createBashToolDefinition(cwd,{spawnHook:spawn=>({...spawn,env:{...spawn.env,...env}})}) as unknown as ToolDefinition;
   const interactive=(await ctx.db.platform().getAgentByKey(ctx.role))?.interactiveShell===true;
   bash.description=await platformBashDescription(ctx,bash.description,interactive);
-  return {tools:[bash,...await customWorkerTools(ctx,cwd,bash,input.extraGuard??interceptGate(ctx.db,{taskID:ctx.taskID,agentName:ctx.role}))],
+  return {tools:[bash,...await customWorkerTools(ctx,cwd,bash,input.extraGuard)],
     names:interactive?TERMINAL_TOOLS:[],extensions:interactive?[terminalExtension(cwd,env,input.signal)]:[]};
 }
-/** Main and Planner use the same authorization/approval boundary as Worker. */
+/** Main and Planner use the same execution lifecycle boundary as Worker. */
 function roleExecutionGuard(ctx:ToolRunContext,extra?:ToolGuard):ToolGuard{
   let probes=0;
   return async g=>{
     await ctx.hooks.assertOwnership?.(ctx.db);
-    const decision=await (extra??interceptGate(ctx.db,{taskID:ctx.taskID,agentName:ctx.role}))(g);if(decision?.block)return decision;
+    const decision=await extra?.(g);if(decision?.block)return decision;
     if(GUARD_SKIP_TOOLS.has(g.toolName)||['read','read_tool_output','read_attachment','traffic_body','shell_read','shell_list','shell_close'].includes(g.toolName))return;
     const task=await ctx.db.tasks().getTask(ctx.taskID);
     if(!task||task.paused||task.queued||['done','failed','timeout','stopped'].includes(task.status))return {block:true,reason:'任务已暂停或结束，不能执行新操作'};
@@ -226,13 +215,6 @@ function roleExecutionGuard(ctx:ToolRunContext,extra?:ToolGuard):ToolGuard{
       probes++;
       if((await ctx.db.query("SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind IN ('fact','finding') AND payload ? 'from_intent' AND state='confirmed' LIMIT 1",[ctx.expID])).rowCount)return {block:true,reason:'Planner 开局探测已结束；实际测试请通过 add_intent 派给 Worker'};
     }
-    try{
-      for(const host of collectHosts(g.args)){
-        const url=new URL(host.includes('://')?host:`http://${host}`),port=Number(g.args.port)||Number(url.port)||(url.protocol==='https:'?443:80);
-        if(ctx.role==='mainagent')await ctx.db.taskScope().validateWorkerHostPort(ctx.taskID,url.hostname,port);
-        else await ctx.db.taskScope().validateTaskHostPort(ctx.taskID,url.hostname,port);
-      }
-    }catch(e){return {block:true,reason:`任务资产策略：${e instanceof Error?e.message:String(e)}`};}
   };
 }
 
@@ -262,7 +244,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   const system = await systemRolePrompt(db, "worker");
   const taskContext =
     `\n\n【当前意图 #${intent.id} 执行约定】\n${JSON.stringify(contract)}` +
-    `\n\n【锚定资产索引；访问仍须当前授权】\n${assetsJSON}`;
+    `\n\n【锚定资产索引】\n${assetsJSON}`;
 
   // 首条 user：全局态势（可降级，刻意不含 coverage）。
   const overview = await workerLaunchContext(ctx,intent.id);
@@ -316,37 +298,18 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
       if (!current || current.state !== 'running' || current.owner!==workerName || current.payload.cancelled_by_user) return {block:true,reason:'当前意图已停止或归属已改变，禁止继续执行'};
       if (current.payload.execution_result) return {block:true,reason:'结果已提交，请结束当前会话'};
       if (contract.allowed_tools && !GUARD_SKIP_TOOLS.has(g.toolName) && !['read_tool_output','read_attachment','traffic_body','expand_index','expand_digest','list_facts'].includes(g.toolName) && !contract.allowed_tools.includes(g.toolName)) return {block:true,reason:'工具不在当前意图 allowed_tools 内'};
-      // 2) 审批门（M5 接 intercept；extraGuard 优先）。
+      // 执行租约和调用方生命周期校验。
       if (input.extraGuard) {
         const d = await input.extraGuard(g);
         if (d?.block) return d;
       }
-      // 3) 资产策略：领域工具豁免（自行鉴权/只读）；其余按参数 host 校验。
+      // 当前意图的依据版本仍须有效。
       if (GUARD_SKIP_TOOLS.has(g.toolName)) return undefined;
       for(const ref of contract.basis){
         try{
-          const source=await resolveGraphNode(db,taskID,expID,ref.node_id,true);
+          const source=await resolveGraphNode(db,taskID,expID,ref.node_id);
           if(source.node.content_version!==ref.version)return {block:true,reason:'当前意图依据已变化，停止新探测，写回已有观察并总结未完成原因，交 Planner 重新评估'};
         }catch{return {block:true,reason:'当前意图依据不再授权，停止访问相关资源并总结阻塞原因，交 Planner 重新评估'};}
-      }
-      const hosts = collectHosts(g.args);
-      if (hosts.length === 0) return undefined;
-      try {
-        const liveIntent=await db.exploration(expID).getNode(intent.id);
-        await db.taskScope().validateIntentHosts(taskID, liveIntent, hosts);
-        for(const target of hosts){
-          let parsed:URL;try{parsed=new URL(target.includes('://')?target:`http://${target}`);}catch{continue;}
-          const port=Number(g.args.port)||Number(parsed.port)||(parsed.protocol==='https:'?443:80);
-          if(target.includes('://')||parsed.port||g.args.port)await db.taskScope().validateIntentHostPort(taskID,liveIntent,parsed.hostname,port);
-        }
-        return undefined;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await db.taskScope().rememberTaskAssetDenials(taskID, hosts, []).catch(() => undefined);
-        return {
-          block: true,
-          reason: `任务资产策略：${msg}。跳过本项资源，继续其他已授权测试，不要重试该地址。`,
-        };
       }
     },
     onActivity: (a) => counter.wrapped(a, { intentID: intent.id, worker: workerName }),
@@ -515,7 +478,7 @@ export async function runMainChat(input: MainChatInput): Promise<WorkerRunResult
     onActivity: (a) => mainCounter.wrapped(a, { worker: "main" }),
   });
   try {
-    const feedback=(await db.query("SELECT a.id,a.node_id,a.detail,a.summary,a.metadata FROM activity a WHERE a.exploration_id=$1 AND a.main_seg=$2 AND a.metadata ? 'worker_feedback' AND CASE WHEN a.node_id IS NOT NULL THEN exploration_node_readable(a.exploration_id,a.node_id,true) WHEN (a.metadata->'worker_feedback'->>'intent_id') ~ '^[0-9]+$' THEN exploration_node_readable(a.exploration_id,(a.metadata->'worker_feedback'->>'intent_id')::bigint,true) ELSE false END ORDER BY a.id DESC LIMIT 20",[expID,input.segment??0])).rows.reverse();
+    const feedback=(await db.query("SELECT a.id,a.node_id,a.detail,a.summary,a.metadata FROM activity a WHERE a.exploration_id=$1 AND a.main_seg=$2 AND a.metadata ? 'worker_feedback' AND CASE WHEN a.node_id IS NOT NULL THEN exploration_node_readable(a.exploration_id,a.node_id) WHEN (a.metadata->'worker_feedback'->>'intent_id') ~ '^[0-9]+$' THEN exploration_node_readable(a.exploration_id,(a.metadata->'worker_feedback'->>'intent_id')::bigint) ELSE false END ORDER BY a.id DESC LIMIT 20",[expID,input.segment??0])).rows.reverse();
     for(const entry of feedback)await runner.appendContextOnce(`worker-feedback:${entry.id}`,`【Worker 回传摘要，完整结果按 node:${entry.node_id??(entry.metadata as {worker_feedback?:{intent_id?:number}})?.worker_feedback?.intent_id??"未知"} 的 output 视图续读】\n${Array.from(String(entry.detail??entry.summary)).slice(0,180).join('')}`);
     const res = await runner.prompt(input.message,input.images);
     if(receipts.length){

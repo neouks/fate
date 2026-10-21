@@ -27,7 +27,7 @@ afterAll(async()=>{for(const e of engines)await e.shutdown();await db.close();co
 async function until(fn:()=>Promise<boolean>,ms=6000){const end=Date.now()+ms;while(Date.now()<end){if(await fn())return;await new Promise(r=>setTimeout(r,10));}throw new Error('blackboard timeout');}
 async function fixture(claim=true){const task=await db.tasks().createTaskWithOptions('LOCAL blackboard','',{executionMode:'manual'});const s=db.exploration(task.exploration_id);const id=await s.addIntent({summary:'Verify LOCAL sample',dispatch_requested:true,collaboration_policy:'blackboard-v1'},5,[],'user');if(claim)await s.claimNextWorker('work#1');return {task,s,id,c:runContext(db,task.id,task.exploration_id,'worker',{intentID:id,workerName:'work#1',collaborationPolicy:'blackboard-v1'})};}
 async function call(tool:any,args:any,key=randomUUID()){const out=await tool.execute(key,args,undefined,undefined,{});if(out.isError)throw new Error(out.content[0].text);return JSON.parse(out.content[0].text);}
-const observation={summary:'LOCAL observed',evidence:'Synthetic sample observed once',confidence:'high'};
+const observation={observation_type:'observed' as const,scope:{tested:'LOCAL fixture observation'},summary:'LOCAL observed',evidence:'Synthetic sample observed once',confidence:'high'};
 const result=(id:number)=>({outcome:'complete',summary:'LOCAL done',criteria:[{index:0,outcome:'supported',fact_ids:[id]}]});
 
 it('publishes facts during execution and returns the same node on a retried tool call',async()=>{
@@ -271,11 +271,27 @@ it('lets Planner read a live Worker finding and wakes again after Worker release
  finally{release();await e.stop(task.id);}
 });
 
-it('still wakes on an explicit approval change after silent Worker asset registration',async()=>{
+it('coalesces Worker asset registration and wakes on explicit association removal',async()=>{
  const f=await fixture();const saved=await call(insertAssetsTool(f.c),{items:[{type:'service',url:'http://local-approval.test:9080'}]});
- expect((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1",[f.task.exploration_id])).rowCount).toBe(0);
- await db.query("UPDATE task_asset_links SET approval_state='blocked' WHERE task_id=$1 AND asset_id=$2",[f.task.id,saved.assets[0].asset_id]);
- expect((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1 AND kind='control_changed'",[f.task.exploration_id])).rowCount).toBe(1);
+ expect((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1",[f.task.exploration_id])).rowCount).toBe(1);
+ await db.query("DELETE FROM task_asset_links WHERE task_id=$1 AND asset_id=$2",[f.task.id,saved.assets[0].asset_id]);
+ expect((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1 AND kind='assets_changed'",[f.task.exploration_id])).rowCount).toBe(2);
+});
+
+it('keeps anchored facts immediately visible without treating tested metadata as asset discovery',async()=>{
+ const f=await fixture(),saved=await call(insertAssetsTool(f.c),{assets:[{type:'service',url:'http://fact-wakeup.invalid'}]});
+ const asset=saved.results[0].id;
+ await db.query('DELETE FROM blackboard_wakeups WHERE exploration_id=$1',[f.task.exploration_id]);
+ const first=await call(recordFactTool(f.c),{...observation,asset_ids:[asset]});
+ await db.taskScope().markTaskAssetsTested(f.task.id,[asset],'different-worker');
+ const second=await call(recordFactTool(f.c),{...observation,summary:'second independent observation',asset_ids:[asset]});
+ expect((await db.query('SELECT tested,tested_by FROM task_asset_links WHERE task_id=$1 AND asset_id=$2',[f.task.id,asset])).rows[0]).toMatchObject({tested:true,tested_by:'different-worker'});
+ expect((await (await import('../db/asset-query.js')).queryAssets(db,{taskID:f.task.id,ids:[asset]})).assets[0]).toMatchObject({tested:true,tested_by:'work#1'});
+ expect((await db.query('SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1',[f.task.exploration_id])).rowCount).toBe(0);
+ const planner=runContext(db,f.task.id,f.task.exploration_id,'planner');
+ expect((await searchContext(planner,{asset_id:asset,types:['fact']})).items.map(n=>n.node_id)).toEqual([second.fact_id,first.fact_id]);
+ await db.query("UPDATE assets SET page_title='new observed title' WHERE id=$1",[asset]);
+ expect((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1 AND kind='assets_changed'",[f.task.exploration_id])).rowCount).toBe(1);
 });
 
 it('rolls back a fact and its context events together if the enclosing write fails',async()=>{

@@ -42,7 +42,7 @@ export async function bindEvidence(db:Database,findingID:number,refs:Array<{traf
   if(!['baseline','proof','verification','supporting'].includes(ref.role??'supporting'))throw Object.assign(new Error('无效证据角色'),{statusCode:400});
   const permitted=await db.query(`SELECT s.* FROM traffic_exchanges e JOIN traffic_evidence_snapshots s ON s.id=e.id WHERE e.id=$1 AND e.task_id=$2`,[ref.traffic_id,taskID]);
   if(!permitted.rowCount)throw Object.assign(new Error('流量不存在或不属于漏洞任务'),{statusCode:404});
-  await authorizeEvidence(db,permitted.rows[0] as EvidenceOwner,taskID,true);
+  await authorizeEvidence(db,permitted.rows[0] as EvidenceOwner,taskID);
   await db.query(`INSERT INTO finding_traffic_bindings(finding_id,snapshot_id,role,note,position) VALUES($1,$2,$3,$4,COALESCE((SELECT max(position)+1 FROM finding_traffic_bindings WHERE finding_id=$1),0)) ON CONFLICT(finding_id,snapshot_id) DO NOTHING`,[findingID,ref.traffic_id,ref.role??'supporting',ref.note??'']);
  }
  await db.query('UPDATE findings SET evidence_version=evidence_version+1 WHERE id=$1',[findingID]);

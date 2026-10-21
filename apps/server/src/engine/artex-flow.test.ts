@@ -102,16 +102,13 @@ it('Main goal editing does not start a Worker pool',async()=>{
  },fauxAssistantMessage('Paused goal saved')]);
  await e.mainChat(task.id,'Only update this paused task goal');expect((await db.tasks().getTask(task.id))?.paused).toBe(true);
 });
-it('Main can reread pending-asset evidence without changing approval, and revocation is immediate',async()=>{
- const {task}=await fixture();await db.query("UPDATE tasks SET asset_approval_template='explicit_targets' WHERE id=$1",[task.id]);const c=runContext(db,task.id,task.exploration_id,'mainagent',{mainSegment:2,hooks:{assertOwnership:async()=>{}}});
- const saved=await call(insertAssetsTool(c),{items:[{type:'root_domain',domain:'artex-fixture.invalid'}]});const aid=saved.assets[0].asset_id;
- await db.query("UPDATE task_asset_links SET approval_state='pending' WHERE task_id=$1 AND asset_id=$2",[task.id,aid]);
+it('Main and Planner can immediately reread discovered asset evidence',async()=>{
+ const {task}=await fixture();const c=runContext(db,task.id,task.exploration_id,'mainagent',{mainSegment:2,hooks:{assertOwnership:async()=>{}}});
+ const saved=await call(insertAssetsTool(c),{items:[{type:'root_domain',domain:'artex-fixture.invalid'}]});
  const owner={task_id:task.id,intent_id:null,url:'https://artex-fixture.invalid/'};
- await authorizeEvidence(db,owner,task.id,'main');
- expect((await db.query('SELECT approval_state FROM task_asset_links WHERE task_id=$1 AND asset_id=$2',[task.id,aid])).rows[0].approval_state).toBe('pending');
- await expect(authorizeEvidence(db,owner,task.id)).rejects.toThrow('授权');
- await db.query("UPDATE task_asset_links SET approval_state='blocked' WHERE task_id=$1 AND asset_id=$2",[task.id,aid]);
- await expect(authorizeEvidence(db,owner,task.id,'main')).rejects.toThrow('授权');
+ await expect(authorizeEvidence(db,owner,task.id)).resolves.toBeUndefined();
+ await db.taskScope().validateTaskAssets(task.id,[saved.assets[0].asset_id]);
+ await expect(authorizeEvidence(db,owner,task.id+99999)).rejects.toThrow('不属于');
 });
 it('upgrades recognized legacy configuration once and quarantines inactive proposals',async()=>{
  const {task,s}=await fixture('managed'),old=await s.addIntent({summary:'LOCAL legacy proposal',planning_round:'old',dispatch_requested:false},5,[],'planner');

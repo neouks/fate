@@ -12,7 +12,6 @@ import { Engine,defaultEngineConfig } from './src/engine/engine.js';
 import {retireRetester} from './src/db/retire-retester.js';
 import { buildApp } from './src/http/app.js';
 import { signJWT } from './src/http/auth.js';
-import { interceptGate } from './src/intercept/gate.js';
 import { buildGraphOverview } from './src/tools/overview.js';
 import { runContext } from './src/tools/context.js';
 import { compactColdGraph } from './src/agent/coldgraph.js';
@@ -123,33 +122,6 @@ describe('migration invariants',()=>{
   await e.run(t.id);for(let i=0;i<25&&faux.state.callCount===0;i++)await new Promise(r=>setTimeout(r,20));await e.stop(t.id);
   expect(faux.state.callCount).toBe(0);
  });
- it('R5 HTTP custom tools must not bypass a blocked host by passing a URL',async()=>{
-  const {t}=await fixture();
-  await db.query("INSERT INTO task_asset_blocks(task_id,asset_key,asset_type,host_key) VALUES($1,'review:blocked','subdomain','blocked.review.test')",[t.id]);
-  await expect(db.taskScope().validateWorkerHosts(t.id,['blocked.review.test'])).rejects.toThrow();
-  const fetch=vi.fn().mockResolvedValue(new Response('fixture',{status:200}));vi.stubGlobal('fetch',fetch);
-  try{
-   const proxy={platform:()=>({listTools:async()=>[{key:'review_http',kind:'http',exec:{url:'https://blocked.review.test/'},schema:{type:'object',properties:{}},description:'fixture',agents:['worker'],enabled:true,system:false}]}),taskScope:()=>db.taskScope()} as unknown as Database;
-   const tool=(await customWorkerTools(runContext(proxy,t.id,t.exploration_id,'worker'),dir))[0]!;
-   await expect(tool.execute('fixture',{},undefined,undefined,{} as never)).rejects.toThrow();
-   expect(fetch).not.toHaveBeenCalled();
-  }finally{vi.unstubAllGlobals();}
- });
- it('R5 an explicitly linked service asset limits egress to its approved port',async()=>{
-  const {t}=await fixture();
-  await db.assets().upsertHTTPService({url:'http://port.review.test:9080/',taskID:t.id});
-  await db.taskScope().addAgentScope(t.id,'subdomain','port.review.test','single-port acceptance fixture','manual');
-  await expect(db.taskScope().validateWorkerHostPort(t.id,'port.review.test',9080)).resolves.toBeUndefined();
-  await expect(db.taskScope().validateWorkerHostPort(t.id,'port.review.test',9081)).rejects.toThrow('port is not approved');
- });
- it('R6 newly saved deny rules must apply to the worker gate',async()=>{
-  const {t,post,app}=await fixture();await db.query('DELETE FROM intercept_rules');await app.interceptor.setEnabledTools(['bash']);
-  const gate=interceptGate(db,{taskID:t.id,agentName:'worker'});
-  const input={toolName:'bash',toolCallId:'fixture',args:{command:'echo review_cache_marker'}};
-  expect(await gate(input)).toBeUndefined();
-  const res=await post('/api/intercept/rules',{name:'review deny',enabled:true,priority:999999,match_target:'tool_input',match_type:'string',pattern:'review_cache_marker',action:'deny',message:'fixture'});
-  expect(res.statusCode).toBe(201);expect((await gate(input))?.block).toBe(true);
- });
  it('R7 cancellation must not mutate an intent in a different task',async()=>{
   const a=await fixture(),b=await fixture();const id=await b.s.addIntent({summary:'other task'},5,[],'user');
   await a.post(`/api/tasks/${a.t.id}/intents/${id}/control`,{action:'cancel'});
@@ -200,9 +172,6 @@ describe('migration invariants',()=>{
   const page=(await get(`/api/exploration/nodes?task=${child.id}&kind=fact&size=1`)).json();expect(page.items).toHaveLength(1);expect(page.total).toBeGreaterThan(1);
   expect((await get(`/api/exploration/intents?task=${child.id}`)).json().items).toHaveLength(0);
   const cancel=await app.inject({method:'POST',url:`/api/tasks/${child.id}/intents/${intent}/cancel`,payload:{},headers:{'X-Series-Token':signJWT(key)}});expect(cancel.statusCode).not.toBe(200);expect((await source.s.getNode(intent))?.state).toBe('done');
-  await db.query("INSERT INTO task_asset_blocks(task_id,asset_key,asset_type,host_key) VALUES($1,'source:block','root_domain','source-projection.review.test')",[source.t.id]);
-  const revoked=(await get(`/api/exploration/graph?task=${child.id}`)).json();expect(revoked.nodes.some((n:{id:string})=>n.id===String(fact))).toBe(false);
-  expect((await get(`/api/exploration/nodes/${fact}?task=${child.id}`)).statusCode).toBe(404);
  });
  it('R10 UI feedback is retained without forwarding Worker prose to Main',async()=>{
   const {t,s,source,faux}=await fixture();const id=await s.addIntent({summary:'feedback task'},1,[],'user');
@@ -286,8 +255,8 @@ describe('migration invariants',()=>{
    const tool=addIntentTool(runContext(db,t.id,t.exploration_id,'mainagent',{hooks:{dispatchIntent:async(_expID,id)=>{await e.dispatchIntent(t.id,id);}}}));
    const result=await tool.execute('main-add',{intents:[{summary:'committed before grant'}]},undefined,undefined,{} as never);
    expect(result.isError).not.toBe(true);
-   const intent=(await db.query("SELECT payload->>'dispatch_requested' requested,payload->'pending_asset_execution' AS execution_grant FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' ORDER BY id DESC LIMIT 1",[t.exploration_id])).rows[0];
-   expect(intent).toMatchObject({requested:'true'});expect(intent?.execution_grant?.issuer).toBe('mainagent');
+   const intent=(await db.query("SELECT payload->>'dispatch_requested' requested,payload->>'dispatch_source' AS dispatch_source FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' ORDER BY id DESC LIMIT 1",[t.exploration_id])).rows[0];
+   expect(intent).toMatchObject({requested:'true'});expect(intent?.dispatch_source).toBe('mainagent');
   }finally{await db.query("UPDATE agents SET enabled=$1 WHERE key='worker'",[worker]);await e.stop(t.id);}
  });
  it('G2 model request audit accepts an unbound platform conversation',async()=>{
@@ -296,7 +265,7 @@ describe('migration invariants',()=>{
   expect(row.rowCount).toBe(1);
   await db.query("DELETE FROM llm_request_attempts WHERE id=$1",[row.rows[0]!.id]);
  });
- it('R14 graph and asset tools hide records after authorization is revoked',async()=>{
+ it('R14 graph, assets and immutable evidence are readable without asset approval',async()=>{
   const {t,s,app}=await fixture();const asset=await db.assets().upsertRootDomain({domain:'projection.review.test',taskID:t.id});
   const node=await s.addNode('finding',{summary:'projection marker'},0,'confirmed','worker',[asset]);
   const findingID=Number((await db.query(`INSERT INTO findings(task_id,node_id,name,vulnclass,severity,summary,asset_ids) VALUES($1,$2,'projection','fixture','low','projection marker',$3::jsonb) RETURNING id`,[t.id,node,JSON.stringify([asset])])).rows[0]!.id);
@@ -314,16 +283,6 @@ describe('migration invariants',()=>{
   const visible=async(tool:ReturnType<typeof listFindingsTool>|ReturnType<typeof listAssetsTool>)=>JSON.parse((await tool.execute('projection',{},undefined,undefined,{} as never)).content[0]!.text);
   expect((await visible(findings)).findings).toHaveLength(1);
   expect((await visible(assets)).assets.some((a:{id:number})=>a.id===asset)).toBe(true);
-  await db.query(`INSERT INTO task_asset_blocks(task_id,asset_key,asset_type,host_key) VALUES($1,'projection:block','root_domain','projection.review.test')`,[t.id]);
-  expect((await app.inject({url:`/api/exploration/findings/${findingID}/traffic/${bindingID}/body`,headers})).statusCode).toBe(403);
-  expect((await app.inject({url:`/api/exploration/findings/${findingID}/traffic`,headers})).statusCode).toBe(403);
-  expect((await visible(findings)).findings).toHaveLength(0);
-  expect((await visible(assets)).assets.some((a:{id:number})=>a.id===asset)).toBe(false);
-  expect((await app.inject({url:`/api/exploration/graph?task=${t.id}`,headers})).json().nodes.some((n:{id:string})=>Number(n.id)===node)).toBe(false);
-  expect((await app.inject({url:`/api/exploration/${t.exploration_id}/nodes`,headers})).json().items.some((n:{id:number})=>n.id===node)).toBe(false);
-  expect((await app.inject({url:`/api/exploration/activity?task=${t.id}&since=0`,headers})).json().items.some((n:{seq:number})=>n.seq===activityID)).toBe(false);
-  expect((await app.inject({url:`/api/exploration/activity/${activityID}`,headers})).statusCode).toBe(404);
-  expect((await app.inject({url:`/api/exploration/findings/${node}`,headers})).statusCode).toBe(404);
  });
  it('G4 activity forward cursor never skips events beyond the requested page',async()=>{
   const {t,s,app}=await fixture(),headers={'X-Series-Token':signJWT(key)},expected:number[]=[];
@@ -336,26 +295,23 @@ describe('migration invariants',()=>{
   }
   expect(seen).toEqual(expected);
  });
- it('R13 explicit main dispatch of pending assets must issue a trusted execution grant',async()=>{
+ it('R13 Main can explicitly dispatch newly discovered assets',async()=>{
   const {t,s,e,faux}=await fixture();
-  await db.query("UPDATE tasks SET asset_approval_template='explicit_targets' WHERE id=$1",[t.id]);
   const asset=await db.assets().upsertRootDomain({domain:'pending.review.test',taskID:t.id});
-  await db.query("UPDATE task_asset_links SET approval_state='pending',source='agent' WHERE task_id=$1 AND asset_id=$2",[t.id,asset]);
+  await db.query("UPDATE task_asset_links SET source='agent' WHERE task_id=$1 AND asset_id=$2",[t.id,asset]);
   const id=await s.addIntent({summary:'explicit dispatch'},1,[asset],'user');
-  expect((await db.taskScope().taskAssetApprovalStates(t.id,[asset])).get(asset)).toBe('pending');
   faux.setResponses([fauxAssistantMessage([fauxToolCall('dispatch_intents',{intent_ids:[id]})]),fauxAssistantMessage('dispatched')]);
   try{
    await e.mainChat(t.id,'execute');const node=await s.getNode(id);
    expect(await s.hasOpenIntent()||['running','done'].includes(node?.state??'')).toBe(true);
   }finally{await e.stop(t.id);}
  });
- it('R14 prove_goal must reject evidence whose asset was blocked',async()=>{
+ it('R14 prove_goal accepts confirmed evidence without asset approval',async()=>{
   const {t,s}=await fixture();const asset=await db.assets().upsertRootDomain({domain:'proof.review.test',taskID:t.id});
-  const fact=await s.addNode('fact',{summary:'restricted evidence'},1,'confirmed','worker',[asset]);const goal=await s.addGoal({text:'prove fixture'},'user');
-  await db.query("INSERT INTO task_asset_blocks(task_id,asset_key,asset_type,host_key) VALUES($1,'review:proof','root_domain','proof.review.test')",[t.id]);
+  const fact=await s.addNode('fact',{summary:'verified evidence',evidence:'LOCAL observed fixture result'},1,'confirmed','worker',[asset]);const goal=await s.addGoal({text:'prove fixture'},'user');
   const tool=proveGoalTool(runContext(db,t.id,t.exploration_id,'planner'));
-  await tool.execute('fixture',{goal_id:goal,evidence_node_id:fact},undefined,undefined,{} as never);
-  expect((await s.getNode(goal))?.state).toBe('open');
+  const result=await tool.execute('fixture',{goal_id:goal,evidence_node_id:fact},undefined,undefined,{} as never);
+  expect(result.isError).not.toBe(true);expect((await s.getNode(goal))?.state).toBe('met');
  });
  it('R15 report_finding failure must roll back its graph node',async()=>{
   const {t,s}=await fixture();const id=await s.addIntent({summary:'write fixture'},1,[],'user');
@@ -363,21 +319,6 @@ describe('migration invariants',()=>{
   const result=await tool.execute('fixture',{vulnclass:'fixture',severity:'medium',summary:'nul'+String.fromCharCode(0),evidence:'fixture'},undefined,undefined,{} as never);
   expect(result.isError).toBe(true);
   expect((await s.listByKind('finding')).length).toBe(0);
- });
-
- it('R16 worker discoveries must obey the explicit approval template',async()=>{
-  const {t,s}=await fixture();await db.query("UPDATE tasks SET asset_approval_template='explicit_targets' WHERE id=$1",[t.id]);
-  const intentID=await s.addIntent({summary:'discovery fixture'},1,[],'user');
-  const tool=insertAssetsTool(runContext(db,t.id,t.exploration_id,'worker',{intentID,workerName:'work#1'}));
-  const out=await tool.execute('fixture',{items:[{type:'root_domain',domain:'new-discovery.review.test'}]},undefined,undefined,{} as never);
-  expect(out.isError).not.toBe(true);
-  const row=(await db.query("SELECT approval_state,source FROM task_asset_links WHERE task_id=$1",[t.id])).rows[0];
-  expect(row).toMatchObject({approval_state:'pending',source:'agent'});
- });
- it('R17 related-assets grants must not extend to another tenant on a private suffix',async()=>{
-  const {t}=await fixture();await db.query("UPDATE tasks SET asset_approval_template='related_assets' WHERE id=$1",[t.id]);
-  await db.taskScope().addAgentScope(t.id,'subdomain','alice.github.io','fixture authorization','manual');
-  await expect(db.taskScope().validateTaskHostsApproved(t.id,['unrelated.github.io'])).rejects.toThrow();
  });
 
  it('R18 deleting an intent must leave it stopped',async()=>{

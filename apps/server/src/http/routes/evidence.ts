@@ -27,11 +27,8 @@ export function registerEvidenceRoutes(app:FastifyInstance){
     if(!task)throw new Error('task not found');
     await resolveGraphNode(db,projectionTask,Number(task.exploration_id),Number(f.node_id));
    }else{
-    const ids=Array.isArray(f.asset_ids)?f.asset_ids.map(Number):[];
-    const states=await db.taskScope().taskAssetApprovalStates(ownerTask,ids);
-    if(!ids.every((assetID:number)=>states.get(assetID)==='approved'))throw new Error('finding assets are not authorized');
    }
-  }catch{throw Object.assign(new Error('漏洞关联资产未获授权或已封禁'),{statusCode:403});}
+  }catch{throw Object.assign(new Error('漏洞不属于有效任务'),{statusCode:403});}
   return f;
  };
  const snapshot=async(id:number,bid:string)=>{const r=await db.query('SELECT snapshot_id FROM finding_traffic_bindings WHERE finding_id=$1 AND id=$2',[id,bid]);if(!r.rowCount)throw Object.assign(new Error('binding not found'),{statusCode:404});return String(r.rows[0]!.snapshot_id);};

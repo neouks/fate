@@ -21,7 +21,7 @@ export async function boundCustomTools(db: import('../db/index.js').Database, ro
   return catalog.filter(t => t.enabled && t.agents.includes(role) && !t.system && t.kind !== 'builtin' && t.kind !== 'shell' && !reserved.has(t.key));
 }
 
-/** Custom tools enter the same pi tool pipeline and approval gate as native tools. */
+/** Custom tools enter the same pi tool pipeline and execution lifecycle as native tools. */
 export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?: ToolDefinition, guard?: ToolGuard): Promise<ToolDefinition[]> {
   const catalog = await boundCustomTools(ctx.db, ctx.role);
   const shell = bash ?? createBashToolDefinition(cwd) as unknown as ToolDefinition;
@@ -35,7 +35,7 @@ export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?:
         const check = async (toolName: string, input: Record<string, unknown>) => {
           signal?.throwIfAborted();
           const decision = await guard?.({ toolName, toolCallId: callID, args: input, signal });
-          if (decision?.block) throw new Error(decision.reason ?? "工具执行被审批拦截");
+          if (decision?.block) throw new Error(decision.reason ?? "当前执行已停止");
         };
         if (tool.kind === "http") {
           let url = renderToolTemplate(String(spec["url"] ?? ""), args);

@@ -1,3 +1,4 @@
+import {assetContextCTE} from '../../db/asset-query.js';
 import {registerOperationRoutes} from './operations.js';
 import {executionSnapshot} from '../../engine/coordinator.js';
 import {prepareAttachments} from "../../evidence/attachments.js";
@@ -102,7 +103,6 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       timeoutSeconds: Math.max(0, Number(b["timeout_seconds"]) || 0),
       planHeartbeatSeconds: Math.max(0, Number(b["plan_heartbeat_seconds"]) || 0),
       coverageEnabled: b["coverage_enabled"] === undefined ? true : b["coverage_enabled"] !== false,
-      assetApprovalTemplate: typeof b["asset_approval_template"] === "string" ? b["asset_approval_template"] : undefined,
     });
     // 状态先落库（running），再后台跑 goals 分解 + 引擎循环；分解失败由引擎以活动事件记录。
     await app.engine.admitTask(task.id, { decompose: { description } });
@@ -393,20 +393,16 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const assetID = Number((req.query as Record<string, unknown>)["asset_id"]);
     if (!Number.isInteger(assetID) || assetID <= 0) return reply.code(400).send({ error: "缺少或无效的 asset_id" });
     const rows = await app.db.query(
-      `SELECT n.id, n.kind, n.state,
-              COALESCE(NULLIF(n.payload->>'summary',''), NULLIF(n.payload->>'text',''), '') AS summary
-       FROM exploration_anchors x
-       JOIN exploration_nodes n ON n.id=x.node_id
-       WHERE x.asset_id=$2 AND n.exploration_id=$1
-       ORDER BY n.id DESC LIMIT 300`,
-      [expID, assetID],
-    );
+      `WITH ${assetContextCTE} SELECT n.id,n.kind,n.state,c.task_id source_task_id,c.task_id<>$1 inherited,
+       COALESCE(NULLIF(n.payload->>'summary',''),NULLIF(n.payload->>'text',''),'') summary
+       FROM exploration_anchors x JOIN exploration_nodes n ON n.id=x.node_id JOIN context_tasks c ON c.exploration_id=n.exploration_id
+       WHERE x.asset_id=COALESCE((SELECT asset_id FROM asset_id_aliases WHERE old_id=$2),$2) AND x.asset_id IN(SELECT id FROM visible) ORDER BY n.id DESC`,[taskID,assetID]);
     const bucket = (nodeKind: string) =>
       rows.rows
         .filter((r) => String(r["kind"]) === nodeKind)
         .map((r) => ({
           id: Number(r["id"]),
-          kind: String(r["kind"]),
+          kind: String(r["kind"]),source_task_id:Number(r.source_task_id),inherited:r.inherited===true,
           state: String(r["state"]),
           summary: String(r["summary"] ?? ""),
         }));
