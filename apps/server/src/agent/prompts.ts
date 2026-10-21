@@ -1,6 +1,7 @@
 import {CONSTRAINT_PROTOCOL,GOALS_CONSTRAINT_RULES,renderConstraints} from './constraint-policy.js';
 /** Versioned role defaults. pi owns the model/tool loop; the host owns domain invariants. */
 import { createHash } from 'node:crypto';
+import {WORKER_WRITEBACK_GUIDANCE,migrateWorkerWritebackPrompt} from './worker-writeback-prompt.js';
 import type { Database } from '../db/index.js';
 import { LEGACY_PROMPT_HASHES } from './prompt-legacy.js';
 import {migrateDirectWorkerToolDescriptions} from './tool-descriptions.js';
@@ -17,7 +18,7 @@ export const PLANNER_PROMPT = `你是 Planner，依据探索图规划、监督 W
 export const WORKER_PROMPT = `你是 Worker，只执行领到的当前意图，在授权、约束和预算内完成它，然后停止。受阻时如实说明原因，不转向其他意图。
 边发现边写回，不必等到结束：新资产用 insert_assets 登记；新的探索结论用 record_fact 直接写入探索图；亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。把同一结论的观察合并为 summary、detail 和真实 evidence，不把每个属性拆成节点；独立的新结论可继续写回。推测与实测、负面观察要区分，不编造证据。
 按需 context_search/context_get 读取上下文；来源任务只读。新资产获准后才能访问，中间文件写当前工作目录，不向其他 Agent 发消息。
-结束前补齐已识别但未写回的结果，再简洁总结执行情况、关键结论、已写回的事实或漏洞 ID 与未完成原因。无新增事实可以直接总结，不为结束而制造记录。`;
+结束前补齐已识别但未写回的结果。${WORKER_WRITEBACK_GUIDANCE}无新增事实可以直接总结，不为结束而制造记录。`;
 
 export const MAIN_PROMPT = `你是 Main，按用户请求使用已绑定的本地、领域及外部工具，不自主连续规划。
 按需查询态势与证据。新工作用 add_intent，已有意图用 dispatch_intents；下发后宿主生成真实回执并结束当前轮，Worker 结果回传原会话。运行中的 Worker 可用 steer_work 纠偏。目标和约束分别用 set_goals/set_constraints 保存，不增加用户未要求的目标。
@@ -41,7 +42,7 @@ export function builtinPrompt(role: string): string | null { return ROLE_PROMPTS
 
 /** One host-owned completion rule, also applied when the operator supplies a custom role prompt. */
 export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
-  worker: '执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。',
+  worker: '执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。'+WORKER_WRITEBACK_GUIDANCE,
   planner: '意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
   goals: '结束前用 set_goals 保存提取出的可验收目标。',
   reporter: '报告完成后用 update_finding_report 按读取的 evidence_version 保存；文字回复不等于保存成功。',
@@ -77,6 +78,7 @@ export async function rolePrompt(db: Database, role: string, builtin: string, va
   return renderPrompt(resolved.template, vars);
 }
 export function composeRolePrompt(body: string, protocol: string): string {
+  if(body.includes(WORKER_WRITEBACK_GUIDANCE))protocol=protocol.replace(WORKER_WRITEBACK_GUIDANCE,'');
   return `<role>\n${body}\n</role>` + (protocol ? `\n<host_protocol>\n${protocol}\n</host_protocol>` : '');
 }
 export async function systemRolePrompt(db: Database, role: string, vars: Record<string, string> = {}, terminalOnly = false, protocolOverride?: string): Promise<string> {
@@ -129,6 +131,10 @@ export async function migrateBuiltinPrompts(db: Database): Promise<void> {
     await migrateDirectWorkerToolDescriptions(tx);
     await tx.platform().setSetting('pi_worker_direct_write_v1','done');
   });
+  await migrateWorkerWritebackPrompt(db,WORKER_PROMPT,[
+    '74269b5a0cf8a2d399d8329e8dc39d3b8327dcc2085d9f35e98e9f7405180c79',
+    'ce544d8182fee909e6d7dc6731b4d7293f5382b435cb545b0d72fd3f8ef0a909',
+  ]);
 }
 
 const OLD_WORKER_WRAPUP = "预算将尽，停止新探测。现在用 record_fact/report_finding 汇总已有的最终观察，取得节点 ID 后立即 complete_intent 引用并发布；已有暂存稿可直接引用或修订。不能完成的条件用 partial/blocked 和剩余条件说明，没有事实就如实提交 blocked；不要等待验收全部完成才写回，也不要只写检查点或文字总结。";

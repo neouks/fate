@@ -12,6 +12,8 @@ import {runContext} from '../tools/context.js';
 import {recordFactTool} from '../tools/graph.js';
 import {reportFindingTool} from '../tools/findings.js';
 import {insertAssetsTool} from '../tools/assets.js';
+import {migrateWorkerWritebackPrompt,WORKER_WRITEBACK_GUIDANCE} from '../agent/worker-writeback-prompt.js';
+import {WORKER_PROMPT,composeRolePrompt,hostProtocol,promptHash,resolveRolePrompt} from '../agent/prompts.js';
 import type {ToolDefinition} from '@earendil-works/pi-coding-agent';
 
 const name=`fate_writebacks_${process.pid}`,connection=new URL(postgresDSN().dsn);
@@ -96,4 +98,19 @@ it('rejects foreign task/turns, deleted tasks, authentication and forged paginat
  const cursor=(await f.get('secure','?limit=1')).json().next_cursor;
  expect((await f.get('secure',`?bucket=previous&cursor=${cursor}`)).statusCode).toBe(400);
  await db.query('UPDATE tasks SET deleted_at=now() WHERE id=$1',[f.task.id]);expect((await f.get('secure')).statusCode).toBe(404);
+});
+it('exact built-in upgrade preserves history, custom prompts, explicit rollback and one host copy',async()=>{
+ const agent=await db.platform().getAgentByKey('worker');expect(agent).toBeTruthy();
+ const old='LOCAL previous built-in';
+ async function select(text:string){const row=(await db.query("INSERT INTO agent_prompts(agent_id,version,template_text) SELECT $1,COALESCE(max(version),0)+1,$2 FROM agent_prompts WHERE agent_id=$1 RETURNING id",[agent!.id,text])).rows[0]!;await db.query('UPDATE agents SET current_prompt_id=$2 WHERE id=$1',[agent!.id,row.id]);return row.id;}
+ const oldID=await select(old);await db.query("DELETE FROM settings WHERE key='worker_writeback_summary_v1'");
+ await migrateWorkerWritebackPrompt(db,WORKER_PROMPT,[promptHash(old)]);
+ expect(await db.platform().currentPrompt(agent!.id)).toBe(WORKER_PROMPT);
+ expect((await db.query('SELECT template_text FROM agent_prompts WHERE id=$1',[oldID])).rows[0]!.template_text).toBe(old);
+ await db.query('UPDATE agents SET current_prompt_id=$2 WHERE id=$1',[agent!.id,oldID]);await migrateWorkerWritebackPrompt(db,WORKER_PROMPT,[promptHash(old)]);
+ expect(await db.platform().currentPrompt(agent!.id)).toBe(old);
+ const custom='LOCAL 自定义提示词';await select(custom);await db.query("DELETE FROM settings WHERE key='worker_writeback_summary_v1'");
+ await migrateWorkerWritebackPrompt(db,WORKER_PROMPT,[promptHash(old)]);
+ expect(await resolveRolePrompt(db,'worker')).toMatchObject({template:custom,source:'custom',candidate:WORKER_PROMPT});
+ for(const body of [WORKER_PROMPT,custom])expect(composeRolePrompt(body,hostProtocol('worker')).split(WORKER_WRITEBACK_GUIDANCE).length-1).toBe(1);
 });
