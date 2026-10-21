@@ -569,7 +569,8 @@ OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g'))=$1)`;
   }
 
   /**
-   * 粗粒度按类型覆盖度。分母=匹配任一活跃 task_scope 的资产；分子=已登记测试记录。Go 版 Enabled 由 API 层填；TS 版在此直接读开关。
+   * 粗粒度按类型覆盖度。分母=匹配任一活跃 task_scope 的资产；分子=有明确范围、资产关联和实测证据的记录
+   * （不表示所有方向测试完毕，历史范围不明单独展示）。Go 版 Enabled 由 API 层填；TS 版在此直接读开关。
    */
   async taskCoverage(taskID: number, expID: number): Promise<Coverage> {
     return assetCoverage(this.db,taskID);

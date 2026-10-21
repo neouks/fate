@@ -1,4 +1,4 @@
-import {workIdentity,overlappingWork,directionIdentity,type WorkAsset} from '../agent/work-identity.js';
+import {workIdentity,storedWorkIdentity,overlappingWork,directionIdentity,type WorkAsset} from '../agent/work-identity.js';
 // 探索图 store：节点/边/锚点、意图指纹去重、advisory-lock 队列领取、状态机、activity 写入。
 // 忠实平移自 Go 版 db/exploration.go + db/worker_queue.go 的核心路径；
 // 列表/统计类只读方法按需在后续模块补充。
@@ -278,7 +278,7 @@ export class ExplorationStore {
     priority: number,
     anchors: number[],
     origin: string,
-  ): Promise<{ id: number; created: boolean; dedup?:{version:2;strength:string;match?:string} }> {
+  ): Promise<{ id: number; created: boolean; dedup?:{version:3;strength:string;match?:string;related_intent_ids?:number[]} }> {
     return this.addIntentDeduplicatedInner(payload, priority, anchors, origin, false);
   }
 
@@ -287,7 +287,7 @@ export class ExplorationStore {
     priority: number,
     anchors: number[],
     origin: string,
-  ): Promise<{ id: number; created: boolean; dedup?:{version:2;strength:string;match?:string} }> {
+  ): Promise<{ id: number; created: boolean; dedup?:{version:3;strength:string;match?:string;related_intent_ids?:number[]} }> {
     return this.addIntentDeduplicatedInner(payload, priority, anchors, origin, true);
   }
 
@@ -297,7 +297,7 @@ export class ExplorationStore {
     anchors: number[],
     origin: string,
     requireManaged: boolean,
-  ): Promise<{ id: number; created: boolean; dedup?:{version:2;strength:string;match?:string} }> {
+  ): Promise<{ id: number; created: boolean; dedup?:{version:3;strength:string;match?:string;related_intent_ids?:number[]} }> {
     if (origin === "") origin = "planner";
     const summary = typeof payload["summary"] === "string" ? payload["summary"] : "";
     const contract = normalizeContract(payload.contract,summary);
@@ -338,7 +338,7 @@ export class ExplorationStore {
       const assetRows=allAssets.size?(await tx.query('SELECT id,type,url,method,params,domain,ip,port FROM assets WHERE id=ANY($1::bigint[])',[[...allAssets]])).rows:[];
       const assetMap=new Map<number,WorkAsset>(assetRows.map(a=>[Number(a.id),{...a,id:Number(a.id),type:String(a.type)} as WorkAsset]));
       const identity=workIdentity(contract,summary,anchors,assetMap);
-      const rowIdentities=new Map(rows.rows.map(row=>[row.id,workIdentity(normalizeContract(row.payload.contract,String(row.payload.summary??'')),String(row.payload.summary??''),JSON.parse(row.anchors) as number[],assetMap)]));
+      const rowIdentities=new Map(rows.rows.map(row=>[row.id,storedWorkIdentity(row.payload.work_identity)??workIdentity(normalizeContract(row.payload.contract,String(row.payload.summary??'')),String(row.payload.summary??''),(row.payload.dispatch_asset_ids??row.payload.asset_ids??JSON.parse(row.anchors)) as number[],assetMap)]));
       const sameWork=(row:typeof rows.rows[number])=>{
         const old=rowIdentities.get(row.id)!;
         return old.key===identity.key || ((!contract.work || !(row.payload.contract as {work?:unknown}|undefined)?.work) &&
@@ -351,6 +351,7 @@ export class ExplorationStore {
       for (const row of rows.rows) {
         const existing = row.payload ?? {};
         if (sameWork(row)) {
+          if(payload.retry_of && existing.cancelled_by_user===true)throw new Error('用户已取消此意图，不能借重试绕过');
           if(payload.retry_of && Number(payload.retry_of)===Number(row.id) && !['open','running','paused'].includes(row.state)){
             const reason=payload.retry_reason;
             if(typeof reason!=='string'||!reason.trim())throw new Error('重试必须说明原因');
@@ -360,15 +361,16 @@ export class ExplorationStore {
             throw new Error('重试需可恢复故障或新的有效事实依据');
           }
           await tx.commit();
-          return { id: Number(row.id), created: false, dedup:{version:2,strength:identity.strength,match:"equivalent_work"} };
+          return { id: Number(row.id), created: false, dedup:{version:3,strength:identity.strength,match:"equivalent_work"} };
         }
       }
 
       if(payload.retry_of && !rows.rows.some(row=>Number(row.id)===Number(payload.retry_of)))throw new Error('retry_of 必须属于本任务');
 
-      const overlap=rows.rows.find(row=>['open','running','paused'].includes(row.state)&&overlappingWork(identity,rowIdentities.get(row.id)!));
-      if(overlap)throw new Error(`工作范围与运行/待执行意图 #${overlap.id} 部分重叠；请读取该意图后排除已覆盖目标，或使用原意图，不新增重复执行。`);
-      const stored: Record<string, unknown> = { ...payload, fingerprint,work_identity:identity };
+      const related=rows.rows.filter(row=>(['open','running','paused'].includes(row.state)||row.payload.cancelled_by_user===true)&&overlappingWork(identity,rowIdentities.get(row.id)!));
+      const stopped=related.find(row=>row.state==='paused'||row.payload.cancelled_by_user===true);
+      if(stopped)throw new Error(`方向与用户暂停或取消的意图 #${stopped.id} 重叠，不能借新意图绕过；先读取原意图及用户限制。`);
+      const stored: Record<string, unknown> = { ...payload, fingerprint,work_identity:identity,dispatch_asset_ids:[...new Set(anchors)].sort((a,b)=>a-b) };
       const cleanAnchors = [...new Set(anchors.filter((a) => a > 0))].sort((a, b) => a - b);
       if (cleanAnchors.length > 0) stored["asset_ids"] = cleanAnchors;
       const raw = jsonbClean(JSON.stringify(stored));
@@ -382,7 +384,7 @@ export class ExplorationStore {
         await tx.query(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, assetID]);
       }
       await tx.commit();
-      return { id, created: true, dedup:{version:2,strength:identity.strength} };
+      return { id, created: true, dedup:{version:3,strength:identity.strength,...(related.length?{related_intent_ids:related.map(row=>Number(row.id))}:{})} };
     } catch (err) {
       await tx.rollback();
       throw err;

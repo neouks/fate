@@ -10,13 +10,13 @@ export const DIRECTION_PREVIOUS_TOOL_DESCRIPTIONS:Record<string,string> = {"add_
 
 /** Only behavioral hints belong here; parameter shapes and limits live in the schema. */
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
-  add_intent: '创建探索意图。先检索已有工作；提供 summary、asset_ids、parent_ids、priority；执行约定可选，宿主记录引用版本，只派前置已满足的工作。Main 提交会请求宿主下发；以返回的准入状态为准。',
+  add_intent: '按有价值的方向派单：summary 简述目的，asset_ids 给入口范围，parent_ids 引用依据；Worker 自选步骤，contract 仅按需补边界。不按接口或参数拆单；局部重叠见 dedup.related_intent_ids，派前核对已有方向。Main 以宿主下发回执为准。',
   dispatch_intents: '请求宿主下发已有待执行意图，仅 Main 可用；执行前检查任务状态和意图归属。',
-  record_fact: '执行中边发现边写回新结论，提交成功立即入图。summary 概括，detail 合并同一结论的观察，evidence 保存真实证据；已保存的不重复提交，无新增事实不必写。',
+  record_fact: '边发现边按结论写回，成功立即入图；同一结论的相关观察合并，不按请求拆节点。asset_ids 明确实际涉及资产，缺省不继承意图范围；scope 简述实际验证、未测和限制，observation_type 区分实测、推断、负面或未知。缺项仍保存但不计覆盖，evidence 保留真实证据。',
   asset_search: '检索本任务及直接来源资产摘要。普通检索提供 DSL，untested=true 查无明确范围测试记录的资产，不代表从未测试；legacy_tested 提示历史范围待核实。用 next_offset 续页，详情用 asset_get。',
   asset_get: '按 ids 和字段组读取资产；identity/fingerprint 默认返回，dns/params/auth/extra 按需选择。field 使用 JSON Pointer；next 参数原样续读 Unicode 正文。',
   insert_assets: '边发现边用 assets 数组登记资产。按 Schema 填写各类型字段：record_value 必须为数组，endpoint 使用 url/method/params，HTTP service 使用 url 和指纹，app 使用 app_name。results/errors 逐项返回，成功即入图，探索结论用 record_fact。',
-  report_finding: '提交本次亲自验证且可复现的漏洞与真实证据，成功后立即入图。先 context_search 按 finding 类型 查重；疑似问题用 record_fact 记录并注明不确定性。',
+  report_finding: '提交亲自验证且可复现的漏洞和真实证据，成功立即入图。asset_ids 只列实际受影响资产，缺省不继承意图范围；scope 说明已验证范围和限制。先 context_search 按 finding 查重；疑似结论用 record_fact。',
   context_search: '按新到旧检索节点及冷图原文，默认 fact/finding/intent；types 显式包含 activity 才查询 Worker 活动。q 是字面短语，不是语义搜索。按 asset_id 核对历史方向，has_more 时用 next_cursor 续页；命中的 read 可直接交给 context_get。来源任务只读。 Planner 可用 source=planner_session 检索本任务历史规划原文；历史不能代替实时图查询。',
   context_get: '按 items 读取引用；summary 索引、detail 详情、output 结果，field 选择字段。续读优先将返回的 next_item 原样放入 items；缺省 offset 会重读首页。正文只需 offset=next_offset；仅 parents/members 还需 cursor=page_cursor，读完本页再按 next_cursor 翻页。沿用 version，冲突重新检索。 Planner 可读本任务 session: 条目，field=/content 续读历史原文。',
   read_tool_output: '按返回引用与游标续读完整工具 JSON；未读取的内容不能当作已确认信息。',

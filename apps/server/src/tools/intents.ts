@@ -62,7 +62,7 @@ export function addIntentTool(ctx: ToolRunContext) {
           await c.hooks.assertOwnership?.(db);
           const capabilities = await workerCapabilities({...c, db});
           const s = db.exploration(c.expID), originFact = await s.originFactID();
-          const submitted: { summary: string; intent_id: number; created: boolean; duplicate_of?: number;dedup?:{version:2;strength:string;match?:string;related_intent_ids?:number[]} }[] = [];
+          const submitted: { summary: string; intent_id: number; created: boolean; duplicate_of?: number;dedup?:{version:3;strength:string;match?:string;related_intent_ids?:number[]} }[] = [];
           for (const item of items) {
             const explicitParents=item.parent_ids??(item.parent_id!==undefined?[item.parent_id]:[]);
             const parentIDs=intentIDs(explicitParents,'parent_ids');

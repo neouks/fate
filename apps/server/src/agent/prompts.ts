@@ -1,13 +1,13 @@
-import {rebaseToolOutputAccess} from '../evidence/tool-outputs.js';
 import {CONSTRAINT_PROTOCOL,GOALS_CONSTRAINT_RULES,renderConstraints} from './constraint-policy.js';
 /** Versioned role defaults. pi owns the model/tool loop; the host owns domain invariants. */
+import {rebaseToolOutputAccess} from '../evidence/tool-outputs.js';
 import { createHash } from 'node:crypto';
 import {WORKER_WRITEBACK_GUIDANCE,migrateWorkerWritebackPrompt} from './worker-writeback-prompt.js';
 import type { Database } from '../db/index.js';
 import { LEGACY_PROMPT_HASHES } from './prompt-legacy.js';
 import {migrateDirectWorkerToolDescriptions, migrateRetiredApprovalToolDescriptions} from './tool-descriptions.js';
 
-export const PROMPT_VERSION = 'artex-pi-v1';
+export const PROMPT_VERSION = 'direction-writeback-v1';
 export const ARTEX_PREVIOUS_PROMPTS:Record<string,string>={"planner": "8b397ceb18a5a63770fe545b7edde4a1daabd8cccaa4e22a11b0030b7ad6b4b2", "worker": "aa2d9009c38989c1279aee7b28fbec30ca6834a9ff9dd23ed95ff80a64b89cf7", "mainagent": "2d2ae4905261136a9a007f7e3a01330af64f235594c726b29660d333d0d52a64", "goals": "2e7b25b77d5a12248c2bcf4f23a765a7a142bf15645544fd035f55d8add1cbfb", "auto": "63f7211f6531b906d5c1a345d2613167b0f3bd55f16bb05891a311287907847c", "pentest": "e9b5fa3f17a282b49366bc61c8d6a6492d3a3021abcae0f59587efb6c7a0f43a", "reporter": "2534f98321d3e0f4ce743a319c83652523f542dd023657f7d278bcadc6904a87", "retester": "fef0e8a005bdad2609b928ecab5025c8b924b6652ed2488ce6289044b905f2fe"};
 const PREVIOUS_DEFAULTS:Record<string,string>={'planner': '8a6b3f990ed029438a9dd5213f8126e746ee0a72e664f86cd3e50ce27d214c51', 'worker': 'a416fc91d7c2d2d84b652b713216cab3c47d7500a20c5a60b66a7518bdc978b7', 'mainagent': '24ab7a048a4baa018f2c8d21676ed801633c446bb51bf766a3063c24aafd506c', 'goals': '2e7b25b77d5a12248c2bcf4f23a765a7a142bf15645544fd035f55d8add1cbfb', 'auto': '63f7211f6531b906d5c1a345d2613167b0f3bd55f16bb05891a311287907847c', 'pentest': 'e9b5fa3f17a282b49366bc61c8d6a6492d3a3021abcae0f59587efb6c7a0f43a', 'reporter': '2534f98321d3e0f4ce743a319c83652523f542dd023657f7d278bcadc6904a87', 'retester': 'fef0e8a005bdad2609b928ecab5025c8b924b6652ed2488ce6289044b905f2fe'};
 export const PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规划、监督 Worker，以证据判定目标。只使用本轮提供的工具。
@@ -23,8 +23,8 @@ export const PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规�
 仅开局无 Worker 事实且态势不足时可三次轻量只读探测，后续测试交 Worker。steer_work 纠偏、kill_work 终止，以回执为准；手工模式不自主规划。
 意图提交即入 frontier；简述判断、派单和等待原因后直接结束，不提交完成工具、不轮询等待 Worker。`;
 
-export const WORKER_PROMPT = `你是 Worker，只执行领到的当前意图，在授权、约束和预算内完成它，然后停止。受阻时如实说明原因，不转向其他意图。
-边发现边写回，不必等到结束：新资产用 insert_assets 登记；新的探索结论用 record_fact 直接写入探索图；亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。把同一结论的观察合并为 summary、detail 和真实 evidence，不把每个属性拆成节点；独立的新结论可继续写回。推测与实测、负面观察要区分，不编造证据。
+export const WORKER_PROMPT = `你是 Worker，在当前意图给定的资产范围、探索方向和约束内自主选择路径、方法和验证步骤，然后停止。意图不是逐接口执行脚本；受阻时如实说明原因，不转向无关方向。
+边发现边写回，不必等到结束：新资产用 insert_assets 登记；新的探索结论用 record_fact 直接写入探索图；亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。同一结论的相关观察合并保存，不按每次请求、接口或参数生成事实；独立结论分别写回。asset_ids 只列本结论实际涉及的资产，漏洞只列实际受影响资产，不继承整个意图范围。scope 用简短文字说明实际测试范围、未测部分和适用限制；observation_type 区分实测、推断、负面结果和未知。未测不能当作已否定，背景资产不能当作已验证目标。不编造证据。
 按需 context_search/context_get 读取上下文；来源任务只读。发现的新资产可直接继续探索，中间文件写当前工作目录，不向其他 Agent 发消息。
 结束前补齐已识别但未写回的结果。${WORKER_WRITEBACK_GUIDANCE}无新增事实可以直接总结，不为结束而制造记录。`;
 
@@ -50,8 +50,8 @@ export function builtinPrompt(role: string): string | null { return ROLE_PROMPTS
 
 /** One host-owned completion rule, also applied when the operator supplies a custom role prompt. */
 export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
-  worker: '执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。'+WORKER_WRITEBACK_GUIDANCE,
-  planner: '意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
+  worker: '按方向自主探索，按结论合并写回，不要求逐请求记录。显式 asset_ids 是实际关联；缺省不继承意图资产。scope 说明已测、未测及限制；缺失范围保留为未知，不自动计覆盖。执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。'+WORKER_WRITEBACK_GUIDANCE,
+  planner: '用方向和资产范围派单，执行细节交给 Worker；contract 可只补边界。局部重叠返回 related_intent_ids 提示，精确重复仍复用原意图。覆盖数字只表示有范围测试记录，未覆盖数字不能代替历史检索。意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
   goals: '结束前用 set_goals 保存提取出的可验收目标。',
   reporter: '报告完成后用 update_finding_report 按读取的 evidence_version 保存；文字回复不等于保存成功。',
 };
