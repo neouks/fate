@@ -18,6 +18,7 @@ import {
   XIcon,
 } from "lucide-react";
 import {useTurnSummaries} from '@/hooks/use-turn-summaries';
+import {WorkerWritebacks,WorkerConclusion} from '@/components/worker-writebacks';
 import {turnParts,durationLabel,type TurnSummary} from '@/lib/turn-summary';
 import {Popover,PopoverTrigger,PopoverContent,PopoverHeader,PopoverTitle,PopoverDescription} from '@/components/ui/popover';
 import {Separator} from '@/components/ui/separator';
@@ -899,6 +900,7 @@ function ExecutionTurn({turn,summary,latest,...props}:ExecutionProps&{turn:Retur
   React.useEffect(()=>{if(!live)return;const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[live]);
   const elapsed=durationLabel(summary?.started_at??null,summary?.finished_at??terminal?.ts??null,now);
   const {final,process}=turnParts(turn.steps,summary);
+  const workerResults=!!props.taskId&&!props.conversationId&&ended&&(summary?.role==='worker'||last.worker.startsWith('work#'));
   const focus=props.focusActivity;
   // Search can reveal the original duplicate receipt without corrupting the normal assembly.
   const focusedOriginal=turn.steps.find(s=>s.seq===focus);
@@ -922,7 +924,8 @@ function ExecutionTurn({turn,summary,latest,...props}:ExecutionProps&{turn:Retur
       </Collapsible>:processSteps.length>0?<ActivitySteps {...props} activity={processSteps}/>:null}
       {hasProcess&&!open&&processSteps.filter(s=>s.kind==='intercept_request').map(s=><InterceptCard key={s.seq} step={s} getDetail={getDetail}/>)}
       {errorText&&!final&&<Alert variant={failed||status==='exhausted'?'destructive':'default'}><AlertDescription>{errorText}</AlertDescription></Alert>}
-      {final&&<div data-final-answer="true"><ActivitySteps {...props} activity={[final]}/></div>}
+      {final&&<div data-final-answer="true">{workerResults?<WorkerConclusion focused={focus===final.seq}><ActivitySteps {...props} activity={[final]}/></WorkerConclusion>:<ActivitySteps {...props} activity={[final]}/>}</div>}
+      {workerResults&&<WorkerWritebacks key={`${props.taskId}:${turn.key}`} task={props.taskId!} turn={summary?.turn_id??turnID(last)??turn.key} status={status} revision={terminal?.seq??summary?.revision??last.seq}/>}
     </BubbleContent></Bubble>
     <MessageFooter className="gap-3"><Button variant="ghost" size="icon-sm" onClick={()=>void copy()} disabled={!final&&!processSteps.some(s=>["text","assistant","result"].includes(s.kind)&&!!(s.detail||s.summary))} aria-label="复制答复"><CopyIcon/></Button><ActivityTime ts={terminal?.ts??last.ts}/>{last.inherited&&<Badge variant="outline">来源任务 · 只读</Badge>}</MessageFooter>
   </MessageContent></Message>;

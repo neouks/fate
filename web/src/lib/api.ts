@@ -768,6 +768,8 @@ export const api = {
     }));
   },
   turnSummaries: (task:string|undefined,conversation:number|undefined,ids:string[]) => get<{items:import('./turn-summary').TurnSummary[]}>(`/${conversation?`conversations/${conversation}`:`tasks/${task}`}/turns?ids=${encodeURIComponent(ids.join(','))}`),
+  workerWritebacks: (task:string,turn:string,bucket:'current'|'previous'='current',cursor?:string) =>
+    get<import('./worker-writebacks').WorkerWritebackPage>(`/tasks/${encodeURIComponent(task)}/turns/${encodeURIComponent(turn)}/writebacks?${new URLSearchParams({bucket,...(cursor?{cursor}:{})})}`),
   activityDetail: (id: number, task?: string) => get<{ detail: string }>(`/exploration/activity/${id}${tq(task)}`),
   // Reverse-paginated session history. session = "main" | "plan" | "intent:<id>".
   // before=0 → latest page; before=<id> → the older page ending before that id.
