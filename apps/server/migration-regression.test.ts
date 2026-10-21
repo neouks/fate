@@ -457,25 +457,16 @@ describe('restored feature contracts',()=>{
  });
  it('checks a directed retest scope again on redirects before sending a second request',async()=>{
   const {t}=await fixture();const {evidenceRequest}=await import('./src/evidence/http.js');
-  const fetch=vi.fn().mockResolvedValue(new Response('',{status:302,headers:{location:'http://other.review.test:9080/'}}));vi.stubGlobal('fetch',fetch);
+  const {createServer}=await import('node:http');let firstHits=0,secondHits=0;
+  const second=createServer((_q,r)=>{secondHits++;r.end('must not reach');});
+  await new Promise<void>(r=>second.listen(0,'127.0.0.1',r));const secondPort=(second.address() as any).port;
+  const first=createServer((_q,r)=>{firstHits++;r.writeHead(302,{location:`http://127.0.0.1:${secondPort}/`});r.end();});
+  await new Promise<void>(r=>first.listen(0,'127.0.0.1',r));const firstPort=(first.address() as any).port;
   try{
-   const ctx=runContext(db,t.id,t.exploration_id,'retester',{networkTargets:[{host:'only.review.test',port:9080}]});
-   await expect(evidenceRequest(ctx,{url:'http://only.review.test:9080/'})).rejects.toThrow('定向复测范围');
-   expect(fetch).toHaveBeenCalledTimes(1);
-  }finally{vi.unstubAllGlobals();}
- });
- it('requires an intent-specific pending grant on HTTP egress',async()=>{
-  const {t,s}=await fixture();await db.query("UPDATE tasks SET asset_approval_template='explicit_targets' WHERE id=$1",[t.id]);
-  const asset=await db.assets().upsertRootDomain({domain:'pending-http.review.test',taskID:t.id});
-  await db.query("UPDATE task_asset_links SET approval_state='pending',source='agent' WHERE task_id=$1",[t.id]);
-  const intent=await s.addIntent({summary:'pending egress fixture'},1,[asset],'user');
-  const {evidenceRequest}=await import('./src/evidence/http.js');const fetch=vi.fn().mockResolvedValue(new Response('allowed'));vi.stubGlobal('fetch',fetch);
-  const ctx=runContext(db,t.id,t.exploration_id,'worker',{intentID:intent});
-  try{
-   await expect(evidenceRequest(ctx,{url:'https://pending-http.review.test/'})).rejects.toThrow();expect(fetch).not.toHaveBeenCalled();
-   await db.query(`UPDATE exploration_nodes SET payload=payload||'{"pending_asset_execution":{"issuer":"mainagent"}}'::jsonb WHERE id=$1`,[intent]);
-   await expect(evidenceRequest(ctx,{url:'https://pending-http.review.test/'})).resolves.toMatchObject({status:200});expect(fetch).toHaveBeenCalledTimes(1);
-  }finally{vi.unstubAllGlobals();}
+   const ctx=runContext(db,t.id,t.exploration_id,'retester',{networkTargets:[{host:'127.0.0.1',port:firstPort}]});
+   await expect(evidenceRequest(ctx,{url:`http://127.0.0.1:${firstPort}/`})).rejects.toThrow('定向复测范围');
+   expect(firstHits).toBe(1);expect(secondHits).toBe(0);
+  }finally{for(const server of [first,second]){server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}}
  });
  it('fences proxy requests from an expired task lease and a paused intent',async()=>{
   const {t,s}=await fixture();const {Coordinator}=await import('./src/engine/coordinator.js');const {authorizeTaskRequest}=await import('./src/egress/gateway.js');

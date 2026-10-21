@@ -1,5 +1,6 @@
 import type {ToolRunContext} from '../tools/context.js';
 import {recordExchange} from './store.js';
+import {targetFetch} from './target-transport.js';
 export async function evidenceRequest(ctx:ToolRunContext,input:{url:string;method?:string;headers?:Record<string,string>;body?:string},signal?:AbortSignal,check?:(input:Record<string,unknown>)=>Promise<void>){
  let url=input.url,method=input.method??'GET',body=input.body;
  const headers={...input.headers};
@@ -11,7 +12,7 @@ export async function evidenceRequest(ctx:ToolRunContext,input:{url:string;metho
   if(ctx.networkTargets!==undefined&&!ctx.networkTargets.some(t=>t.host.replace(/^\[|\]$/g,'')===host.toLowerCase()&&(t.port===null||t.port===port)))throw new Error('请求或重定向超出本次定向复测范围');
   await ctx.hooks.assertOwnership?.(ctx.db);
   await check?.({url,method,body});
-  const response=await fetch(url,{method,headers,body,signal,redirect:'manual'});
+  const response=await targetFetch(url,{method,headers,body,signal,redirect:'manual'});
   const reader=response.body?.getReader(),chunks:Buffer[]=[];let length=0,truncated=false;
   try{while(reader){const next=await reader.read();if(next.done)break;const remaining=8*1024*1024-length;if(next.value.length>remaining){chunks.push(Buffer.from(next.value.subarray(0,remaining)));truncated=true;break;}chunks.push(Buffer.from(next.value));length+=next.value.length;}}finally{await reader?.cancel();}
   const bytes=Buffer.concat(chunks);
