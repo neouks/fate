@@ -35,6 +35,7 @@ import {
 	type AgentBeforeSettleEventResult,
 	type AgentSession,
 	type AgentSessionEvent,
+	type SessionEntry,
 	type CreateAgentSessionOptions,
 	type ExtensionFactory,
 	type ToolCallEventResult,
@@ -109,6 +110,8 @@ export interface AgentRunnerOptions {
   stopWhen?: () => Promise<boolean>;
   reserveSettlementTurns?: number;
   boundaryContext?: () => Promise<string>;
+  /** Request-only projection; native transcript stays immutable, including during compaction. */
+  projectMessages?: (messages:import('@earendil-works/pi-coding-agent').ContextEvent['messages']) => import('@earendil-works/pi-coding-agent').ContextEvent['messages'];
   toolLoading?: ToolLoading;
   discoveryGuard?: (name:string)=>Promise<void>;
   platform?: {role:string;taskID:number;conversationID?:number;policy:PlatformPolicy};
@@ -116,6 +119,8 @@ export interface AgentRunnerOptions {
   loadDomainState?: () => Promise<Record<string,unknown>>;
   intentID?: number;
   compactionSettings?: {reserveTokens?:number;keepRecentTokens?:number};
+  /** Adds role-specific retention requirements to native SDK compaction. */
+  compactionInstructions?: string;
   onRequestSize?: (size: ReturnType<typeof requestSize>,purpose?:'conversation'|'compaction') => void | Promise<void>;
 	mcpGuard?: (server:string,method:string,tool?:string)=>Promise<void>;
 	modelPolicy?: { onResponse(message: unknown): Promise<void>; retry(signal?:AbortSignal): Promise<boolean>; setPurpose?(purpose: 'conversation'|'compaction'):void; setRuntimeID?(id:string):void; finish?():Promise<void> };
@@ -153,7 +158,7 @@ export interface AgentRunnerOptions {
 	settlementTools?: readonly string[];
 	/** 恢复既有会话文件（JSONL 路径）；给出时忽略 sessionDir 的新建语义 */
 	resumeSessionPath?: string;
-	/** 内存会话（不落盘）：planner 每轮无状态、goals 一次性 run 用 */
+	/** 内存会话（不落盘），用于一次性角色。 */
 	inMemory?: boolean;
 	/** skills 根目录（SKILL.md 发现目录）；给出时注入会话技能（agentskills 渐进披露） */
 	skillsDir?: string;
@@ -230,7 +235,7 @@ export class AgentRunner {
       });
       api.on('context', async event => {
         // Keep legacy feedback in the audit session, never in Agent coordination.
-        const messages=[...event.messages];
+        const messages=[...(opts.projectMessages?.(event.messages)??event.messages)];
         if(opts.contextLayout)messages.push({role:'custom',customType:'host_task_context',display:false,timestamp:Date.now(),content:hostTaskContext(opts.cwd,opts.taskContext)});
         const current=await opts.boundaryContext?.();
         if(current)messages.push({role:'custom',customType:'blackboard_boundary',content:current,display:false,timestamp:Date.now()});
@@ -580,6 +585,13 @@ export class AgentRunner {
 	get messages(): readonly unknown[] {
 		return this.session.messages;
 	}
+
+  get sessionEntries(): readonly SessionEntry[] { return this.session.sessionManager.getEntries(); }
+
+  /** Host metadata stays in the native transcript and never becomes a model instruction. */
+  appendSessionEntry(customType:string,data:unknown):string {
+    return this.session.sessionManager.appendCustomEntry(customType,data);
+  }
 
   contextKeys(prefix: string): string[] {
     return this.session.sessionManager.getBranch().flatMap(e => {
