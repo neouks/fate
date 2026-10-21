@@ -687,7 +687,13 @@ export class Engine {
       if (reason !== 'completed') summary += `\n已保存事实：${receipt.fact_refs.map(r=>`node:${r.node_id}`).join(', ')||'无'}\n恢复位置：${receipt.recovery}`;
       receipt.summary = summary;
       await db.query("UPDATE exploration_nodes SET payload=payload||jsonb_build_object('execution_stop',$3::jsonb) WHERE exploration_id=$1 AND id=$2",[rt.expID,intent.id,JSON.stringify(receipt)]);
-      if(cause==='pause' && !acceptedResult)terminal='open';
+      // Service replacement interrupts an attempt, not the intent. Preserve its
+      // identity/session and bypass stale Planner-basis checks on re-claim.
+      // A concurrent explicit pause/cancel always wins over shutdown recovery.
+      if(!externallyStopped && !acceptedResult && (cause==='pause'||cause==='shutdown'||cause==='lease-lost')){
+        terminal='open';
+        await db.query("UPDATE exploration_nodes SET owner='',payload=payload||'{\"resume_requested\":true}'::jsonb WHERE id=$1",[intent.id]);
+      }
       const id=await store.appendActivity({node_id:intent.id,worker:name,kind:'result',metadata:{...turn.metadata,status:terminal==='open'?'paused':terminal,event_type:'outcome',execution_stop:receipt},summary:summary||`意图 #${intent.id} ${terminal}`,detail:summary,
         ...(u?{input_tokens:u.input,output_tokens:u.output,cache_read_tokens:u.cacheRead,cache_write_tokens:u.cacheWrite}:{})});
       if(alreadyCommitted)await db.query('UPDATE worker_settlements SET activity_id=$2 WHERE intent_id=$1 AND released_at IS NULL',[intent.id,id]);

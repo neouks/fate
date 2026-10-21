@@ -226,7 +226,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   if(!intent||intent.state!=='running'||intent.owner!==workerName||intent.payload.cancelled_by_user)throw new Error('当前 Worker 不再持有运行中的意图');
   if (intent.payload.execution_result) return {aborted:false,stopReason:'completed',lastAssistantText:String((intent.payload.execution_result as Record<string,unknown>).summary??''),usage:{input:0,output:0,cacheRead:0,cacheWrite:0}};
   const contract = normalizeContract(intent.payload.contract,String(intent.payload.summary??''));
-  const runDir = path.join(dataDir, "tasks", String(taskID), `i${intent.id}`);
+  const runDir = path.resolve(dataDir, "tasks", String(taskID), `i${intent.id}`);
   mkdirSync(runDir, { recursive: true });
 
   const ctx: ToolRunContext = runContext(db, taskID, expID, "worker", {
@@ -392,7 +392,7 @@ async function runPlannerSession(input:PlannerRoundInput):Promise<PlannerRoundRe
   // Todos are included once in their complete bounded block below.
   delete overview.todos;
 
-  const workDir = path.join(dataDir, "tasks", String(taskID));
+  const workDir = path.resolve(dataDir, "tasks", String(taskID));
   mkdirSync(workDir, { recursive: true });
   const execution=await executionTools(ctx,workDir,input);
   if(!input.terminalOnly)tools.push(...execution.tools);
@@ -499,7 +499,7 @@ export async function runMainChat(input: MainChatInput): Promise<WorkerRunResult
   const tools = await applyToolBindings(db, "mainagent", mainTools(ctx));
   const disabled = await disabledBuiltinTools(db, "mainagent");
   const system = await systemRolePrompt(db, "mainagent", { Goal: goal });
-  const workDir = path.join(dataDir, "tasks", String(taskID));
+  const workDir = path.resolve(dataDir, "tasks", String(taskID));
   mkdirSync(workDir, { recursive: true });
   const sessionPath = mainSessionFile(dataDir, expID, input.segment);
   const mainCounter = withUsageCounter(input.onActivity);
@@ -574,7 +574,7 @@ export async function runGoalsDecompose(input: GoalsRunInput): Promise<WorkerRun
   const tools = await applyToolBindings(db, "goals", goalsTools(ctx));
   if(!tools.some(t=>t.name==='set_goals'))throw new Error('Goals 的 set_goals 已禁用，无法提交目标');
   const system = await systemRolePrompt(db, "goals");
-  const workDir = path.join(dataDir, "tasks", String(taskID));
+  const workDir = path.resolve(dataDir, "tasks", String(taskID));
   mkdirSync(workDir, { recursive: true });
   let turns = 0;
   let goalsSaved = false;

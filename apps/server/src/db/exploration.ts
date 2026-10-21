@@ -692,7 +692,10 @@ export class ExplorationStore {
         const contract=normalizeContract(n.payload.contract,String(n.payload.summary??''));
         let stale=false;
         for(const ref of contract.basis){
-          if(!(await tx.query("SELECT 1 FROM exploration_nodes n WHERE n.id=$1 AND n.content_version=$2 AND n.kind IN ('fact','finding') AND n.state IN ('confirmed','origin') AND exploration_node_readable(n.exploration_id,n.id) AND (n.exploration_id=$3 OR n.exploration_id IN (SELECT src.exploration_id FROM tasks current JOIN task_relations r ON r.task_id=current.id JOIN tasks src ON src.id=r.source_task_id WHERE current.exploration_id=$3 AND src.deleted_at IS NULL))",[ref.node_id,ref.version,this.expID])).rowCount){stale=true;break;}
+          // A resumed attempt continues its original session against current
+          // evidence. Version changes do not strand it, but deleted/revoked or
+          // no-longer-confirmed evidence still requires fresh planning.
+          if(!(await tx.query("SELECT 1 FROM exploration_nodes n WHERE n.id=$1 AND ($4::boolean OR n.content_version=$2) AND n.kind IN ('fact','finding') AND n.state IN ('confirmed','origin') AND exploration_node_readable(n.exploration_id,n.id) AND (n.exploration_id=$3 OR n.exploration_id IN (SELECT src.exploration_id FROM tasks current JOIN task_relations r ON r.task_id=current.id JOIN tasks src ON src.id=r.source_task_id WHERE current.exploration_id=$3 AND src.deleted_at IS NULL))",[ref.node_id,ref.version,this.expID,n.payload.resume_requested===true])).rowCount){stale=true;break;}
         }
         if(stale){await tx.query("UPDATE exploration_nodes SET payload=payload||'{\"needs_replanning\":true}'::jsonb WHERE id=$1",[n.id]);continue;}
         if(q.executionMode!==EXECUTION_MANUAL&&n.origin==='planner'&&n.payload.resume_requested!==true&&n.payload.dispatch_source!=='mainagent'){
