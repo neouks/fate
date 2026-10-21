@@ -1,5 +1,6 @@
 import {RETIRED_TOOLS,TOOL_ALIASES} from './tool-registry.js';
 import { effectiveToolDescription } from './tool-descriptions.js';
+import {roleToolDescription} from './tool-description-policy.js';
 
 /** DB 工具目录过滤：按 tools.agents 绑定与 enabled 开关过滤角色可用工具（绑定 DB 可管）。 */
 export async function applyToolBindings<T extends { name: string }>(db: import("../db/index.js").Database, role: string, tools: T[]): Promise<T[]> {
@@ -13,7 +14,7 @@ export async function applyToolBindings<T extends { name: string }>(db: import("
   const byKey = new Map(rows.map((r) => [String(r["key"]), r]));
   for(const tool of tools) {
     const description=byKey.get(tool.name)?.description;
-    if ('description' in tool) Object.assign(tool, {description:effectiveToolDescription(tool.name, String(tool.description ?? ''), description).description});
+    if ('description' in tool) Object.assign(tool, {description:roleToolDescription(tool.name,effectiveToolDescription(tool.name, String(tool.description ?? ''), description),role)});
   }
   return tools.filter((t) => {
     if(RETIRED_TOOLS.has(t.name))return false;

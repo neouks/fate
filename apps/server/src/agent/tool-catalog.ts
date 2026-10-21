@@ -1,4 +1,5 @@
 import {legacyReadCandidates} from '../tools/legacy-reads.js';
+import {effectiveToolDescription} from './tool-descriptions.js';
 import {createReadToolDefinition,createBashToolDefinition,createWriteToolDefinition,createEditToolDefinition,createToolSearchExtension,type ToolDefinition,type ExtensionAPI} from '@earendil-works/pi-coding-agent';
 import {workerTools,plannerTools,mainTools,goalsTools} from '../tools/index.js';
 import {runContext} from '../tools/context.js';
@@ -72,7 +73,8 @@ export async function catalogTools(db:Database){
   const identity=toolIdentity(String(row.key),String(row.kind)),definition=definitions.get(String(row.key));
   const implementation=definition?compactToolSchema(definition):undefined;
   const loaded=roles.filter(r=>r.resident.includes(String(row.key))||r.deferred.includes(String(row.key)));
-  return {...row,...identity,schema:row.kind==='builtin'?implementation?.parameters??row.schema??{}:row.schema??{},schema_source:row.kind==='builtin'?definition?'implementation':'unavailable':'configuration',
+  const description=row.kind==='builtin'&&definition?effectiveToolDescription(String(row.key),definition.description,row.description):{description:row.description,source:'configuration'};
+  return {...row,...identity,description:description.description,description_source:description.source,schema:row.kind==='builtin'?implementation?.parameters??row.schema??{}:row.schema??{},schema_source:row.kind==='builtin'?definition?'implementation':'unavailable':'configuration',
    schema_read_only:row.kind==='builtin',agents:row.agents??[],loading:Object.fromEntries(loaded.map(r=>[r.role,r.deferred.includes(String(row.key))?'deferred':'resident']))};
  })};
 }

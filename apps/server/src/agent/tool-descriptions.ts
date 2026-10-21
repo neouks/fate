@@ -1,3 +1,4 @@
+import {recognizedHistoricalDescription} from './tool-description-policy.js';
 import {CONSTRAINT_TOOL_DESCRIPTION} from './constraint-policy.js';
 import { LEGACY_TOOL_DESCRIPTIONS } from './prompt-legacy.js';
 import type {Database} from '../db/index.js';
@@ -32,6 +33,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   report_conversation_finding: '向当前绑定任务提交已复现漏洞及证据，先查重；疑似问题记录为事实。',
 };
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
+  stored=recognizedHistoricalDescription(name,stored);
   if(name==='set_constraints'&&stored==='保存用户明确的允许或禁止约束，写明具体目标。')return {description:CONSTRAINT_TOOL_DESCRIPTION,source:'builtin'};
   const priorPagedDefault = '按 items 批量读取引用。summary 只读索引，detail 读详情，output 读结果；field 选 JSON Pointer 字段。parents/members 每页最多 20 条；有 next_offset 时用 page_cursor 和 offset 读完本页，再用 next_cursor 翻页并重置 offset。沿用 version，冲突重新检索。';
   const priorDefaults:Record<string,string>={
