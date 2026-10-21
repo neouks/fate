@@ -1,3 +1,4 @@
+import {requireTaskGoal} from "../../agent/task-goal.js";
 import {assetContextCTE} from '../../db/asset-query.js';
 import {registerOperationRoutes} from './operations.js';
 import {executionSnapshot} from '../../engine/coordinator.js';
@@ -84,7 +85,8 @@ export function registerTaskRoutes(app: FastifyInstance): void {
   app.post("/api/tasks", async (req, reply) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const description = typeof b["description"] === "string" && b["description"].trim() !== "" ? b["description"] : "未命名任务";
-    const goal = typeof b["goal"] === "string" ? b["goal"] : description;
+    let goal: string;
+    try { goal = requireTaskGoal(b["goal"]); } catch (error) { return reply.code(400).send({error:(error as Error).message,code:"TASK_GOAL_REQUIRED"}); }
     const sourceTaskIDs = Array.isArray(b["source_task_ids"])
       ? b["source_task_ids"].map((v) => Number(v)).filter((n) => Number.isInteger(n))
       : [];
