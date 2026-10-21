@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {ARTEX_CONSTRAINT_DESCRIPTION} from './tool-description-policy.js';
+import {ARTEX_CONSTRAINT_DESCRIPTION,ARTEX_INTENT_DESCRIPTION} from './tool-description-policy.js';
 import {effectiveToolDescription,TOOL_DESCRIPTIONS} from './tool-descriptions.js';
 import {applyToolBindings} from './tool-bindings.js';
 import {contextSearchTool,contextGetTool} from '../tools/context-read.js';
@@ -39,4 +39,13 @@ it('preserves custom history descriptions while retaining role schema restrictio
   const tools=await applyToolBindings(db,'worker',[contextSearchTool(runContext(db,1,1,'worker'))]);
   expect(tools[0]!.description).toBe(text);
   expect((tools[0]!.parameters as any).properties.source.enum).not.toContain('planner_session');
+});
+
+it('removes retired approval tools only from the exact ARTEX intent default',()=>{
+  const resolved=effectiveToolDescription('add_intent','fallback',ARTEX_INTENT_DESCRIPTION);
+  expect(resolved.source).toBe('builtin');
+  expect(resolved.description).not.toContain('check_target_access');
+  expect(resolved.description).not.toContain('待审批');
+  const custom=ARTEX_INTENT_DESCRIPTION+' 自定义规则';
+  expect(effectiveToolDescription('add_intent','fallback',custom)).toEqual({description:custom,source:'custom'});
 });
