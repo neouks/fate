@@ -189,3 +189,20 @@ it('exposes discovered MCP names to Planner and rejects invented contract aliase
   expect(()=>validateWorkerToolNames(['mcp__catalog_fixture__ask_wiki_question'],catalog)).not.toThrow();
  }finally{await db.platform().deleteMCP(mid);}
 });
+
+it('accepts SERIES single and batch forms, retains all factual parents and rejects mixed input before writing',async()=>{
+ const {task,s,c}=await fixture('managed');await db.query("UPDATE tasks SET status='running' WHERE id=$1",[task.id]);
+ const a=await s.addNode('fact',{summary:'LOCAL first parent'},0,'confirmed','test',[]);
+ const b=await s.addNode('fact',{summary:'LOCAL second parent'},0,'confirmed','test',[]);
+ const one=await call(addIntentTool(c),{summary:'LOCAL single series direction',parent_ids:[String(a),b],priority:0});
+ expect(one.ids).toEqual([one.intents[0].intent_id]);
+ const node=(await s.getNode(one.ids[0]))!;
+ expect(node.priority).toBe(5);expect(node.payload.parent_ids).toEqual([a,b]);
+ expect((node.payload.contract as any).basis.map((r:any)=>r.node_id)).toEqual([a,b]);
+ await expect(call(addIntentTool(c),{summary:'outer',parent_ids:[a,b],intents:[{summary:'LOCAL mixed must not exist'}]})).rejects.toThrow('不能混合');
+ expect(await s.listByKind('intent')).toHaveLength(1);
+ const batch=await call(addIntentTool(c),{intents:[{summary:'LOCAL batch first',parent_ids:[a]},{summary:'LOCAL batch second',parent_id:b}]});
+ expect(batch.ids).toHaveLength(2);
+ expect((await s.getNode(batch.ids[0]))?.payload.parent_ids).toEqual([a]);
+ expect((await s.getNode(batch.ids[1]))?.payload.parent_ids).toEqual([b]);
+});

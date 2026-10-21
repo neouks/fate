@@ -441,14 +441,10 @@ export class Engine {
       const heartbeat=Math.max(1,settings?.plan_heartbeat_seconds?settings.plan_heartbeat_seconds*1000:this.cfg.heartbeatMs);
       const inspect=Date.now()-lastPlannedAt>=heartbeat&&(counts.running>0||revision!==lastRevision);
       if(!wakeups.length&&!rt.triggers.length&&!inspect)continue;
-      const pending=await pendingPlannerContext(this.db,rt.taskID,rt.expID);
-
       // Durable settlement/control events are the wakeup authority, including
       // events whose result contains no new fact. Never discard one by a hash.
       await rt.todos.load(rt.expID);
 
-      const triggersText =
-        rt.triggers.length > 0 ? `【本轮触发】\n${rt.triggers.join("\n")}` : "【本轮触发】心跳唤醒（无新事件）";
       const task = await this.db.tasks().getTask(rt.taskID);
       const goal = task?.goal ?? task?.description ?? "";
 
@@ -457,6 +453,13 @@ export class Engine {
 
       await compactColdGraph(this.db, rt.expID);
       if (rt.stopped || rt.paused || rt.settling) continue;
+      // Compaction creates graph events too. Snapshot after it so the digest
+      // shown in this round is acknowledged with this round's actual delivery.
+      const pending=await pendingPlannerContext(this.db,rt.taskID,rt.expID);
+      const reasons=[...rt.triggers,
+        ...(wakeups.length?[`持久化通知：${wakeups.map(w=>`${w.kind} (#${w.id})`).join('、')}`]:[]),
+        ...(pending.ids.length?[`待交付领域变化：${pending.ids.length} 条${pending.more?'（后续仍有分页）':''}`]:[])];
+      const triggersText=`【本轮触发】\n${reasons.length?reasons.join('\n'):'心跳巡检（本轮无待交付通知）'}`;
       // Planning itself uses an execution lease and model resources. A Planner
       // that cannot dispatch any work must still be bounded by task timeout.
       if (task) await this.db.tasks().stampFirstRun(rt.taskID, task.timeout_seconds);
@@ -465,8 +468,9 @@ export class Engine {
       const triggerCount=rt.triggers.length;
       const turn=this.beginActivityTurn(rt,{worker:"planner"},planningRoundID);
       let planningSucceeded=false;
+      let deliveredContextIDs=pending.ids,deliveredWakeupIDs=wakeups.map(w=>w.id),moreContext=pending.more;
       const round = runPlannerRound({
-        planningRoundID,changes:pending.changes,events:wakeups.map(w=>({id:w.id,kind:w.kind,ref:w.node_id?`node:${w.node_id}`:null})),egressAddr:this.egressAddr,egressScope:`planner:${rt.lease}`,
+        planningRoundID,contextEventIDs:pending.ids,changes:pending.changes,events:wakeups.map(w=>({id:Number(w.id),kind:w.kind,ref:w.node_id?`node:${w.node_id}`:null})),egressAddr:this.egressAddr,egressScope:`planner:${rt.lease}`,
         db: this.db, taskID: rt.taskID, expID: rt.expID, goal, model,
         dataDir: this.dataDir, todos: rt.todos, hooks: this.engineHooks(rt),
         triggersText, maxTurns: this.cfg.plannerMaxTurns, signal: rt.plannerAbort.signal,
@@ -482,6 +486,9 @@ export class Engine {
         });
         if(!r.aborted && r.stopReason==='completed'){
           planningSucceeded=true;
+          deliveredContextIDs=r.deliveredContextIDs??pending.ids;
+          deliveredWakeupIDs=r.deliveredWakeupIDs??wakeups.map(w=>w.id);
+          moreContext=moreContext||r.moreContext===true;
         }else retryAfter=Date.now()+60_000;
       }).catch((err) => {
         retryAfter=Date.now()+60_000;
@@ -490,10 +497,10 @@ export class Engine {
       if(planningSucceeded){
         await this.db.transaction(async db=>{
           await this.coordinator.assert(rt.taskID,rt.lease!,db);
-          await acknowledgePlannerContext(db,rt.expID,planningRoundID,pending.ids);
-          await db.query('UPDATE blackboard_wakeups SET acknowledged_at=now() WHERE id=ANY($1::bigint[])',[wakeups.map(w=>w.id)]);
+          await acknowledgePlannerContext(db,rt.expID,planningRoundID,deliveredContextIDs);
+          await db.query('UPDATE blackboard_wakeups SET acknowledged_at=now() WHERE exploration_id=$1 AND id=ANY($2::bigint[])',[rt.expID,deliveredWakeupIDs]);
         });
-        rt.triggers.splice(0,triggerCount);if(pending.more)this.notify(rt.taskID,"继续读取本轮未交付的领域变化");lastPlannedAt=Date.now();lastRevision=revision;retryAfter=0;
+        rt.triggers.splice(0,triggerCount);if(moreContext)this.notify(rt.taskID,"继续读取本轮未交付的领域变化");lastPlannedAt=Date.now();lastRevision=revision;retryAfter=0;
       }
       await turn.finish();
       rt.plannerBusy = null;

@@ -10,11 +10,18 @@ import {migrateDirectWorkerToolDescriptions, migrateRetiredApprovalToolDescripti
 export const PROMPT_VERSION = 'artex-pi-v1';
 export const ARTEX_PREVIOUS_PROMPTS:Record<string,string>={"planner": "8b397ceb18a5a63770fe545b7edde4a1daabd8cccaa4e22a11b0030b7ad6b4b2", "worker": "aa2d9009c38989c1279aee7b28fbec30ca6834a9ff9dd23ed95ff80a64b89cf7", "mainagent": "2d2ae4905261136a9a007f7e3a01330af64f235594c726b29660d333d0d52a64", "goals": "2e7b25b77d5a12248c2bcf4f23a765a7a142bf15645544fd035f55d8add1cbfb", "auto": "63f7211f6531b906d5c1a345d2613167b0f3bd55f16bb05891a311287907847c", "pentest": "e9b5fa3f17a282b49366bc61c8d6a6492d3a3021abcae0f59587efb6c7a0f43a", "reporter": "2534f98321d3e0f4ce743a319c83652523f542dd023657f7d278bcadc6904a87", "retester": "fef0e8a005bdad2609b928ecab5025c8b924b6652ed2488ce6289044b905f2fe"};
 const PREVIOUS_DEFAULTS:Record<string,string>={'planner': '8a6b3f990ed029438a9dd5213f8126e746ee0a72e664f86cd3e50ce27d214c51', 'worker': 'a416fc91d7c2d2d84b652b713216cab3c47d7500a20c5a60b66a7518bdc978b7', 'mainagent': '24ab7a048a4baa018f2c8d21676ed801633c446bb51bf766a3063c24aafd506c', 'goals': '2e7b25b77d5a12248c2bcf4f23a765a7a142bf15645544fd035f55d8add1cbfb', 'auto': '63f7211f6531b906d5c1a345d2613167b0f3bd55f16bb05891a311287907847c', 'pentest': 'e9b5fa3f17a282b49366bc61c8d6a6492d3a3021abcae0f59587efb6c7a0f43a', 'reporter': '2534f98321d3e0f4ce743a319c83652523f542dd023657f7d278bcadc6904a87', 'retester': 'fef0e8a005bdad2609b928ecab5025c8b924b6652ed2488ce6289044b905f2fe'};
-export const PLANNER_PROMPT = `你是 Planner，依据探索图规划、监督 Worker 并判定目标。
-读取本轮事件与态势，详情按需 context_search/context_get；activities 需显式选择 activity。派单前检索已有意图和结果，复用活动工作；重试须说明新证据或可恢复故障。用 add_intent 提交 summary、asset_ids、parent_ids、priority，宿主记录引用版本；只派前置已满足的工作，依赖步骤用 todo_write 保存。派单提交后即可领取，不受本轮 Worker 空闲数量限制。
-开局尚无 Worker 事实时可做少量探测，每轮最多三次；之后实际测试交给 Worker。运行偏离时可 steer_work 纠偏，必要时 kill_work。证据充分才 prove_goal；done 只表示执行正常结束，不能作为目标达成证据。
-本轮完成后简短总结，无新工作可直接结束，不凑单、不提交额外完成工具。
-任务目标：{{Goal}}`;
+export const PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规划、监督 Worker，以证据判定目标。只使用本轮提供的工具。
+任务目标：{{Goal}}
+
+每轮决策：
+1. 先读已有的目标、意图、事实、漏洞、资产及覆盖摘要。摘要有界，详情用 asset_search/asset_get 和 context_search/context_get 按引用读取；activity 显式选择，来源任务只读。负面观察须核对证据，传输错误不证明目标不可达；证据不足的否定方向最多复核一次。
+2. 证据充分才 prove_goal，量化目标核对实测值。覆盖率仅表示资产有明确范围的测试记录，不代表整项资产已测完；历史范围未知不等于从未测试。Worker done 只表示本次正常结束。
+3. 派前按资产查已有方向及实际产出，open/running 不重复；done 仅因新证据或不同机理继续，blocked/exhausted 先读 output 和事实并说明续跑原因。依赖未满足用 todo_write 等待；不得绕过用户暂停/取消。
+4. 托管模式下，目标未达成、无 open/running 且有符合约束及前置的未覆盖方向时派单；有独立方向可继续派，不受空闲槽位限制。无可执行方向如实等待，不凑单、不为覆盖率反复浅测。
+5. 一次 add_intent 最多四个独立方向。summary 简述价值和目的，asset_ids 给已读取的业务入口或资产范围；Worker 自选路径，不列尽接口、参数和请求步骤。同一方向的相关步骤保持一个意图，目标或机理独立才拆分。parent_ids 引用已读取的 fact/finding，初始方向可无依据；批量 intents 每项自带依据。contract 可选，仅补排除范围、工具限制或重要要求，不填逐项验收表。宿主记录引用版本；局部重叠参考 dedup.related_intent_ids 核对，不为避重叠而拆碎。
+
+仅开局无 Worker 事实且态势不足时可三次轻量只读探测，后续测试交 Worker。steer_work 纠偏、kill_work 终止，以回执为准；手工模式不自主规划。
+意图提交即入 frontier；简述判断、派单和等待原因后直接结束，不提交完成工具、不轮询等待 Worker。`;
 
 export const WORKER_PROMPT = `你是 Worker，只执行领到的当前意图，在授权、约束和预算内完成它，然后停止。受阻时如实说明原因，不转向其他意图。
 边发现边写回，不必等到结束：新资产用 insert_assets 登记；新的探索结论用 record_fact 直接写入探索图；亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。把同一结论的观察合并为 summary、detail 和真实 evidence，不把每个属性拆成节点；独立的新结论可继续写回。推测与实测、负面观察要区分，不编造证据。
@@ -158,4 +165,24 @@ export async function migrateApprovalPrompts(db:Database){
   await rebaseToolOutputAccess(tx);
   await tx.platform().setSetting('pi_no_approvals_v1','done');
  });
+}
+
+/** Repair the exact leaked test fixture and upgrade the previous built-in only.
+ * Preserve every version and any real operator customization. */
+export async function migrateSeriesPlannerPrompt(db:Database){
+  await db.transaction(async tx=>{
+    await tx.query('SELECT pg_advisory_xact_lock(4200000018)');
+    if(await tx.platform().getSetting('series_planner_prompt_v2')==='done')return;
+    const row=(await tx.query(`SELECT a.id,p.id prompt_id,p.version,p.template_text,p.note
+      FROM agents a LEFT JOIN agent_prompts p ON p.id=a.current_prompt_id WHERE a.key='planner' FOR UPDATE OF a`)).rows[0];
+    const leaked=row?.template_text==='测试模板 {{Goal}}'&&row.note==='单测';
+    if(row && (leaked||promptHash(String(row.template_text))==='2e2c2f64187849e2362a0727f34ab85e445d985e694fd71200368f88d6e99812')){
+      await tx.platform().setSetting('series_planner_prompt_v2_previous',JSON.stringify({prompt_id:row.prompt_id,version:row.version,reason:leaked?'test_fixture':'previous_default'}));
+      const next=(await tx.query(`INSERT INTO agent_prompts(agent_id,version,template_text,note,updated_by)
+        SELECT $1,COALESCE(max(version),0)+1,$2,'恢复 SERIES 双图规划提示词；保留旧版本','migration'
+        FROM agent_prompts WHERE agent_id=$1 RETURNING id`,[row.id,PLANNER_PROMPT])).rows[0]!;
+      await tx.query('UPDATE agents SET current_prompt_id=$2 WHERE id=$1',[row.id,next.id]);
+    }
+    await tx.platform().setSetting('series_planner_prompt_v2','done');
+  });
 }

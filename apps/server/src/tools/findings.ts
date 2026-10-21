@@ -200,6 +200,7 @@ export function proveGoalTool(ctx: ToolRunContext) {
             ? (await db.query('SELECT evidence,status FROM findings WHERE node_id=$1',[evidence.id])).rows[0] : undefined;
           const observation = finding?.evidence ?? evidence.payload.evidence;
           if (typeof observation !== 'string' || !observation.trim()) throw new Error('目标证据缺少实际观察内容，请读取或补充证据后再证明');
+          if(evidence.payload.observation_type==='negative')throw new Error('负面报告缺少宿主核验的目标测试范围，不能泛化为目标达成或未测方向已否定');
           if (['inferred','unknown'].includes(String(evidence.payload.observation_type)) || finding?.status === 'false_positive')
             throw new Error('推测、未知观察或已判定误报不能作为目标达成证据');
           await s.link(evidence.id, RelProves, goal.id);

@@ -1,12 +1,14 @@
 import {legacyReadCandidates} from '../tools/legacy-reads.js';
 import {assertActiveRole} from '../agent/retired-roles.js';
+import {plannerGrounding,plannerReceipt,projectPlannerReceipts} from './planner-grounding.js';
 import {WorkerOperationJournal} from '../db/operation-journal.js';
 import {journalTools} from '../pi/operation-tools.js';
 import {contextNeedBoundary,CONTEXT_RETENTION_RULES} from './context-needs.js';
 import {terminalExtension,TERMINAL_TOOLS} from '../pi/terminal.js';
 import { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
 export { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
-import { compactPlannerChanges, plannerRoundMessage, CONTEXT_LAYOUT_VERSION } from './prompt-context.js';
+import { CONTEXT_LAYOUT_VERSION } from './prompt-context.js';
+import {plannerSessionFile,validatePlannerSession,lockPlannerSession,selectPlannerDelivery,plannerCurrentState,plannerInvalidations,PLANNER_READING_RULES,PLANNER_COMPACTION_RULES} from './planner-memory.js';
 import {createTrackedRunner} from '../engine/runtime-config.js';
 import {normalizeContract} from './intent-contract.js';
 import {workerLaunchContext} from '../tools/context-read.js';
@@ -240,7 +242,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   // at every request boundary, including after compaction and session recovery.
   const anchored = await db.exploration(expID).anchorAssetIDs(intent.id);
   const assets = anchored.length > 0 ? await db.assets().getByIDs(anchored) : [];
-  const assetsJSON=clampOutput(JSON.stringify({total:assets.length,items:assets.slice(0,20).map(a=>({id:a.id,type:a.type,host:a.domain||a.ip||a.url||a.app_name})),detail_tool:'list_assets'}));
+  const assetsJSON=clampOutput(JSON.stringify({total:assets.length,items:assets.slice(0,20).map(a=>({id:a.id,type:a.type,url:a.url,method:a.method,host:a.domain||a.ip||a.app_name})),detail_tool:'asset_get'}));
   const system = await systemRolePrompt(db, "worker");
   const taskContext =
     `\n\n【当前意图 #${intent.id} 执行约定】\n${JSON.stringify(contract)}` +
@@ -332,6 +334,7 @@ export interface PlannerRoundInput {
   planningRoundID?:string;
   changes?:unknown[];
   events?:unknown[];
+  contextEventIDs?:number[];
   terminalOnly?: boolean;
   signal?: AbortSignal;
   db: Database;
@@ -354,10 +357,22 @@ export interface PlannerRoundResult {
   stopReason?: "completed" | "aborted" | "budget";
   lastAssistantText: string | undefined;
   usage: RunUsage;
+  deliveredContextIDs?:number[];
+  deliveredWakeupIDs?:number[];
+  moreContext?:boolean;
 }
 
-/** planner 每轮全新内存会话（无状态），todolist 由 TodoStore 跨轮共享。 */
+/** Native file session survives rounds. The lock covers writes, tools and disposal. */
 export async function runPlannerRound(input: PlannerRoundInput): Promise<PlannerRoundResult> {
+  const unlock=await lockPlannerSession(input.db,input.expID,input.signal);
+  try{
+    await input.hooks.assertOwnership?.(input.db);
+    validatePlannerSession(plannerSessionFile(input.dataDir,input.expID));
+    return await runPlannerSession({...input,signal:unlock.signal});
+  }finally{await unlock();}
+}
+
+async function runPlannerSession(input:PlannerRoundInput):Promise<PlannerRoundResult>{
   const { db, taskID, expID, goal, model, dataDir, todos } = input;
   const planningRoundID=input.planningRoundID??randomUUID();
   const ctx: ToolRunContext = runContext(db, taskID, expID, "planner", { todos, hooks: input.hooks,planningRoundID });
@@ -370,27 +385,34 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
     plannerBudget.maxTurns=plannerBudget.maxTurns>0?Math.min(plannerBudget.maxTurns,input.maxTurns):input.maxTurns;
     plannerBudget.maxDurationMs=plannerBudget.maxDurationMs>0?Math.min(plannerBudget.maxDurationMs,120_000):120_000;
   }
-  const system = await systemRolePrompt(db, "planner", { Goal: goal }, input.terminalOnly, input.terminalOnly ? input.wrapupPromptOverride : undefined);
+  const system = await systemRolePrompt(db, "planner", { Goal: goal }, input.terminalOnly, input.terminalOnly ? input.wrapupPromptOverride : undefined)+'\n\n'+PLANNER_READING_RULES;
 
   const overview = await buildGraphOverview(ctx);
+  overview.asset_readers=tools.filter(t=>['asset_search','asset_get'].includes(t.name)).map(t=>t.name);
   // Todos are included once in their complete bounded block below.
   delete overview.todos;
-  const changes = compactPlannerChanges(input.changes ?? [], overview, taskID);
-  const firstUser = plannerRoundMessage(overview,todos.get(expID),changes,input.events??[],input.triggersText);
 
   const workDir = path.join(dataDir, "tasks", String(taskID));
   mkdirSync(workDir, { recursive: true });
   const execution=await executionTools(ctx,workDir,input);
   if(!input.terminalOnly)tools.push(...execution.tools);
-  let turns = 0;
   const plannerCounter = withUsageCounter(input.onActivity);
+  let sessionEntries:()=>readonly import('@earendil-works/pi-coding-agent').SessionEntry[]=()=>[];
+  let finalActivity:Extract<RunnerActivity,{kind:'assistant_message_end'}>|undefined;
   const runner = await createTrackedRunner(db,taskID,"planner",{
     contextLayout: CONTEXT_LAYOUT_VERSION,
     cwd: workDir,
     extensionFactories:input.terminalOnly?[]:execution.extensions,
+    projectMessages:messages=>projectPlannerReceipts(messages,sessionEntries()),
     guard:roleExecutionGuard(ctx,input.extraGuard),
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
-    boundaryContext:async()=>constraintBlock(await loadConstraints(db,expID))+'\n'+await contextNeedBoundary(ctx),
+    boundaryContext:async()=>{
+      await input.hooks.assertOwnership?.(db);
+      const task=await db.tasks().getTask(taskID);
+      if(!task||task.exploration_id!==expID)throw new Error('Planner 任务已删除或归属变化');
+      const state=plannerCurrentState(await buildGraphOverview(ctx),todos.get(expID));
+      return constraintBlock(await loadConstraints(db,expID))+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.status,paused:task.paused,...state,grounding:await plannerGrounding(ctx,sessionEntries())})+'\n'+await contextNeedBoundary(ctx);
+    },
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
     modelPolicy: model.modelPolicy,
@@ -403,19 +425,51 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
     ...await roleResources(db, "planner", agentEnv.skillsDir),
     signal: input.signal, ...plannerBudget,
     toolAllowlist: ["read",...(!input.terminalOnly?["write","edit","bash","mcp__*",...execution.names]:[]), ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
-    inMemory: true,
-    compactionInstructions:CONTEXT_RETENTION_RULES,
+    resumeSessionPath:plannerSessionFile(dataDir,expID),
+    compactionInstructions:PLANNER_COMPACTION_RULES+'\n'+CONTEXT_RETENTION_RULES,
     wrapup: ({reason}) => reason==='settled'?undefined:{prompt:input.wrapupPromptOverride??(input.terminalOnly?PLANNER_TASK_TIMEOUT_WRAPUP:prc.wrapupPrompt||'预算将尽，停止新探测，保存已确定的规划并简述结果。')},
     maxWrapupTurns: prc.wrapupMaxTurns || 1,
-    onRawEvent: (ev) => {
-      if (ev.type === "turn_end") turns++;
+    onActivity: (a) => {
+      // Model text is retained by native PI, but isn't a verified execution result.
+      // Buffer visible prose until the host can publish a deterministic receipt.
+      if(a.kind==='assistant_delta'&&!a.isThinking)return;
+      if(a.kind==='assistant_message_end'&&!a.isThinking){finalActivity=a;return;}
+      plannerCounter.wrapped(a, { worker: "planner" });
     },
-    onActivity: (a) => plannerCounter.wrapped(a, { worker: "planner" }),
   });
   try {
-    ctx.sessionEntries=()=>runner.sessionEntries;
-    const res = await runner.prompt(firstUser);
-    return { ...res, usage: plannerCounter.usage() };
+    sessionEntries=()=>runner.sessionEntries;
+    ctx.sessionEntries=sessionEntries;
+    // Historical recall uses the transcript at runner start. The current query,
+    // delivery and its tool output must not become their own search results.
+    const historyUpper=runner.sessionEntries.length;
+    ctx.plannerSession={identity:()=>`${taskID}:${expID}:${runner.sessionId}`,entries:()=>runner.sessionEntries.slice(0,historyUpper)};
+    const changes=input.changes??[],contextIDs=input.contextEventIDs??[];
+    const invalidations=await plannerInvalidations(db,expID,contextIDs,changes);
+    const {delivery,recovered}=selectPlannerDelivery(runner,{taskID,expID,overview,todos:todos.get(expID),
+      changes:[...changes,...invalidations],events:input.events??[],contextIDs,triggers:input.triggersText});
+    const moreContext=(input.contextEventIDs??[]).some(id=>!delivery.contextIDs.includes(id))||
+      (input.events??[]).some(e=>!delivery.wakeupIDs.includes(Number((e as {id:number}).id)));
+    const receipt={deliveredContextIDs:delivery.contextIDs,deliveredWakeupIDs:delivery.wakeupIDs,moreContext};
+    if(recovered){
+      const prior=runner.sessionEntries.findLast(e=>e.type==='custom'&&e.customType==='planner_grounded_result'&&
+        (e.data as {delivery_id?:string}).delivery_id===delivery.id);
+      const saved=prior?.type==='custom'?prior.data as Awaited<ReturnType<typeof plannerReceipt>>:
+        await plannerReceipt(ctx,runner.sessionEntries,delivery.id,recovered.stopReason??'completed');
+      if(!prior)runner.appendSessionEntry('planner_grounded_result',saved);
+      return {...recovered,lastAssistantText:saved.summary,...receipt,usage:plannerCounter.usage()};
+    }
+    await runner.appendContextOnce(`planner:${delivery.id}`,delivery.input);
+    const res = await runner.prompt('处理本轮已交付的变化。以宿主当前状态为准，需要时读取图谱和历史原文，完成规划后直接总结。');
+    const checked=await plannerReceipt(ctx,runner.sessionEntries,delivery.id,res.stopReason??'completed');
+    runner.appendSessionEntry('planner_grounded_result',checked);
+    res.lastAssistantText=checked.summary;
+    plannerCounter.wrapped({...finalActivity,kind:'assistant_message_end',text:checked.summary,final:true}, {worker:'planner'});
+    if(!res.aborted&&res.stopReason==='completed'){
+      await input.hooks.assertOwnership?.(db);
+      runner.appendSessionEntry('planner_delivery_completed',{deliveryID:delivery.id,result:{aborted:res.aborted,stopReason:res.stopReason,lastAssistantText:res.lastAssistantText}});
+    }
+    return { ...res,...receipt,usage: plannerCounter.usage() };
   } finally { await runner.dispose(); }
 }
 
@@ -456,7 +510,14 @@ export async function runMainChat(input: MainChatInput): Promise<WorkerRunResult
     stopWhen:async()=>receipts.length>0,
     guard:roleExecutionGuard(ctx,input.extraGuard),
     extensionFactories:execution.extensions,
-    boundaryContext:async()=>hostProtocol("mainagent")+constraintBlock(await loadConstraints(db,expID)),
+    boundaryContext:async()=>{
+      // A restored Main transcript can contain an old overview. Supply current
+      // lifecycle state through PI's existing context hook, without another turn.
+      const task=await db.tasks().getTask(taskID);
+      const goals=await db.query("SELECT id,state FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 10",[expID]);
+      return hostProtocol("mainagent")+constraintBlock(await loadConstraints(db,expID))+
+        '\n【当前任务实时状态；历史会话中的旧状态不能覆盖此状态】\n'+JSON.stringify({task_status:task?.status,paused:task?.paused,goals:goals.rows});
+    },
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
     cwd: workDir,
     agentDir: path.join(dataDir, "pi-agent"),

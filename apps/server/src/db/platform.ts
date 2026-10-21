@@ -3,7 +3,7 @@ import {TOOL_POLICY_VERSION,ACTIVE_ROLES} from '../agent/tool-registry.js';
 import {migrateConstraintProvenance} from './constraint-provenance.js';
 import {migrateConstraintPrompts} from '../agent/constraint-migration.js';
 import {migrateArtex} from './artex-migration.js';
-import {migrateBuiltinPrompts,migrateApprovalPrompts} from '../agent/prompts.js';
+import {migrateBuiltinPrompts,migrateApprovalPrompts,migrateSeriesPlannerPrompt} from '../agent/prompts.js';
 // 平台配置 store：settings KV / agent 提示词 / 工具目录 / MCP / LLM profile / 内置种子。
 // 平移自 Go 版 db/settings.go + db/config.go(settings·prompts·mcp·profiles 部分) + db/tools.go +
 // task_llm_profiles 链已按决策删除：profile 只有 CRUD + 激活/故障转移链读取。
@@ -980,6 +980,7 @@ export async function seedBuiltins(db: Database): Promise<void> {
   await migrateArtex(db);
   await migrateApprovalPrompts(db);
   await migrateAssetTools(db);
+  await migrateSeriesPlannerPrompt(db);
 
   // 5. 内置 MCP 只是配置预设：disabled 且不授予任何 agent。ON CONFLICT 保证重启不覆盖用户改动。
   await db.query(
