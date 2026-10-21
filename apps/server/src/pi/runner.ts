@@ -89,6 +89,7 @@ function closingToolError(name: string, text: string | undefined, closing: Closi
 
 /** 归一化后的 activity 事件（对接 Go/norma 的 activity 流） */
 export type RunnerActivity =
+  | {kind:'host_status';text:string;phase?:string}
 	| { kind: 'run_metadata'; runtimeID: string; role: string; mode: string; startedAt: string }
 	| { kind: 'assistant_delta'; text: string; streamID: string; isThinking?: boolean }
 	| { kind: 'assistant_message_end'; text: string; streamID?: string; isThinking?: boolean; final?: boolean; response?: { stop_reason: string; has_tools: boolean; model: string; provider: string; usage: { input: number; output: number; cacheRead: number; cacheWrite: number } } }
@@ -99,6 +100,7 @@ export type RunnerActivity =
 	| { kind: 'queue_update'; steering: readonly string[]; followUp: readonly string[] };
 
 export interface AgentRunnerOptions {
+  goalsPhase?: import('../db/goals-bootstrap.js').GoalsPhase;
   /** Host execution receipts; never wraps model requests or changes pi's tool loop. */
   wrapExecutionTool?: (tool:ToolDefinition)=>ToolDefinition;
   /** Unknown external effects end at the native batch boundary, without a retry loop. */

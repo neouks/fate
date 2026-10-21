@@ -94,6 +94,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       ? b["llm_profile_ids"].map((v) => Number(v)).filter((n) => Number.isInteger(n))
       : [];
     const task = await tasks().createTaskWithOptions(description, goal, {
+      initializeGoals:true,
       name: typeof b["name"] === "string" ? b["name"].trim() : "",
       categoryID: b["category_id"] === null || b["category_id"] === undefined ? null : Number(b["category_id"]) || null,
       sourceTaskIDs,
@@ -153,7 +154,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     if (!task) throw Object.assign(new Error("task not found"), { statusCode: 404 });
     await app.engine.admitTask(id);
     const after=await tasks().getTask(id);
-    return { id, status: after?.queued ? "queued" : "running", queued: after?.queued === true };
+    return { id, status: after?.paused ? "paused" : after?.queued ? "queued" : after?.status, paused:after?.paused===true, queued: after?.queued === true };
   }
 
   async function pauseTask(id: number): Promise<Record<string, unknown>> {
@@ -169,7 +170,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
   async function resumeTask(id: number): Promise<Record<string, unknown>> {
     await app.engine.admitTask(id);
     const after=await tasks().getTask(id);
-    return { id, paused: false, queued: after?.queued === true, status: after?.queued ? "queued" : after?.status };
+    return { id, paused: after?.paused===true, queued: after?.queued === true, status: after?.paused ? "paused" : after?.queued ? "queued" : after?.status };
   }
 
   async function stopTask(id: number): Promise<Record<string, unknown>> {
