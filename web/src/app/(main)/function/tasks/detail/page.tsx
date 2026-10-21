@@ -9,7 +9,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import {
   PanelRightIcon,
-  ShieldCheckIcon,
   FolderIcon,
   Settings2Icon,
   ArchiveIcon,
@@ -38,17 +37,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
-import type { InterceptApprovalRow, LLMProfile, Stats, Task } from "@/lib/types";
+import type { LLMProfile, Stats, Task } from "@/lib/types";
 
 import { taskNavigation, taskViewURL } from "@/lib/task-navigation";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { SessionsTab } from "./_tabs/sessions-tab";
 
 // Secondary tabs (graphs and tables) are not on the session
 // startup path. Load their code only when the corresponding tab mounts.
-const AssetApprovalsTab = dynamic(() => import("./_tabs/asset-approvals-tab").then((m) => m.AssetApprovalsTab), {
-  loading: TaskDetailLoading,
-});
 const BroadcastTab = dynamic(() => import("./_tabs/broadcast-tab").then((m) => m.BroadcastTab), {
   loading: TaskDetailLoading,
 });
@@ -60,9 +55,6 @@ const FindingsTab = dynamic(() => import("./_tabs/findings-tab").then((m) => m.F
   loading: TaskDetailLoading,
 });
 const GraphTab = dynamic(() => import("./_tabs/graph-tab").then((m) => m.GraphTab), { loading: TaskDetailLoading });
-const InterceptTab = dynamic(() => import("./_tabs/intercept-tab").then((m) => m.InterceptTab), {
-  loading: TaskDetailLoading,
-});
 const OverviewTab = dynamic(() => import("./_tabs/overview-tab").then((m) => m.OverviewTab), {
   loading: TaskDetailLoading,
 });
@@ -124,26 +116,6 @@ function TaskDetailInner() {
     setProcessOpen(window.matchMedia("(min-width:1280px)").matches);
   }, []);
   const [findingCount, setFindingCount] = React.useState<number | null>(null);
-  const [pendingAssets, setPendingAssets] = React.useState<number | null>(null);
-  React.useEffect(() => {
-    let live = true;
-    const load = () =>
-      api
-        .taskAssetApprovals(id)
-        .then((rows) => {
-          if (live)
-            setPendingAssets(rows.filter((r) => !r.inherited && r.approval_state === "pending" && !r.blocked).length);
-        })
-        .catch(() => {
-          if (live) setPendingAssets(null);
-        });
-    void load();
-    const timer = setInterval(load, 10000);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [id]);
   const [controlling, setControlling] = React.useState(false);
   React.useEffect(() => {
     let alive = true;
@@ -163,7 +135,6 @@ function TaskDetailInner() {
       clearInterval(timer);
     };
   }, [id]);
-  const [pendingIntercepts, setPendingIntercepts] = React.useState<InterceptApprovalRow[]>([]);
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [archiving, setArchiving] = React.useState(false);
 
@@ -174,32 +145,6 @@ function TaskDetailInner() {
       .catch(() => setProfiles([]));
   }, []);
 
-  React.useEffect(() => {
-    let alive = true;
-    let inFlight = false;
-    setPendingIntercepts([]);
-    const load = () => {
-      if (inFlight) return;
-      inFlight = true;
-      return api
-        .interceptTask(id)
-        .then((rows) => {
-          if (alive) setPendingIntercepts(rows.filter((row) => row.status === "pending"));
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        })
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-    void load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [id]);
 
   const taskLoadInFlight = React.useRef<symbol | null>(null);
   const statsLoadInFlight = React.useRef<symbol | null>(null);
@@ -383,13 +328,6 @@ function TaskDetailInner() {
             {controlling ? <Spinner /> : controlIcon}
             <span className="hidden sm:inline">{controlling ? "等待确认" : controlLabel}</span>
           </Button>
-          <Button variant="ghost" size="sm" aria-label="审批" onClick={() => navigate({ panel: "asset-approvals" })}>
-            <ShieldCheckIcon />
-            <span className="hidden sm:inline">审批</span>
-            {pendingAssets !== null && pendingAssets + pendingIntercepts.length > 0 && (
-              <span>{pendingAssets + pendingIntercepts.length}</span>
-            )}
-          </Button>
           <Button variant="ghost" size="icon-sm" aria-label="任务设置" onClick={() => navigate({ panel: "settings" })}>
             <Settings2Icon />
           </Button>
@@ -420,7 +358,6 @@ function TaskDetailInner() {
           <SessionsTab
             taskId={id}
             onOpenSettings={()=>navigate({panel:"settings"})}
-            pendingIntercepts={pendingIntercepts}
             workerExecutionAllowed={!task.paused && !task.queued && !task.pause_pending && task.status === "running"}
             processOpen={processOpen && tab === "sessions" && section === "chat"}
             onProcessOpenChange={setProcessOpen}
@@ -492,43 +429,6 @@ function TaskDetailInner() {
                     </Tooltip>
                   )}
 </>}/>}
-      <Sheet
-        open={!!panel && panel !== "settings"}
-        onOpenChange={(open) => {
-          if (!open) navigate({ tab, panel: null });
-        }}
-      >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">
-          <SheetHeader>
-            <SheetTitle>
-              {panel === "settings"
-                ? "任务设置"
-                : ["asset-approvals", "intercept"].includes(panel ?? "")
-                  ? "审批中心"
-                  : "任务详情"}
-            </SheetTitle>
-            <SheetDescription>
-              {task.name || task.description} · #{id}
-            </SheetDescription>
-          </SheetHeader>
-          <div className="min-w-0 p-5">
-            {["asset-approvals", "intercept"].includes(panel ?? "") ? (
-              <Tabs value={panel!} onValueChange={(value) => navigate({ tab, panel: value })}>
-                <TabsList>
-                  <TabsTrigger value="asset-approvals">资产审批</TabsTrigger>
-                  <TabsTrigger value="intercept">拦截审批 {pendingIntercepts.length || ""}</TabsTrigger>
-                </TabsList>
-                <TabsContent value="asset-approvals">
-                  <AssetApprovalsTab taskId={id} />
-                </TabsContent>
-                <TabsContent value="intercept">
-                  <InterceptTab taskId={id} />
-                </TabsContent>
-              </Tabs>
-            ) : null}
-          </div>
-        </SheetContent>
-      </Sheet>
     </div>
   );
 }
