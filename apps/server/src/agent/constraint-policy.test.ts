@@ -24,6 +24,14 @@ describe('operator-sourced operation constraints',()=>{
     expect(()=>groundConstraint({kind:'deny',text:'禁用 API 测试。'},{user_message:'不要禁用 API 测试。'})).toThrow();
     expect(renderConstraints([])).toBe('');
   });
+  it('explains the blank-line boundary without accepting partial multiline constraints',()=>{
+    const first='仅允许 GET 本地合成资源。',rest='禁止外部请求。\n例外：模型请求使用已配置的供应商。';
+    const source=first+'\n'+rest;
+    expect(()=>groundConstraint({kind:'allow',text:first},{description:source})).toThrow('单换行仍属同段');
+    expect(()=>groundConstraint({kind:'allow',text:'【任务描述】\n'+source},{description:source})).toThrow('宿主添加');
+    expect(groundConstraint({kind:'allow',text:source},{description:source}).text).toBe(source);
+    expect(groundConstraint({kind:'allow',text:first},{description:first+'\n\n'+rest}).text).toBe(first);
+  });
   it('binds exact raw source hashes and accepts legacy exact-text calls',()=>{
     const text='禁止写入生产库。',source='\r\n'+text+'\r\n';
     const v=groundConstraint({kind:'deny',text},{user_message:source});
