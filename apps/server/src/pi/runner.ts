@@ -1,5 +1,5 @@
 import type {ToolLoading} from '../agent/tool-loading.js';
-import {platformMcpExtension,hasDeferredMcp,MCP_RESOURCE_TOOLS} from './platform-mcp.js';
+import {platformMcpExtension,hasDeferredMcp,MCP_RESOURCE_TOOLS,toolDiscoveryInstructions} from './platform-mcp.js';
 import {domainCompactionExtension,type CompactionHealth} from './domain-compaction.js';
 import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
 import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
@@ -85,6 +85,11 @@ function closingToolError(name: string, text: string | undefined, closing: Closi
   // explain deliberate host deactivation in both the transcript and activity UI.
   return closing.active && tools && !tools.includes(name) && text === `Tool ${name} not found`
     ? `${CLOSING_RULE}\n原始工具错误：${text}` : text;
+}
+function toolAvailabilityError(name:string,text:string|undefined,closing:ClosingState,opts:AgentRunnerOptions){
+  const result=closingToolError(name,text,closing,opts.settlementTools);
+  if(result!==text||text!==`Tool ${name} not found`||!opts.toolLoading?.deferred.includes(name))return result;
+  return `工具 ${name} 尚未在当前声明中激活；先用 tool_search(query=${JSON.stringify(name)}) 检索，成功加载后再调用。若已禁用或撤销则停止，不能绕过。\n原始工具错误：${text}`;
 }
 
 /** 归一化后的 activity 事件（对接 Go/norma 的 activity 流） */
@@ -254,7 +259,7 @@ export class AgentRunner {
       api.on('message_end', event => {
         const message=event.message;
         if(message.role!=='toolResult'||!message.isError)return;
-        const original=toolResultText(message),text=closingToolError(message.toolName,original,closing,opts.settlementTools);
+        const original=toolResultText(message),text=toolAvailabilityError(message.toolName,original,closing,opts);
         if(text!==original && text)return {message:{...message,content:[{type:'text' as const,text}]}};
       });
       api.on('before_provider_request', async event => {
@@ -389,7 +394,7 @@ export class AgentRunner {
 			noPromptTemplates: true,
 			noThemes: true,
 			noContextFiles: true,
-			systemPrompt: opts.systemPrompt,
+			systemPrompt: opts.systemPrompt ? opts.systemPrompt+toolDiscoveryInstructions(opts) : opts.systemPrompt,
 		});
 		await loader.reload();
 
@@ -498,7 +503,7 @@ export class AgentRunner {
 					toolName: event.toolName,
 					isError: event.isError,
 					durationMs: event.durationMs,
-					text: closingToolError(event.toolName,toolResultText(event.result),this.closing,this.opts.settlementTools),
+					text: toolAvailabilityError(event.toolName,toolResultText(event.result),this.closing,this.opts),
 				});
 				break;
 			case 'queue_update':

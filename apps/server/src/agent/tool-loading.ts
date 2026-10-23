@@ -14,7 +14,7 @@ export function compactToolSchema(tool:ToolDefinition):ToolDefinition {
  }
  if(tool.name==='add_intent'){
   const descriptions:Record<string,string>={summary:'方向与终点',parent_ids:'已读 fact/finding ID',parent_id:'单个依据 ID',asset_ids:'资产 ID',priority:'省略/0→5',
-   contract:'可选约定及去重',basis:'已读 fact/finding 及版本',allowed_tools:'精确执行工具名；不限制写回',intents:'1–4 条；单条/批量互斥'};
+   contract:'可选约定及去重',basis:'仅已读 fact/finding 及版本；不可引用 goal/intent，初始可省略',allowed_tools:'精确执行工具名；不限制写回',intents:'1–4 条；单条/批量互斥'};
   const visit=(value:any)=>{if(!value||typeof value!=='object')return;for(const [name,property] of Object.entries(value.properties??{}) as [string,any][]){if(descriptions[name])property.description=descriptions[name];visit(property);}if(value.items)visit(value.items);};visit(schema);
  }
  return {...tool,description:tool.name==='add_intent'?tool.description+' 父节点不可用 goal/intent；省略则连接任务根事实。':tool.description,parameters:schema};

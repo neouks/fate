@@ -22,7 +22,12 @@ it('all seven previews use real schemas and never include Retester capabilities'
  for(const [key] of builtinDefinitions(db))expect(toolIdentity(key).implementation_status,key).not.toBe('unsupported');
  console.log('LOADOUT_BUDGET',JSON.stringify(catalog.roles.map(({role,resident,deferred,schema_bytes})=>({role,resident,deferred,schema_bytes}))));
  const w=catalog.roles.find(r=>r.role==='worker')!;expect(w.resident).toHaveLength(11);
- for(const role of ['worker','planner','mainagent']){const r=catalog.roles.find(r=>r.role===role)!;expect(r.schema_bytes.resident/r.schema_bytes.before).toBeLessThanOrEqual(0.7);}
+ const planner=catalog.roles.find(r=>r.role==='planner')!;
+ expect(planner.resident).toContain('asset_search');expect(planner.deferred).toContain('asset_get');
+ expect((planner.schemas.add_intent as any).properties.contract.properties.basis.description).toContain('不可引用 goal/intent');
+ // Planner's mandatory pre-dispatch asset summary is now resident; budget its
+ // extra Schema explicitly rather than forcing a predictable failed call.
+ for(const role of ['worker','planner','mainagent']){const r=catalog.roles.find(r=>r.role===role)!;expect(r.schema_bytes.resident/r.schema_bytes.before).toBeLessThanOrEqual(role==='planner'?0.75:0.7);}
 });
 it('disabled search uses direct fallback without re-enabling retired aliases',async()=>{
  await db.query("UPDATE tools SET enabled=false WHERE key='tool_search'");
