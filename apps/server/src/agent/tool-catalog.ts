@@ -23,6 +23,7 @@ import {prepareToolLoading,compactToolSchema} from './tool-loading.js';
 import {platformPolicy} from '../pi/platform-policy.js';
 import {hasDeferredMcp,TOOL_SEARCH_HINT} from '../pi/platform-mcp.js';
 import {resolveRolePrompt} from './prompts.js';
+import {PLANNER_READING_RULES} from './planner-memory.js';
 import {roleResources} from './resources.js';
 import {skillDir} from '../config/index.js';
 import type {Database} from '../db/index.js';
@@ -56,12 +57,12 @@ export async function previewRoleTools(db:Database,role:string,taskBound=true){
  if(['worker','planner','mainagent'].includes(role)){const bash=candidate.find(t=>t.name==='bash');if(bash)bash.description=await platformBashDescription(ctx,bash.description,agent.interactiveShell);}
  const permitted=new Set((await applyToolBindings(db,role,candidate.map(t=>({name:t.name})))).map(t=>t.name));
  const bound=candidate.filter(t=>permitted.has(t.name)),policy=await platformPolicy(db,role),prompt=await resolveRolePrompt(db,role),resources=role==='goals'?{}:await roleResources(db,role,skillDir());
- const loadout=await prepareToolLoading(db,role,{customTools:bound,legacyTools:taskBound&&role!=='goals'?legacyReadCandidates(ctx):[],toolAllowlist:bound.map(t=>t.name),systemPrompt:prompt.template,...resources},policy.builtinLoading==='direct',policy.fallback);
+ const loadout=await prepareToolLoading(db,role,{customTools:bound,legacyTools:taskBound&&role!=='goals'?legacyReadCandidates(ctx):[],toolAllowlist:bound.map(t=>t.name),systemPrompt:prompt.template+(role==='planner'?'\n'+PLANNER_READING_RULES:''),...resources},policy.builtinLoading==='direct',policy.fallback);
  const definitions=new Map(loadout.customTools.map(t=>[t.name,t]));
  const initial=loadout.toolLoading.initialActive.map(n=>definitions.get(n)!).filter(Boolean);
  if(loadout.toolLoading.deferred.length||hasDeferredMcp(resources))initial.push(searchDefinition());
  const measure=(tools:ToolDefinition[])=>Buffer.byteLength(JSON.stringify(tools.map(t=>({name:t.name,description:t.description,parameters:t.parameters}))));
- return {role,stages:role==='goals'?Object.entries(GOALS_STAGE_TOOLS).map(([phase,names])=>({phase,resident:initial.filter(t=>(names as readonly string[]).includes(t.name)).map(t=>t.name),deferred:[],schema_bytes:measure(initial.filter(t=>(names as readonly string[]).includes(t.name))),protocol:GOALS_STAGE_PROTOCOL[phase as keyof typeof GOALS_STAGE_PROTOCOL],context:phase==='constraints'?'目标与描述原文；仅约束和资产':'仅目标栏原文；不加载历史、Skill、MCP 或其他读取工具'})):undefined,scope:taskBound?'task_bound':'standalone',policy_version:loadout.toolLoading.version,platform_policy:policy,
+ return {role,context_activation:{policy:'explicit-references-v1',task_context:'runtime_only'},stages:role==='goals'?Object.entries(GOALS_STAGE_TOOLS).map(([phase,names])=>({phase,resident:initial.filter(t=>(names as readonly string[]).includes(t.name)).map(t=>t.name),deferred:[],schema_bytes:measure(initial.filter(t=>(names as readonly string[]).includes(t.name))),protocol:GOALS_STAGE_PROTOCOL[phase as keyof typeof GOALS_STAGE_PROTOCOL],context:phase==='constraints'?'目标与描述原文；仅约束和资产':'仅目标栏原文；不加载历史、Skill、MCP 或其他读取工具'})):undefined,scope:taskBound?'task_bound':'standalone',policy_version:loadout.toolLoading.version,platform_policy:policy,
   resident:initial.map(t=>t.name),deferred:loadout.toolLoading.deferred,compatibility:loadout.toolLoading.compatibility,fallback:loadout.toolLoading.fallback,
   schema_bytes:{before:measure(bound),resident:measure(initial),registered:measure([...definitions.values()])},
   mcp:{status:'not_connected',servers:resources.mcpEntries?.map(e=>e.name)??[],schema_counted:false},

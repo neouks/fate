@@ -244,7 +244,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   // at every request boundary, including after compaction and session recovery.
   const anchored = await db.exploration(expID).anchorAssetIDs(intent.id);
   const assets = anchored.length > 0 ? await db.assets().getByIDs(anchored) : [];
-  const assetsJSON=clampOutput(JSON.stringify({total:assets.length,items:assets.slice(0,20).map(a=>({id:a.id,type:a.type,url:a.url,method:a.method,host:a.domain||a.ip||a.app_name})),detail_tool:'asset_get'}));
+  const assetsJSON=clampOutput(JSON.stringify({total:assets.length,items:assets.slice(0,20).map(a=>({id:a.id,type:a.type,url:a.url,method:a.method,host:a.domain||a.ip||a.app_name})),...(assets.length?{detail_tool:'asset_get'}:{})}));
   const system = await systemRolePrompt(db, "worker");
   const taskContext =
     `\n\n【当前意图 #${intent.id} 执行约定】\n${JSON.stringify(contract)}` +
