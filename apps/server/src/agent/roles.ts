@@ -1,5 +1,5 @@
 import {goalsBootstrap,activeBootstrap,saveBootstrapGoals,type GoalsPhase} from '../db/goals-bootstrap.js';
-import {GOALS_STAGE_TOOLS,GOALS_STAGE_PROTOCOL} from './goals-policy.js';
+import {GOALS_STAGE_TOOLS,GOALS_STAGE_PROTOCOL,goalsStageVariables} from './goals-policy.js';
 import {legacyReadCandidates} from '../tools/legacy-reads.js';
 import {assertActiveRole} from '../agent/retired-roles.js';
 import {plannerGrounding,plannerReceipt,projectPlannerReceipts} from './planner-grounding.js';
@@ -635,7 +635,7 @@ async function runIsolatedGoals(input:GoalsRunInput):Promise<WorkerRunResult>{
   input.onActivity?.({kind:'host_status',phase,text:phase==='constraints'?'阶段一：提取原文约束与目标资产':'阶段二：仅拆解目标栏'}, {worker:'goals'});
   const runner=await createTrackedRunner(db,taskID,'goals',{
    ...model,cwd,agentDir:path.join(dataDir,'pi-agent'),inMemory:true,goalsPhase:phase,
-   systemPrompt:await systemRolePrompt(db,'goals',{Goal:state.goal,Description:phase==='constraints'?state.description:''},false,hostProtocol('goals')+'\n'+GOALS_STAGE_PROTOCOL[phase]),
+   systemPrompt:await systemRolePrompt(db,'goals',goalsStageVariables(state.goal,state.description,phase),false,hostProtocol('goals')+'\n'+GOALS_STAGE_PROTOCOL[phase]),
    customTools:tools,toolAllowlist:tools.map(t=>t.name),signal:input.signal,
    ...agentBudgets(config,{maxTurns:input.maxTurns??8,maxDurationMs:120_000}),
    maxWrapupTurns:config.wrapupMaxTurns||1,wrapup:phase==='objectives'?()=>({prompt:GOALS_STAGE_PROTOCOL[phase]}):undefined,

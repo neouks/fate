@@ -476,7 +476,7 @@ export class AgentRunner {
 						this.opts.onActivity?.({ kind: 'assistant_message_end', text: thinking, streamID: this.streamID, isThinking: true });
 					}
 					this.opts.onActivity?.({ kind: 'assistant_message_end', text: assistantText(event.message), streamID: this.streamID,
-            ...(this.domainCompletion.done && event.message.stopReason==='aborted' && !event.message.content.length && !event.message.usage.totalTokens ? {} : {response: {stop_reason:event.message.stopReason,has_tools:event.message.content.some(b=>b.type==='toolCall'),model:event.message.model,provider:event.message.provider,usage:event.message.usage}}) });
+            ...(this.domainCompletion.done && ['aborted','error'].includes(event.message.stopReason) && !event.message.content.length && !event.message.usage.totalTokens ? {} : {response: {stop_reason:event.message.stopReason,has_tools:event.message.content.some(b=>b.type==='toolCall'),model:event.message.model,provider:event.message.provider,usage:event.message.usage}}) });
 					const u = (event.message as { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } }).usage;
 					if (u) {
 						this.opts.onActivity?.({ kind: 'usage', input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite });

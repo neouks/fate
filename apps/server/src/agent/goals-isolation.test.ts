@@ -30,6 +30,7 @@ it('isolates native messages/tools and persists one sourced goal; committed reco
 
  const goals=await db.exploration(f.task.exploration_id).listByKind('goal');expect(goals).toHaveLength(1);expect(goals[0]!.payload.source).toMatchObject({field:'goal',quote:f.task.goal,source_hash:goalHash(f.task.goal),fallback:false});
  expect((await db.query('SELECT * FROM task_constraints WHERE exploration_id=$1',[f.task.exploration_id])).rows).toHaveLength(1);
+ expect(f.activities.filter(a=>a.kind==='assistant_message_end'&&a.response)).toHaveLength(3);
  expect(f.faux.state.callCount).toBe(3);await runGoalsDecompose(f.input);expect(f.faux.state.callCount).toBe(3);
  const runtimes=(await db.query("SELECT effective FROM runtime_role_configs WHERE task_id=$1 ORDER BY started_at",[f.task.id])).rows;
  expect(runtimes.map(r=>r.effective.active_tools.slice().sort())).toEqual([['register_user_target','set_constraints'],['set_goals']]);
@@ -80,6 +81,17 @@ it('disabling the writer during a no-output response cannot be bypassed by fallb
 it('phase-two model failure falls back to sourced raw goal, not background',async()=>{
  const f=await fixture();await db.query("UPDATE goals_bootstrap SET phase='objectives' WHERE task_id=$1",[f.task.id]);f.faux.setResponses([()=>{throw new Error('LOCAL model failure');}]);
  await runGoalsDecompose(f.input);const goal=(await db.exploration(f.task.exploration_id).listByKind('goal'))[0]!;expect(goal.payload).toMatchObject({text:f.task.goal,source:{fallback:true,field:'goal'}});
+});
+it('custom prompt remains selected, stage preview restricts capabilities and exact-default migration is reversible',async()=>{
+ const {previewRoleTools}=await import('./tool-catalog.js');const {migrateIsolatedGoalsPrompt,GOALS_MIGRATION_KEY,PREVIOUS_GOALS_DEFAULTS}=await import('./goals-migration.js');const {GOALS_PROMPT}=await import('./prompts.js');
+ const agent=(await db.platform().getAgentByKey('goals'))!;
+ await db.platform().savePrompt(agent.id,PREVIOUS_GOALS_DEFAULTS[0]!,'fixture','test');const old=(await db.query('SELECT current_prompt_id FROM agents WHERE id=$1',[agent.id])).rows[0].current_prompt_id;
+ await db.platform().setSetting(GOALS_MIGRATION_KEY,'');await migrateIsolatedGoalsPrompt(db);expect(await db.platform().currentPrompt(agent.id)).toBe(GOALS_PROMPT);
+ await db.query('UPDATE agents SET current_prompt_id=$2 WHERE id=$1',[agent.id,old]);await migrateIsolatedGoalsPrompt(db);expect(await db.platform().currentPrompt(agent.id)).toBe(PREVIOUS_GOALS_DEFAULTS[0]);
+ const custom='自定义标记 {{Goal}}；背景变量={{Description}} {{.EngagementDescription}}。';await db.platform().savePrompt(agent.id,custom,'custom','test');await db.platform().setSetting(GOALS_MIGRATION_KEY,'');await migrateIsolatedGoalsPrompt(db);expect(await db.platform().currentPrompt(agent.id)).toBe(custom);
+ const f=await fixture();let body='';f.faux.setResponses([fauxAssistantMessage('无新约束'),c=>{body=JSON.stringify(c);return fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:f.task.goal,source_quote:f.task.goal}]})]);}]);await runGoalsDecompose(f.input);expect(body).toContain('自定义标记');expect(body).not.toContain('LOCAL_BACKGROUND_SECRET');
+ const preview=await previewRoleTools(db,'goals');expect(preview.stages?.map(s=>s.resident.sort())).toEqual([['register_user_target','set_constraints'],['set_goals']]);expect(preview.deferred).toEqual([]);
+ await db.platform().savePrompt(agent.id,GOALS_PROMPT,'restore','test');
 });
 it('initialization completes before a seeded Worker can obtain its model',async()=>{
  const f=await fixture();let workerStarted=false;
