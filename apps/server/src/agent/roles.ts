@@ -12,7 +12,7 @@ export { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
 import { CONTEXT_LAYOUT_VERSION } from './prompt-context.js';
 import {plannerSessionFile,validatePlannerSession,lockPlannerSession,selectPlannerDelivery,plannerCurrentState,plannerInvalidations,PLANNER_READING_RULES,PLANNER_COMPACTION_RULES} from './planner-memory.js';
 import {createTrackedRunner} from '../engine/runtime-config.js';
-import {normalizeContract} from './intent-contract.js';
+import {normalizeContract,basisVersion} from './intent-contract.js';
 import {workerLaunchContext} from '../tools/context-read.js';
 import {randomUUID} from 'node:crypto';
 import {resolveGraphNode} from '../db/graph_view.js';
@@ -312,7 +312,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
       for(const ref of contract.basis){
         try{
           const source=await resolveGraphNode(db,taskID,expID,ref.node_id);
-          if(source.node.content_version!==ref.version)return {block:true,reason:'当前意图依据已变化，停止新探测，写回已有观察并总结未完成原因，交 Planner 重新评估'};
+          if(basisVersion({version:source.node.content_version??0,report_revision:source.node.report_revision})!==basisVersion(ref))return {block:true,reason:'当前意图依据已变化，停止新探测，写回已有观察并总结未完成原因，交 Planner 重新评估'};
         }catch{return {block:true,reason:'当前意图依据不再授权，停止访问相关资源并总结阻塞原因，交 Planner 重新评估'};}
       }
     },
