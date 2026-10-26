@@ -49,10 +49,10 @@ it('keeps per-request receipts on DB failure, replays idempotently after log del
   db.transaction=(async fn=>{if(failed)throw new Error('LOCAL database unavailable');const result=await original(fn);failed=true;return result;}) as typeof db.transaction;
   const result=await source.modelRuntime.completeSimple(source.model,{messages:[{role:'user',content:'ping',timestamp:Date.now()}]});expect(result.stopReason).toBe('stop');
  });}finally{db.transaction=original;}
- const files=await readdir(path.join(dir,'usage-outbox'));expect(files).toHaveLength(1);const receipt=JSON.parse(await readFile(path.join(dir,'usage-outbox',files[0]!), 'utf8'));expect(JSON.stringify(receipt)).not.toMatch(/ping|pong|local-fixture/);
+ const files=await readdir(path.join(dir,'usage-outbox'));expect(files).toHaveLength(2);const snapshots=await Promise.all(files.map(async file=>JSON.parse(await readFile(path.join(dir,'usage-outbox',file),'utf8'))));const receipt=snapshots.sort((a,b)=>b.usage._receipt_seq-a.usage._receipt_seq)[0];expect(JSON.stringify(receipt)).not.toMatch(/ping|pong|local-fixture/);
  await db.query('DELETE FROM llm_request_attempts WHERE task_id=$1',[task.id]);expect(await replayUsageOutbox(db)).toBe(0);expect(await replayUsageOutbox(db)).toBe(0);
  expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({calls:1,input_tokens:100,output_tokens:10,usage_complete:true});
- await writeFile(path.join(dir,'usage-outbox',files[0]!),JSON.stringify({...receipt,status:'running',finishedAt:null,usage:{...receipt.usage,input:1,output:0,_receipt_seq:1}}));await replayUsageOutbox(db);
+ await writeFile(path.join(dir,'usage-outbox',receipt.requestID+'.1.json'),JSON.stringify({...receipt,status:'running',finishedAt:null,usage:{...receipt.usage,input:1,output:0,_receipt_seq:1}}));await replayUsageOutbox(db);
  expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({input_tokens:100,output_tokens:10,pending_calls:0});expect((await db.query('SELECT 1 FROM llm_request_attempts WHERE task_id=$1',[task.id])).rowCount).toBe(0);
 });
 
@@ -72,4 +72,31 @@ it('recovers a fsynced receipt after SIGKILL without replaying the provider requ
  expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({calls:1,usage_complete:false});
  expect(await replayUsageOutbox(db)).toBe(0);expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({calls:1,input_tokens:100,output_tokens:10,usage_complete:true});
  expect(await replayUsageOutbox(db)).toBe(0);
+});
+
+it('cannot let replay of an older snapshot remove a newer durable receipt from the live stream',async()=>{
+ const task=await db.tasks().createTaskWithOptions('LOCAL live/replay race','',{executionMode:'manual'});
+ const original=db.transaction.bind(db);let phase:'initial'|'replaying'|'healthy'='initial';
+ let ready!:()=>void,finish!:()=>void,oldReady!:()=>void,oldCommit!:()=>void;
+ const observed=new Promise<void>(r=>ready=r),finishStream=new Promise<void>(r=>finish=r),oldBlocked=new Promise<void>(r=>oldReady=r),commitOld=new Promise<void>(r=>oldCommit=r);
+ try{
+ await fixture('openai',true,{prompt_tokens:100,completion_tokens:10,prompt_tokens_details:{cached_tokens:80}},async source=>{
+  await source.modelRuntime.registerNativeProvider(meterProvider(db,source.modelRuntime.getProvider(source.model.provider),{id:0,name:'LOCAL',model:'fixture'},()=>({taskID:task.id,role:'worker',purpose:'conversation'})));
+  db.transaction=(async fn=>original(async tx=>{
+   const query=tx.query.bind(tx);tx.query=(async(sql,args)=>{
+    if(sql.includes('UPDATE llm_usage_ledger SET status')&&args){
+     const seq=Number(args[5]);if(phase==='initial'||phase==='replaying'&&seq>1)throw new Error('LOCAL receipt persistence outage');
+     if(phase==='replaying'&&seq===1){oldReady();await commitOld;}
+    }
+    return query(sql,args);
+   }) as typeof tx.query;return fn(tx);
+  })) as typeof db.transaction;
+  const pending=source.modelRuntime.completeSimple(source.model,{messages:[{role:'user',content:'LOCAL',timestamp:Date.now()}]},
+   {onProviderStreamEvent:async()=>{ready();await finishStream;}});
+  await observed;phase='replaying';const replay=replayUsageOutbox(db);await oldBlocked;
+  finish();expect((await pending).stopReason).toBe('stop');oldCommit();await replay;
+  phase='healthy';await replayUsageOutbox(db);
+ });
+ }finally{finish();oldCommit();db.transaction=original;phase='healthy';await replayUsageOutbox(db);}
+ expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({calls:1,input_tokens:100,output_tokens:10,usage_complete:true,pending_calls:0});
 });

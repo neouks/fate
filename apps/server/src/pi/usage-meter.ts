@@ -43,6 +43,7 @@ export class UsageObservation {
  }
 }
 type Receipt={requestID:string;auditID:number;status:string;usage:ReturnType<UsageObservation['result']>;finishedAt:string|null};
+const receiptFile=(r:Receipt)=>`${r.requestID}.${r.usage._receipt_seq}.json`;
 const directories=new WeakMap<Database,string>(),memory=new WeakMap<Database,Map<string,Receipt>>();
 export function configureUsageOutbox(db:Database,dataDir:string){directories.set(db,path.resolve(dataDir,'usage-outbox'));}
 function directory(db:Database){
@@ -51,7 +52,9 @@ function directory(db:Database){
 }
 async function persistFile(db:Database,r:Receipt){
  const dir=directory(db);await mkdir(dir,{recursive:true,mode:0o700});
- const dest=path.join(dir,r.requestID+'.json'),tmp=dest+'.'+randomUUID()+'.tmp';
+ // Each revision has its own immutable file. A replaying consumer may only
+ // remove that revision, never a newer snapshot from a still-running request.
+ const dest=path.join(dir,receiptFile(r)),tmp=dest+'.'+randomUUID()+'.tmp';
  await writeFile(tmp,JSON.stringify(r),{mode:0o600});const handle=await open(tmp,'r');try{await handle.sync();}finally{await handle.close();}
  await rename(tmp,dest);
 }
@@ -66,21 +69,27 @@ async function commitReceipt(db:Database,r:Receipt){
  });
 }
 async function saveReceipt(db:Database,r:Receipt){
- const queued=memory.get(db)??new Map<string,Receipt>();memory.set(db,queued);queued.set(r.requestID,r);
+ const queued=memory.get(db)??new Map<string,Receipt>();memory.set(db,queued);const file=receiptFile(r);queued.set(file,r);
  try{await persistFile(db,r);}catch{console.warn('[usage] durable receipt unavailable',r.requestID);}
- try{await commitReceipt(db,r);queued.delete(r.requestID);await unlink(path.join(directory(db),r.requestID+'.json')).catch(()=>{});}
+ try{await commitReceipt(db,r);queued.delete(file);await unlink(path.join(directory(db),file)).catch(()=>{});}
  catch{console.warn('[usage] receipt queued for persistence',r.requestID);}
 }
 export async function replayUsageOutbox(db:Database){
  const queued=memory.get(db)??new Map<string,Receipt>();memory.set(db,queued);
  for(const file of await readdir(directory(db)).catch(()=>[])){
-  if(!/^[a-f0-9-]{36}\.json$/.test(file))continue;
+  if(!/^[a-f0-9-]{36}(?:\.\d+)?\.json$/.test(file))continue;
   try{const r=JSON.parse(await readFile(path.join(directory(db),file),'utf8')) as Receipt;
-   if(file!==r.requestID+'.json'||!r.usage||!Number.isSafeInteger(r.usage._receipt_seq)||r.usage._receipt_seq<1)continue;queued.set(r.requestID,r);
+   if(!r.usage||!Number.isSafeInteger(r.usage._receipt_seq)||r.usage._receipt_seq<1
+    ||file!==r.requestID+'.json'&&file!==receiptFile(r))continue;queued.set(file,r);
   }catch{console.warn('[usage] invalid receipt retained for inspection');}
  }
- for(const r of queued.values()){
-  try{await persistFile(db,r);await commitReceipt(db,r);queued.delete(r.requestID);await unlink(path.join(directory(db),r.requestID+'.json')).catch(()=>{});}catch{/* Next bounded background pass retries only metering. */}
+ for(const [file,r] of [...queued]){
+  try{
+   await persistFile(db,r);await commitReceipt(db,r);queued.delete(file);
+   await unlink(path.join(directory(db),receiptFile(r))).catch(()=>{});
+   // Import receipts created by the previous release without replaying models.
+   if(file!==receiptFile(r))await unlink(path.join(directory(db),file)).catch(()=>{});
+  }catch{/* Next bounded background pass retries only metering. */}
  }
  return queued.size;
 }
