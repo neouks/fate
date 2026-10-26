@@ -100,3 +100,12 @@ it('cannot let replay of an older snapshot remove a newer durable receipt from t
  }finally{finish();oldCommit();db.transaction=original;phase='healthy';await replayUsageOutbox(db);}
  expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({calls:1,input_tokens:100,output_tokens:10,usage_complete:true,pending_calls:0});
 });
+
+it('keeps an interrupted cumulative usage snapshot partial until the provider returns final usage',()=>{
+ const a=new UsageObservation();a.observe({type:'message_start',message:{usage:{input_tokens:20,output_tokens:0,cache_read_input_tokens:80,cache_creation_input_tokens:0}}},'anthropic-messages');
+ expect(a.result(null,false,true)).toMatchObject({input:20,cacheRead:80,totalTokens:100,_quality:'partial'});
+ a.observe({type:'message_delta',delta:{stop_reason:'end_turn'},usage:{output_tokens:10}},'anthropic-messages');expect(a.result(null,false,true)).toMatchObject({totalTokens:110,_quality:'complete'});
+ const openai=new UsageObservation();openai.observe({choices:[{delta:{content:'partial'},finish_reason:null}],usage:{prompt_tokens:100,completion_tokens:1,prompt_tokens_details:{cached_tokens:80}}},'openai-completions');expect(openai.result(null,false,true)._quality).toBe('partial');
+ openai.observe({choices:[],usage:{prompt_tokens:100,completion_tokens:10,prompt_tokens_details:{cached_tokens:80}}},'openai-completions');expect(openai.result(null,false,true)._quality).toBe('complete');
+ const responses=new UsageObservation();responses.observe({type:'response.created',response:{usage:{input_tokens:100,output_tokens:0,input_tokens_details:{cached_tokens:80}}}},'openai-responses');expect(responses.result(null,false,true)._quality).toBe('partial');responses.observe({type:'response.completed',response:{usage:{input_tokens:100,output_tokens:10,input_tokens_details:{cached_tokens:80}}}},'openai-responses');expect(responses.result(null,false,true)._quality).toBe('complete');
+});

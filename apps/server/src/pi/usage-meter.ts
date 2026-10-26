@@ -11,11 +11,12 @@ type Field=typeof fields[number];
 type Counts=Partial<Record<Field,number>>;
 const number=(v:unknown):number|undefined=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0?v:undefined;
 export class UsageObservation {
- readonly counts:Counts={};seen=false;inputTotal:number|undefined;
+ readonly counts:Counts={};seen=false;finalUsage=false;inputTotal:number|undefined;
  observe(data:unknown,api:string){
   const d=data as any;
   const u=api==='anthropic-messages'?(d?.message?.usage??d?.usage):(d?.response?.usage??d?.usage??d?.choices?.[0]?.usage);
   if(!u||typeof u!=='object')return;this.seen=true;
+  if(api==='anthropic-messages'?!!d?.delta?.stop_reason:api==='openai-completions'?Array.isArray(d?.choices)&&(d.choices.length===0||d.choices.some((c:any)=>!!c.finish_reason)):['response.completed','response.incomplete','response.failed'].includes(d?.type))this.finalUsage=true;
   const put=(key:Field,value:unknown)=>{const n=number(value);if(n!==undefined)this.counts[key]=n;};
   if(api==='anthropic-messages'){
    if(number(u.input_tokens)!==undefined){put('input',u.input_tokens);put('cacheRead',u.cache_read_input_tokens??0);put('cacheWrite',u.cache_creation_input_tokens??0);}
@@ -31,13 +32,13 @@ export class UsageObservation {
    put('output',api==='openai-completions'?u.completion_tokens:u.output_tokens);
   }
  }
- result(native:unknown,notSent=false){
+ result(native:unknown,notSent=false,interrupted=false){
   const n=native as any;const c={...this.counts};
   // Unsupported native adapters may provide real positive normalized usage. A zero SDK placeholder is never proof.
   if(!this.seen&&fields.every(k=>number(n?.[k])!==undefined)&&fields.some(k=>n[k]>0))for(const k of fields)c[k]=n[k];
   const known=fields.filter(k=>c[k]!==undefined);
   const inputTotal=this.inputTotal??(known.length===4?c.input!+c.cacheRead!+c.cacheWrite!:undefined);
-  const quality=known.length===4?'complete':notSent&&!known.length?'not_sent':known.length?'partial':'unknown';
+  const quality=known.length===4?(interrupted&&!this.finalUsage?'partial':'complete'):notSent&&!known.length?'not_sent':known.length?'partial':'unknown';
   return {input:c.input??0,output:c.output??0,cacheRead:c.cacheRead??0,cacheWrite:c.cacheWrite??0,
    inputTotal:inputTotal??0,totalTokens:(inputTotal??0)+(c.output??0),_input_total_known:inputTotal!==undefined||notSent,_cache_read_known:c.cacheRead!==undefined||notSent,_quality:quality,_known_fields:quality==='not_sent'?[...fields]:known,_source:'provider',_receipt_seq:1};
  }
@@ -106,7 +107,7 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
    const record=async(message:AssistantMessage)=>{
     if(saved)return;saved=true;
     const status=message.stopReason==='error'?'failed':message.stopReason==='aborted'?'aborted':'completed';
-    await saveReceipt(db,{requestID,auditID,status,finishedAt:new Date().toISOString(),usage:{...observation.result(message.usage,!attempted),_receipt_seq:++sequence}});
+    await saveReceipt(db,{requestID,auditID,status,finishedAt:new Date().toISOString(),usage:{...observation.result(message.usage,!attempted,['error','aborted'].includes(message.stopReason)),_receipt_seq:++sequence}});
     if(message.errorMessage)await db.query('UPDATE llm_request_attempts SET error=$2 WHERE request_id=$1',[requestID,String(message.errorMessage).replaceAll(profile.apiKey||'\0','[redacted]').replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi,'$1[redacted]@').replace(/Bearer\s+[^\s]+/gi,'Bearer [redacted]').replace(/sk-[A-Za-z0-9_-]+/g,'[redacted]').slice(0,1000)]).catch(()=>undefined);
    };
    void(async()=>{
