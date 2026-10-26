@@ -41,7 +41,7 @@ export class Coordinator {
   }
   async promote(){
     return this.db.transaction(async tx=>{
-      if(!(await tx.query('SELECT pg_try_advisory_xact_lock($1) locked',[ADMISSION_LOCK])).rows[0]?.locked)return [];
+      await tx.query('SELECT pg_advisory_xact_lock($1)',[ADMISSION_LOCK]);
       const settings=await tx.query(`SELECT key,value FROM settings WHERE key IN ('task_concurrency_enabled','task_concurrency_limit')`);
       const values=Object.fromEntries(settings.rows.map(r=>[r.key,r.value]));
       const limit=values.task_concurrency_enabled==='true'?Math.max(1,Number(values.task_concurrency_limit)||5):10000;
@@ -59,7 +59,7 @@ export class Coordinator {
     return r.rows[0]?.token as string|undefined;
   }
   async renew(taskID:number,token:string){
-    const r=await this.db.control().query(`UPDATE engine_task_leases SET expires_at=now()+interval '15 seconds' WHERE task_id=$1 AND owner=$2 AND token=$3 AND expires_at>now() RETURNING token`,[taskID,this.owner,token]);
+    const r=await this.db.query(`UPDATE engine_task_leases SET expires_at=now()+interval '15 seconds' WHERE task_id=$1 AND owner=$2 AND token=$3 AND expires_at>now() RETURNING token`,[taskID,this.owner,token]);
     if(!r.rowCount)throw new Error('任务执行租约已失效');
   }
   async assert(taskID:number,token:string,tx=this.db){
@@ -68,14 +68,14 @@ export class Coordinator {
   }
   async release(taskID:number,token:string){await this.db.query('DELETE FROM engine_worker_slots WHERE task_id=$1 AND token=$2',[taskID,token]);await this.db.query('DELETE FROM engine_task_leases WHERE task_id=$1 AND owner=$2 AND token=$3',[taskID,this.owner,token]);}
   /** Serialize reservations across instances, including explicit resumes. Acquire before graph locks. */
-  async lockWorkerCapacity(tx:Database){return (await tx.query('SELECT pg_try_advisory_xact_lock($1) locked',[WORKER_LOCK])).rows[0]?.locked===true;}
+  async lockWorkerCapacity(tx:Database){await tx.query('SELECT pg_advisory_xact_lock($1)',[WORKER_LOCK]);}
   /** Only this task's actual executions consume its capacity. Planning never reserves slots. */
   async workerSlot(taskID:number,token:string){
     return this.db.transaction(tx=>this.reserveWorkerSlot(tx,taskID,token));
   }
   /** Also used in the manual-resume transaction so state and occupancy commit together. */
   async reserveWorkerSlot(tx:Database,taskID:number,token:string,manual=false,intentID?:number){
-      if(!await this.lockWorkerCapacity(tx))return undefined;
+    await this.lockWorkerCapacity(tx);
     await this.assert(taskID,token,tx);
     const task=await tx.tasks().getTask(taskID);
     if(!task||task.status!=='running'||task.paused||task.queued)return undefined;
@@ -88,14 +88,4 @@ export class Coordinator {
   }
   async releaseSlot(id:string){await this.db.query('DELETE FROM engine_worker_slots WHERE id=$1',[id]);}
 
-  async plannerSlot(taskID:number,token:string){
-    return this.db.transaction(async tx=>{
-      if(!(await tx.query('SELECT pg_try_advisory_xact_lock(4200000030) locked')).rows[0]?.locked)return false;
-      await this.assert(taskID,token,tx);
-      await tx.query('DELETE FROM engine_planner_slots p WHERE NOT EXISTS(SELECT 1 FROM engine_task_leases l WHERE l.task_id=p.task_id AND l.token=p.token AND l.expires_at>clock_timestamp())');
-      if(Number((await tx.query('SELECT count(*) n FROM engine_planner_slots')).rows[0]?.n)>=await this.workers(tx))return false;
-      return !!(await tx.query('INSERT INTO engine_planner_slots(task_id,token) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING task_id',[taskID,token])).rowCount;
-    });
-  }
-  async releasePlanner(taskID:number,token:string){await this.db.control().query('DELETE FROM engine_planner_slots WHERE task_id=$1 AND token=$2',[taskID,token]);}
 }
