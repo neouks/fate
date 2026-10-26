@@ -104,7 +104,7 @@ export async function aggregateUsage(db:Database,scope:UsageScope&{days?:number;
   conversation:'conversation_id::text',role:'role',task:'task_id::text'};
  if(group==='conversation')where.push('conversation_id IS NOT NULL');
  if(group==='task')where.push('task_id IS NOT NULL');
- const rows=(await db.query(`WITH ${CANONICAL_USAGE_CTE.replace('/* usage_scope */',identityWhere?'WHERE '+identityWhere:'')} SELECT ${group?`${expression[group]} bucket, max(model) model,max(profile_name) profile_name,max(profile_id) profile_id, max(task_id) task_id,max(role) role,min(to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')) date, min(created_at) created_at,`:''}${USAGE_SUM_SQL}
+ const rows=(await db.query(`WITH ${CANONICAL_USAGE_CTE.replace('/* usage_scope */',identityWhere?'WHERE '+identityWhere:'')} SELECT ${group?`${expression[group]} bucket, CASE WHEN count(DISTINCT model)=1 THEN max(model) END model,array_agg(DISTINCT model) models,CASE WHEN count(DISTINCT COALESCE(profile_id::text,'unknown'))=1 THEN max(profile_name) END profile_name,CASE WHEN count(DISTINCT COALESCE(profile_id::text,'unknown'))=1 THEN max(profile_id) END profile_id,array_agg(DISTINCT profile_id) profile_ids,CASE WHEN count(DISTINCT COALESCE(task_id::text,'unknown'))=1 THEN max(task_id) END task_id,CASE WHEN count(DISTINCT role)=1 THEN max(role) END role,min(to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')) date, min(created_at) created_at,`:''}${USAGE_SUM_SQL}
   FROM measured ${where.length?'WHERE '+where.join(' AND '):''} ${group?'GROUP BY 1 ORDER BY 1':''}`,params)).rows;
  return rows.map(r=>({...r,...usageDTO(r)}));
 }

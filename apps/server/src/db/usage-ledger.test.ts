@@ -62,3 +62,13 @@ it('keeps partial input totals while suppressing cache rates when cached input i
  const t=await fixture();await db.query("INSERT INTO llm_request_attempts(task_id,role,model,status,usage) VALUES($1,'worker','LOCAL','completed',$2)",[t.id,JSON.stringify({input:0,output:4,cacheRead:0,cacheWrite:0,inputTotal:100,_input_total_known:true,_cache_read_known:false,_quality:'partial'})]);
  expect((await aggregateUsage(db,{taskID:t.id}))[0]).toMatchObject({calls:1,input_tokens:100,output_tokens:4,unknown_usage_calls:1,usage_complete:false,input_complete:false});
 });
+it('does not assign a multi-profile conversation to one arbitrary profile or model',async()=>{
+ const t=await fixture(),c=Number((await db.query("INSERT INTO conversations(agent_key,title,task_id) VALUES('pentest','LOCAL fallback conversation',$1) RETURNING id",[t.id])).rows[0]!.id);
+ const profiles=[];
+ for(const model of ['LOCAL alpha','LOCAL beta']){
+  const p=Number((await db.query("INSERT INTO llm_profiles(name,model,format) VALUES($1,$1,'openai') RETURNING id",[model])).rows[0]!.id);profiles.push(p);
+  await db.query("INSERT INTO llm_request_attempts(task_id,conversation_id,role,profile_id,model,status,usage) VALUES($1,$2,'pentest',$3,$4,'completed',$5)",[t.id,c,p,model,JSON.stringify(usage(1,2,3))]);
+ }
+ const [conversation]=await aggregateUsage(db,{conversationID:c},'conversation');expect(conversation).toMatchObject({calls:2,input_tokens:8,output_tokens:4,profile_id:null,model:null});expect(conversation.models).toEqual(['LOCAL alpha','LOCAL beta']);expect(conversation.profile_ids.map(Number).sort()).toEqual(profiles.sort());
+ expect((await aggregateUsage(db,{conversationID:c},'profile')).map(r=>r.calls)).toEqual([1,1]);
+});
