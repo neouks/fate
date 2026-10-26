@@ -910,7 +910,7 @@ export class Engine {
     const name=`manual#${intentID}`;
     let slot:string|undefined;
     const inserted=await this.db.transaction(async db=>{
-      if(!await this.coordinator.lockWorkerCapacity(db))throw Object.assign(new Error('调度正在处理其他领取，请重试恢复'),{statusCode:409});
+      await this.coordinator.lockWorkerCapacity(db);
       await this.coordinator.assert(taskID,rt.lease!,db);
       await db.query('SELECT pg_advisory_xact_lock($1)',[-rt.expID]);
       const live=await db.tasks().getTask(taskID);
