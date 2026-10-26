@@ -219,6 +219,7 @@ export class Engine {
       if(!model){if(await goalsBootstrap(this.db,taskID))throw new Error("未配置 Goals 模型");return;}
       const turn=this.beginActivityTurn(rt,{worker:"goals"});
       return runGoalsDecompose({
+        turnID:turn.turnID,
         db: this.db, taskID, expID: rt.expID, model, dataDir: this.dataDir,
         description: opts.decompose!.description, signal: rt.plannerAbort!.signal, hooks:this.engineHooks(rt),onActivity:turn.onActivity,
       }).then(result=>{this.emitActivity(taskID,{worker:'goals',kind:'result',metadata:{...turn.metadata,event_type:'lifecycle',status:result.aborted?'stopped':'completed'},summary:result.aborted?'目标分解已停止':'目标分解完成'});return result;})
@@ -602,6 +603,7 @@ export class Engine {
     let failure: unknown = null;
     try {
       result = await runWorkerIntent({
+        turnID:turn.turnID,
         onRunner:ready,
         db: this.db, taskID: rt.taskID, expID: rt.expID,
         intent: intent as never, workerName: name, model,
@@ -946,6 +948,7 @@ export class Engine {
       this.emitActivity(taskID, { kind: "user", worker: "main", mainSeg: segment, summary: message, detail: message, metadata:{...turn.metadata,attachments:attachments?.refs??[]} });
       try {
         const res = await runMainChat({
+          turnID:turn.turnID,
           db: this.db, taskID, expID: rt.expID, goal: task?.goal ?? task?.description ?? "",
           model, dataDir: this.dataDir, hooks: {...this.engineHooks(rt, segment),assertOwnership:lease.assert}, message, segment, images:attachments?.images,
           egressAddr:this.egressAddr,egressScope:`main:${taskID}:${segment}:${lease.token}`,
@@ -1053,6 +1056,7 @@ export class Engine {
       if (rt.stopped || rt.paused) return;
       const turn=this.beginActivityTurn(rt,{worker:"planner"});
       await runPlannerRound({
+        planningRoundID:turn.turnID,
         db: this.db, taskID: rt.taskID, expID: rt.expID,
         goal: task?.goal ?? task?.description ?? "",
         model, dataDir: this.dataDir, todos: rt.todos, hooks: this.engineHooks(rt),

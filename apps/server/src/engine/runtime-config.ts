@@ -30,9 +30,10 @@ export async function createTrackedRunner(db:Database,taskID:number,role:string,
  const configured=await configuredRole(db,taskID,role,conversationID),id=randomUUID();
  options={...options,...await prepareToolLoading(db,role,options,configured.platform_policy.builtinLoading==='direct',configured.platform_policy.fallback)};
  options.modelPolicy?.setRuntimeID?.(id);
+ options.modelPolicy?.setScope?.({intentID:options.intentID,mainSegment:options.mainSegment,turnID:options.turnID});
  const controller=new AbortController();
  const signal=options.signal?AbortSignal.any([options.signal,controller.signal]):controller.signal;
- const effective={goals_phase:options.goalsPhase,tool_loading:options.toolLoading,context_layout:options.contextLayout??'legacy',collaboration_policy:'blackboard-v1',platform_policy:configured.platform_policy,max_turns:options.maxTurns??null,max_duration_ms:options.maxDurationMs??null,wrapup_max_turns:options.maxWrapupTurns??null,
+ const effective={usage_scope:{intentID:options.intentID,mainSegment:options.mainSegment,turnID:options.turnID},goals_phase:options.goalsPhase,tool_loading:options.toolLoading,context_layout:options.contextLayout??'legacy',collaboration_policy:'blackboard-v1',platform_policy:configured.platform_policy,max_turns:options.maxTurns??null,max_duration_ms:options.maxDurationMs??null,wrapup_max_turns:options.maxWrapupTurns??null,
   model:configured.model,model_route:{provider:options.model.provider,id:options.model.id},streaming:options.streaming!==false,
   prompt_hash:digest(options.systemPrompt??''),tools:options.toolAllowlist??[],skills:options.allowedSkills??[],mcp:(options.mcpEntries??[]).map(e=>e.name)};
  const guard=options.guard;
