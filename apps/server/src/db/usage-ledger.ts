@@ -66,12 +66,13 @@ export const CANONICAL_USAGE_CTE=`ledger AS MATERIALIZED (
   GREATEST(0,COALESCE((usage->>'cacheRead')::bigint,0)) cr,GREATEST(0,COALESCE((usage->>'cacheWrite')::bigint,0)) cw FROM canonical
 )`;
 
-export const USAGE_SUM_SQL=`count(*) FILTER(WHERE source<>'legacy_results') calls,
+export const USAGE_SUM_SQL=`count(DISTINCT task_id) tasks,count(*) FILTER(WHERE source<>'legacy_results') calls,
  COALESCE(sum(CASE WHEN usage->>'_input_total_known'='true' THEN (usage->>'inputTotal')::bigint ELSE i+CASE WHEN input_semantics='exclusive_cache' THEN cr+cw ELSE 0 END END),0) input_tokens,
  COALESCE(sum(i) FILTER(WHERE input_semantics='exclusive_cache'),0) uncached_input_tokens,COALESCE(sum(o),0) output_tokens,
  COALESCE(sum(cr),0) cache_read_tokens,COALESCE(sum(cw),0) cache_write_tokens,
  count(*) FILTER(WHERE quality NOT IN ('complete','not_sent')) unknown_usage_calls,
  count(*) FILTER(WHERE history_gap) history_gap_requests,
+ count(*) FILTER(WHERE source NOT IN ('provider','request_audit')) time_unknown_records,
  count(*) FILTER(WHERE source='legacy_results') legacy_records,
  count(*) FILTER(WHERE status='running') pending_calls,
  count(*) FILTER(WHERE status IN ('failed','aborted')) failed_calls,
@@ -81,19 +82,21 @@ export const USAGE_SUM_SQL=`count(*) FILTER(WHERE source<>'legacy_results') call
  bool_and(input_semantics='exclusive_cache' AND (quality IN ('complete','not_sent') OR COALESCE(usage->>'_input_total_known'='true' AND usage->>'_cache_read_known'='true',false)) AND NOT history_gap) input_complete`;
 
 export function usageDTO(row:Record<string,unknown>={}){
- const keys=['calls','input_tokens','uncached_input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','unknown_usage_calls','legacy_records','pending_calls','failed_calls','compaction_calls','history_gap_requests'] as const;
+ const keys=['calls','input_tokens','uncached_input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','unknown_usage_calls','legacy_records','pending_calls','failed_calls','compaction_calls','history_gap_requests','tasks','time_unknown_records'] as const;
  const counts=Object.fromEntries(keys.map(k=>[k,Number(row[k]??0)])) as Record<typeof keys[number],number>;
  return {...counts,version:USAGE_VERSION,input_semantics:row.input_complete===false?'unknown':'inclusive_cache',
    usage_complete:row.usage_complete!==false,calls_complete:row.calls_complete!==false,input_complete:row.input_complete!==false,source:'usage_ledger'};
 }
 
-export async function aggregateUsage(db:Database,scope:UsageScope&{days?:number;since?:string;until?:string}={},group?:'model'|'profile'|'day'|'profile_day'|'worker'|'session'|'conversation'|'role'|'task'):Promise<Array<Record<string,any>&ReturnType<typeof usageDTO>>>{
+export async function aggregateUsage(db:Database,scope:UsageScope&{days?:number;since?:string;until?:string;timeKnown?:boolean}={},group?:'model'|'profile'|'day'|'profile_day'|'worker'|'session'|'conversation'|'role'|'task'):Promise<Array<Record<string,any>&ReturnType<typeof usageDTO>>>{
  const params:unknown[]=[];const where:string[]=[];
  for(const [key,col] of [['taskID','task_id'],['conversationID','conversation_id'],['runtimeID','runtime_id'],['turnID','turn_id'],['intentID','intent_id'],['mainSegment','main_seg']] as const)
   if(scope[key]!==undefined){params.push(scope[key]);where.push(`${col}=$${params.length}`);}
  const identityWhere=where.join(' AND ');
  if(scope.days!==undefined){params.push(scope.days);where.push(`created_at>=((now() AT TIME ZONE 'Asia/Shanghai')::date-($${params.length}::int-1)) AT TIME ZONE 'Asia/Shanghai'`);}
  for(const [key,operator] of [['since','>='],['until','<']] as const)if(scope[key]){params.push(scope[key]);where.push(`created_at${operator}$${params.length}::timestamptz`);}
+ if(scope.timeKnown!==undefined)where.push(scope.timeKnown?"source IN ('provider','request_audit')":"source NOT IN ('provider','request_audit')");
+ if(group==='day'||group==='profile_day')where.push("source IN ('provider','request_audit')");
  const expression={model:'model',profile:"COALESCE(profile_id::text,'unknown')",day:"to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')",
   profile_day:"COALESCE(profile_id::text,'unknown')||':'||to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')",
   worker:"CASE WHEN role='worker' THEN COALESCE(worker_name,'intent:'||intent_id,'worker') ELSE role END",
@@ -101,7 +104,7 @@ export async function aggregateUsage(db:Database,scope:UsageScope&{days?:number;
   conversation:'conversation_id::text',role:'role',task:'task_id::text'};
  if(group==='conversation')where.push('conversation_id IS NOT NULL');
  if(group==='task')where.push('task_id IS NOT NULL');
- const rows=(await db.query(`WITH ${CANONICAL_USAGE_CTE.replace('/* usage_scope */',identityWhere?'WHERE '+identityWhere:'')} SELECT ${group?`${expression[group]} bucket, max(model) model,max(profile_name) profile_name,max(profile_id) profile_id, max(task_id) task_id,max(role) role,min(to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')) date, min(created_at) created_at,count(DISTINCT task_id) tasks,`:''}${USAGE_SUM_SQL}
+ const rows=(await db.query(`WITH ${CANONICAL_USAGE_CTE.replace('/* usage_scope */',identityWhere?'WHERE '+identityWhere:'')} SELECT ${group?`${expression[group]} bucket, max(model) model,max(profile_name) profile_name,max(profile_id) profile_id, max(task_id) task_id,max(role) role,min(to_char(created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')) date, min(created_at) created_at,`:''}${USAGE_SUM_SQL}
   FROM measured ${where.length?'WHERE '+where.join(' AND '):''} ${group?'GROUP BY 1 ORDER BY 1':''}`,params)).rows;
  return rows.map(r=>({...r,...usageDTO(r)}));
 }

@@ -32,7 +32,9 @@ it('recovers 132 known tokens across old native and new audited executions of th
  await s.appendActivity({worker:'main',kind:'text',main_seg:2,summary:'LOCAL response',metadata:{turn_id:turn,stream_id:'old-response',response:{model:'LOCAL-model',stop_reason:'stop',usage:usage(100,10,0)}}});
  await audit(t.id,'new-runtime',usage(20,2,0));
  const total=(await aggregateUsage(db,{taskID:t.id}))[0]!;
- expect(total).toMatchObject({calls:2,input_tokens:120,output_tokens:12,usage_complete:true});
+ expect(total).toMatchObject({calls:2,input_tokens:120,output_tokens:12,usage_complete:true,time_unknown_records:1});
+ expect((await aggregateUsage(db,{taskID:t.id},'day')).reduce((n,r)=>n+r.input_tokens+r.output_tokens,0)).toBe(22);
+ expect((await aggregateUsage(db,{taskID:t.id,timeKnown:false}))[0]).toMatchObject({input_tokens:100,output_tokens:10});
 });
 it('never adds native and final run aggregates on top of audited usage',async()=>{
  const t=await fixture(),s=db.exploration(t.exploration_id),runtime='complete-runtime';

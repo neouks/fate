@@ -26,7 +26,7 @@ export class UsageObservation {
    const read=number(api==='openai-completions'?(u.prompt_tokens_details?.cached_tokens??u.prompt_cache_hit_tokens??u.cached_tokens):(u.input_tokens_details?.cached_tokens));
    const write=number((api==='openai-completions'?u.prompt_tokens_details:u.input_tokens_details)?.cache_write_tokens??0);
    if(prompt!==undefined)this.inputTotal=prompt;
-   if(read!==undefined)put('cacheRead',read);if(write!==undefined)put('cacheWrite',write);
+   if(read!==undefined&&(prompt===undefined||read<=prompt))put('cacheRead',read);if(write!==undefined&&(prompt===undefined||write<=prompt))put('cacheWrite',write);
    if(prompt!==undefined&&read!==undefined&&write!==undefined&&read+write<=prompt){put('input',prompt-read-write);put('cacheRead',read);put('cacheWrite',write);}
    put('output',api==='openai-completions'?u.completion_tokens:u.output_tokens);
   }
@@ -93,7 +93,7 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
   return (model:Model<any>,messages:any,options:SimpleStreamOptions={})=>{
    const stream=createAssistantMessageEventStream(),scope={...context()},requestID=randomUUID(),observation=new UsageObservation();
    let auditID=0,attempted=false,saved=false,sequence=0;
-   const snapshot=()=>({...observation.result(undefined),_receipt_seq:++sequence});
+   const snapshot=()=>{const value=observation.result(undefined);return {...value,_quality:value._quality==='complete'?'partial':value._quality,_receipt_seq:++sequence};};
    const record=async(message:AssistantMessage)=>{
     if(saved)return;saved=true;
     const status=message.stopReason==='error'?'failed':message.stopReason==='aborted'?'aborted':'completed';

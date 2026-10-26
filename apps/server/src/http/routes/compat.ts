@@ -813,13 +813,15 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     if(!task)throw Object.assign(new Error('任务不存在'),{statusCode:404});
     const scope={taskID:Number(task.id)};
     const [total,workers,sessions]=await Promise.all([aggregateUsage(db(),scope),aggregateUsage(db(),scope,'worker'),aggregateUsage(db(),scope,'session')]);
-    return {total:total[0],workers:workers.map(r=>({...r,worker:r.bucket})),sessions:sessions.map(r=>({...r,session:r.bucket})),version:'usage-v2'};
+    const mainSegments=sessions.filter(r=>String(r.bucket).startsWith('main:'));
+    return {total:total[0],workers:workers.map(r=>({...r,worker:r.bucket})),sessions:sessions.map(r=>({...r,session:r.bucket})),
+      session_aliases:{main:{session:'main',is_alias:true,alias_of:mainSegments.map(r=>r.bucket),input_tokens:mainSegments.reduce((n,r)=>n+r.input_tokens,0),output_tokens:mainSegments.reduce((n,r)=>n+r.output_tokens,0),cache_read_tokens:mainSegments.reduce((n,r)=>n+r.cache_read_tokens,0),cache_write_tokens:mainSegments.reduce((n,r)=>n+r.cache_write_tokens,0)}},version:'usage-v2'};
   });
   const usageWindow=(q:Record<string,string>,defaultDays:number)=>({days:Math.min(Math.max(q2n(q.days,defaultDays),1),3650)});
   app.get('/api/tokens/usage',async req=>{
     const scope=usageWindow(req.query as Record<string,string>,365);
-    const [total,profiles,daily]=await Promise.all([aggregateUsage(db(),scope),aggregateUsage(db(),scope,'profile'),aggregateUsage(db(),scope,'profile_day')]);
-    return {version:'usage-v2',timezone:'Asia/Shanghai',total:total[0],by_profile:profiles,daily,unverified_history:await unverifiedUsageHistory(db())};
+    const [total,profiles,daily,undated]=await Promise.all([aggregateUsage(db()),aggregateUsage(db(),{},'profile'),aggregateUsage(db(),scope,'profile_day'),aggregateUsage(db(),{timeKnown:false})]);
+    return {version:'usage-v2',timezone:'Asia/Shanghai',total_scope:'retained_all_time',daily_days:scope.days,daily_complete:total[0]!.time_unknown_records===0,unassigned_time:undated[0],total:total[0],by_profile:profiles,daily,unverified_history:await unverifiedUsageHistory(db())};
   });
   app.get('/api/tokens/daily',async req=>(await aggregateUsage(db(),usageWindow(req.query as Record<string,string>,30),'day')).map(r=>({...r,day:r.bucket,date:r.bucket})));
   app.get('/api/tokens/conversations',async()=>{
