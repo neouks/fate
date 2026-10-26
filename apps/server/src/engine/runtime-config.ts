@@ -106,7 +106,7 @@ export async function recoverExpiredRuntimes(db:Database) {
    effective=effective||'{"stop_reason":"executor_expired","recovered":true}'::jsonb
    WHERE finished_at IS NULL AND expires_at<=clock_timestamp() RETURNING id`);
   const attempts=await tx.query(`UPDATE llm_request_attempts a SET status='aborted',finished_at=now(),
-   error='执行器失联或进程退出；请求已中断，供应商用量未知',usage=usage||'{"unavailable":true}'::jsonb
+   error='执行器失联或进程退出；请求已中断，用量以计量记录为准',usage=usage||jsonb_build_object('unavailable',COALESCE(usage->>'_quality','unknown') NOT IN ('complete','not_sent'))
    WHERE a.status='running' AND EXISTS(SELECT 1 FROM runtime_role_configs r WHERE r.id=a.runtime_id AND r.finished_at IS NOT NULL)
    RETURNING a.id`);
   return {runtimes:expired.rowCount??0,requests:attempts.rowCount??0};

@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS llm_usage_ledger (
  request_id TEXT PRIMARY KEY, audit_id BIGINT UNIQUE,
  task_id BIGINT, conversation_id BIGINT, intent_id BIGINT, main_seg INT,
  runtime_id TEXT, turn_id TEXT, scope_key TEXT NOT NULL,
- role TEXT NOT NULL, purpose TEXT NOT NULL DEFAULT 'conversation',
+ worker_name TEXT, role TEXT NOT NULL, purpose TEXT NOT NULL DEFAULT 'conversation',
  profile_id BIGINT, profile_name TEXT, model TEXT NOT NULL,
  status TEXT NOT NULL, usage JSONB NOT NULL DEFAULT '{}',
  quality TEXT NOT NULL DEFAULT 'unknown', input_semantics TEXT NOT NULL DEFAULT 'exclusive_cache',
@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS llm_usage_ledger (
  created_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ,
  CHECK(quality IN ('complete','partial','unknown','not_sent','legacy_unknown'))
 );
+ALTER TABLE llm_usage_ledger ADD COLUMN IF NOT EXISTS worker_name TEXT;
 CREATE INDEX IF NOT EXISTS usage_ledger_task ON llm_usage_ledger(task_id,created_at);
 CREATE INDEX IF NOT EXISTS usage_ledger_conversation ON llm_usage_ledger(conversation_id,created_at);
 CREATE INDEX IF NOT EXISTS usage_ledger_runtime ON llm_usage_ledger(runtime_id);
@@ -31,9 +32,9 @@ BEGIN
      COALESCE((NEW.usage->>'input')::numeric,0)+COALESCE((NEW.usage->>'output')::numeric,0)+COALESCE((NEW.usage->>'cacheRead')::numeric,0)+COALESCE((NEW.usage->>'cacheWrite')::numeric,0)>0 THEN 'complete'
    WHEN NEW.usage ?| ARRAY['input','output','cacheRead','cacheWrite'] THEN 'partial' ELSE 'unknown' END);
  INSERT INTO llm_usage_ledger(request_id,audit_id,task_id,conversation_id,intent_id,main_seg,runtime_id,turn_id,scope_key,
-   role,purpose,profile_id,profile_name,model,status,usage,quality,source,receipt_seq,created_at,finished_at)
+   worker_name,role,purpose,profile_id,profile_name,model,status,usage,quality,source,receipt_seq,created_at,finished_at)
  VALUES(rid,NEW.id,NEW.task_id,NEW.conversation_id,(identity->>'intentID')::bigint,(identity->>'mainSegment')::int,
-   NEW.runtime_id,identity->>'turnID',COALESCE(NEW.runtime_id,identity->>'turnID',rid),NEW.role,NEW.purpose,
+   NEW.runtime_id,identity->>'turnID',COALESCE(NEW.runtime_id,identity->>'turnID',rid),(SELECT worker FROM activity WHERE node_id=(identity->>'intentID')::bigint ORDER BY id DESC LIMIT 1),NEW.role,NEW.purpose,
    NEW.profile_id,profile_label,NEW.model,NEW.status,NEW.usage,q,COALESCE(NEW.usage->>'_source','request_audit'),
    COALESCE((NEW.usage->>'_receipt_seq')::bigint,0),NEW.created_at,NEW.finished_at)
  ON CONFLICT(request_id) DO UPDATE SET status=EXCLUDED.status,usage=EXCLUDED.usage,quality=EXCLUDED.quality,
@@ -67,8 +68,8 @@ BEGIN
  ) starts ORDER BY id DESC LIMIT 1;
  runtime:=identity->>'runtime_id';role_key:=COALESCE(identity->>'role',CASE WHEN NEW.worker='main' THEN 'mainagent' WHEN NEW.worker LIKE 'work#%' THEN 'worker' ELSE NEW.worker END,'unknown');
  IF src='legacy_results' AND runtime IS NOT NULL THEN q:='complete';END IF;
- INSERT INTO llm_usage_ledger(request_id,task_id,conversation_id,intent_id,main_seg,runtime_id,turn_id,scope_key,role,model,status,usage,quality,input_semantics,source,created_at,finished_at)
- VALUES(rid,tid,cid,nid,seg,runtime,NEW.metadata->>'turn_id',COALESCE(runtime,NEW.metadata->>'turn_id',rid),role_key,
+ INSERT INTO llm_usage_ledger(request_id,task_id,conversation_id,intent_id,main_seg,runtime_id,turn_id,scope_key,worker_name,role,model,status,usage,quality,input_semantics,source,created_at,finished_at)
+ VALUES(rid,tid,cid,nid,seg,runtime,NEW.metadata->>'turn_id',COALESCE(runtime,NEW.metadata->>'turn_id',rid),NEW.worker,role_key,
    COALESCE(NEW.metadata->'response'->>'model','未记录模型'),'completed',token_data,q,CASE WHEN q='legacy_unknown' THEN 'unknown' ELSE 'exclusive_cache' END,src,NEW.created_at,NEW.created_at)
  ON CONFLICT(request_id) DO NOTHING;
  RETURN NEW;

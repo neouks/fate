@@ -55,3 +55,21 @@ it('keeps per-request receipts on DB failure, replays idempotently after log del
  await writeFile(path.join(dir,'usage-outbox',files[0]!),JSON.stringify({...receipt,status:'running',finishedAt:null,usage:{...receipt.usage,input:1,output:0,_receipt_seq:1}}));await replayUsageOutbox(db);
  expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({input_tokens:100,output_tokens:10,pending_calls:0});expect((await db.query('SELECT 1 FROM llm_request_attempts WHERE task_id=$1',[task.id])).rowCount).toBe(0);
 });
+
+it('recovers a fsynced receipt after SIGKILL without replaying the provider request',async()=>{
+ const {spawn}=await import('node:child_process');const task=await db.tasks().createTaskWithOptions('LOCAL killed metering process','',{executionMode:'manual'});
+ const requests=await fixture('openai',true,{prompt_tokens:100,completion_tokens:10,prompt_tokens_details:{cached_tokens:80}},async(_,profile)=>{
+  const script=`import {openDatabase} from './src/db/index.ts';import {buildModelSource} from './src/pi/providerFromProfile.ts';import {meterProvider,configureUsageOutbox} from './src/pi/usage-meter.ts';
+   const db=await openDatabase();configureUsageOutbox(db,${JSON.stringify(dir)});const source=await buildModelSource(${JSON.stringify(profile)});
+   await source.modelRuntime.registerNativeProvider(meterProvider(db,source.modelRuntime.getProvider(source.model.provider),{id:0,name:'LOCAL',model:'fixture'},()=>({taskID:${task.id},role:'worker',purpose:'conversation'})));
+   const original=db.transaction.bind(db);let first=true;db.transaction=async f=>{if(!first)throw new Error('LOCAL injected DB outage');first=false;return original(f);};
+   await source.modelRuntime.completeSimple(source.model,{messages:[{role:'user',content:'ping',timestamp:Date.now()}]});process.stdout.write('RECEIPT_READY');await new Promise(()=>{});`;
+  const child=spawn(process.execPath,['--import','tsx','--input-type=module','-e',script],{cwd:process.cwd(),env:{...process.env},stdio:['ignore','pipe','pipe']});
+  let stderr='';child.stderr.on('data',c=>{stderr+=c;});
+  await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error('Child receipt timed out '+stderr));},15000);child.stdout.on('data',data=>{if(String(data).includes('RECEIPT_READY')){clearTimeout(timer);resolve();}});child.on('exit',()=>{clearTimeout(timer);reject(new Error('Child exited before receipt '+stderr));});});
+  const ended=once(child,'exit');child.kill('SIGKILL');await ended;
+ });expect(requests).toBe(1);
+ expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({calls:1,usage_complete:false});
+ expect(await replayUsageOutbox(db)).toBe(0);expect((await aggregateUsage(db,{taskID:task.id}))[0]).toMatchObject({calls:1,input_tokens:100,output_tokens:10,usage_complete:true});
+ expect(await replayUsageOutbox(db)).toBe(0);
+});

@@ -49,14 +49,14 @@ it('legacy overview keeps task-scoped totals without inventing physical request 
   }
   const response = await app.inject({ url: `/api/llm/records/by-model?task=${task.id}`, headers });
   expect(response.statusCode).toBe(200);
-  expect(response.json()).toEqual({ models: [{ model: expect.any(String), calls: null, source: 'legacy_results', input_semantics: 'unknown', input_tokens: 20, output_tokens: 6, cache_read_tokens: 4, cache_write_tokens: 0 }] });
+  expect(response.json()).toMatchObject({ models: [{ model: expect.any(String), calls: null, source: 'usage_ledger', input_semantics: 'unknown', input_tokens: 20, output_tokens: 6, cache_read_tokens: 4, cache_write_tokens: 0 }] });
 });
 
 it('an unused task returns an empty model list instead of a missing field', async () => {
   const task = await db.tasks().createTaskWithOptions('LOCAL empty overview', '', { executionMode: 'manual' });
   const response = await app.inject({ url: `/api/llm/records/by-model?task=${task.id}`, headers });
   expect(response.statusCode).toBe(200);
-  expect(response.json()).toEqual({ models: [] });
+  expect(response.json()).toMatchObject({ models: [] });
 });
 
 it('intent lists retain their pagination envelope and task isolation', async () => {

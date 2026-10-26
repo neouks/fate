@@ -49,3 +49,14 @@ it('marks unknown old semantics and groups actual request times in Shanghai',asy
  const old=await fixture();await db.exploration(old.exploration_id).appendActivity({worker:'main',kind:'result',input_tokens:10,output_tokens:5,cache_read_tokens:50});
  expect((await aggregateUsage(db,{taskID:old.id}))[0]).toMatchObject({calls:0,input_tokens:10,output_tokens:5,input_semantics:'unknown',usage_complete:false,legacy_records:1});
 });
+it('discloses ambiguous overlapping legacy totals and never calls them complete',async()=>{
+ const t=await fixture();await audit(t.id,'unmapped-runtime',usage(20,2,0));
+ await db.exploration(t.exploration_id).appendActivity({worker:'work#legacy',kind:'result',input_tokens:100,output_tokens:10});
+ const total=(await aggregateUsage(db,{taskID:t.id}))[0]!;
+ expect(total).toMatchObject({calls:1,input_tokens:20,output_tokens:2,usage_complete:false,history_gap_requests:1});
+ const {unverifiedUsageHistory}=await import('./usage-ledger.js');expect(await unverifiedUsageHistory(db,{taskID:t.id})).toMatchObject([{input_tokens:100,output_tokens:10}]);
+});
+it('keeps partial input totals while suppressing cache rates when cached input is unknown',async()=>{
+ const t=await fixture();await db.query("INSERT INTO llm_request_attempts(task_id,role,model,status,usage) VALUES($1,'worker','LOCAL','completed',$2)",[t.id,JSON.stringify({input:0,output:4,cacheRead:0,cacheWrite:0,inputTotal:100,_input_total_known:true,_cache_read_known:false,_quality:'partial'})]);
+ expect((await aggregateUsage(db,{taskID:t.id}))[0]).toMatchObject({calls:1,input_tokens:100,output_tokens:4,unknown_usage_calls:1,usage_complete:false,input_complete:false});
+});

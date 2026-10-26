@@ -57,12 +57,12 @@ async function persistFile(db:Database,r:Receipt){
 }
 async function commitReceipt(db:Database,r:Receipt){
  await db.transaction(async tx=>{
-  const updated=await tx.query(`UPDATE llm_usage_ledger SET status=$2,usage=$3::jsonb,quality=$4,source='provider',receipt_seq=$6,finished_at=$5
+  const updated=await tx.query(`UPDATE llm_usage_ledger SET status=CASE WHEN status='aborted' THEN status ELSE $2 END,usage=$3::jsonb,quality=$4,source='provider',receipt_seq=$6,finished_at=COALESCE(finished_at,$5::timestamptz)
     WHERE request_id=$1 AND receipt_seq<=$6`,[r.requestID,r.status,JSON.stringify(r.usage),r.usage._quality,r.finishedAt,r.usage._receipt_seq]);
   if(!updated.rowCount&&!(await tx.query('SELECT 1 FROM llm_usage_ledger WHERE request_id=$1',[r.requestID])).rowCount)throw new Error('Metering request identity missing');
   // Do not recreate a detail log which the user deliberately deleted during the request.
-  await tx.query(`UPDATE llm_request_attempts SET status=$2,
-    usage=$3::jsonb,finished_at=$4::timestamptz WHERE id=$1 AND request_id=$5 AND COALESCE((usage->>'_receipt_seq')::bigint,0)<=$6`,[r.auditID,r.status,JSON.stringify(r.usage),r.finishedAt,r.requestID,r.usage._receipt_seq]);
+  await tx.query(`UPDATE llm_request_attempts SET status=CASE WHEN status='aborted' THEN status ELSE $2 END,
+    usage=$3::jsonb,finished_at=COALESCE(finished_at,$4::timestamptz) WHERE id=$1 AND request_id=$5 AND COALESCE((usage->>'_receipt_seq')::bigint,0)<=$6`,[r.auditID,r.status,JSON.stringify(r.usage),r.finishedAt,r.requestID,r.usage._receipt_seq]);
  });
 }
 async function saveReceipt(db:Database,r:Receipt){
@@ -85,7 +85,7 @@ export async function replayUsageOutbox(db:Database){
  return queued.size;
 }
 export type MeterContext=UsageScope&{role:string;purpose:string};
-export function meterProvider(db:Database,provider:Provider,profile:{id:number;name:string;model:string},context:()=>MeterContext):Provider {
+export function meterProvider(db:Database,provider:Provider,profile:{id:number;name:string;model:string;apiKey?:string},context:()=>MeterContext):Provider {
  return new Proxy(provider,{get(target,key){
   if(key!=='stream'&&key!=='streamSimple'){
    const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
@@ -98,7 +98,7 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
     if(saved)return;saved=true;
     const status=message.stopReason==='error'?'failed':message.stopReason==='aborted'?'aborted':'completed';
     await saveReceipt(db,{requestID,auditID,status,finishedAt:new Date().toISOString(),usage:{...observation.result(message.usage,!attempted),_receipt_seq:++sequence}});
-    if(message.errorMessage)await db.query('UPDATE llm_request_attempts SET error=$2 WHERE request_id=$1',[requestID,String(message.errorMessage).replace(/Bearer\s+[^\s]+/gi,'Bearer [redacted]').replace(/sk-[A-Za-z0-9_-]+/g,'[redacted]').slice(0,1000)]).catch(()=>undefined);
+    if(message.errorMessage)await db.query('UPDATE llm_request_attempts SET error=$2 WHERE request_id=$1',[requestID,String(message.errorMessage).replaceAll(profile.apiKey||'\0','[redacted]').replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi,'$1[redacted]@').replace(/Bearer\s+[^\s]+/gi,'Bearer [redacted]').replace(/sk-[A-Za-z0-9_-]+/g,'[redacted]').slice(0,1000)]).catch(()=>undefined);
    };
    void(async()=>{
     try{
