@@ -7,7 +7,7 @@ import path from 'node:path';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai';
 import {ModelRuntime,defineTool} from '@earendil-works/pi-coding-agent';
 import {AgentRunner} from '../pi/runner.js';
-import {openDatabase,type Database} from '../db/index.js';
+import {openDatabase,Database} from '../db/index.js';
 import {runContext} from '../tools/context.js';
 import {recordFactTool} from '../tools/graph.js';
 import {reportFindingTool} from '../tools/findings.js';
@@ -180,11 +180,17 @@ it.each([1,2,3])('enforces an independent per-task quota of %i across concurrent
  const a=new Coordinator(db,3),b=new Coordinator(db,3),ta=(await a.acquire(f.task.id))!,tb=(await b.acquire(other.task.id))!;
  try{
   await db.query("UPDATE tasks SET status='running' WHERE id=ANY($1::bigint[])",[[f.task.id,other.task.id]]);
-  const [as,bs]=await Promise.all([
-   Promise.all(Array.from({length:limit+2},()=>a.workerSlot(f.task.id,ta))),
-   Promise.all(Array.from({length:limit+2},()=>b.workerSlot(other.task.id,tb))),
-  ]);
-  expect(as.filter(Boolean)).toHaveLength(limit);expect(bs.filter(Boolean)).toHaveLength(limit);
+  const as:string[]=[],bs:string[]=[];
+  // Nonblocking lock contention may defer a reservation; retry without releasing any winners.
+  await until(async()=>{
+   const [first,second]=await Promise.all([
+    Promise.all(Array.from({length:limit+2},()=>a.workerSlot(f.task.id,ta))),
+    Promise.all(Array.from({length:limit+2},()=>b.workerSlot(other.task.id,tb))),
+   ]);
+   as.push(...first.filter((v):v is string=>!!v));bs.push(...second.filter((v):v is string=>!!v));
+   expect(as.length).toBeLessThanOrEqual(limit);expect(bs.length).toBeLessThanOrEqual(limit);
+   return as.length===limit&&bs.length===limit;
+  });
   expect(await executionSnapshot(db,f.task.id)).toMatchObject({limit_scope:'task',limit,task_active:limit,global_active:limit*2,available:0});
   await a.releaseSlot(as.find(Boolean)!);
   expect((await executionSnapshot(db,f.task.id)).available).toBe(1);
@@ -228,6 +234,21 @@ it('fences old task owners and leaves paused, queued and finished tasks without 
    expect(await b.workerSlot(f.task.id,replacement)).toBeUndefined();
   }
  }finally{await b.release(f.task.id,replacement);}
+});
+
+it('reserves capacity without borrowing another connection while holding the transaction lock',async()=>{
+ await db.platform().setSetting('workers','2');const f=await fixture(false),other=await fixture(false);
+ await db.query("UPDATE tasks SET status='running' WHERE id=ANY($1::bigint[])",[[f.task.id,other.task.id]]);
+ // A saturated pool previously deadlocked: the lock owner borrowed another connection for settings.
+ const pool=new pg.Pool({connectionString:process.env.SERIES_PG_DSN,max:1,connectionTimeoutMillis:1000});
+ const small=new Database(pool),a=new Coordinator(small,2),b=new Coordinator(small,2);
+ const ta=(await a.acquire(f.task.id))!,tb=(await b.acquire(other.task.id))!;
+ try{
+  const requests=await Promise.all(Array.from({length:3},()=>Promise.all([a.workerSlot(f.task.id,ta),b.workerSlot(other.task.id,tb)])));
+  expect(requests.flat().filter(Boolean)).toHaveLength(4);
+  expect((await executionSnapshot(small,f.task.id)).task_active).toBe(2);
+  expect((await executionSnapshot(small,other.task.id)).task_active).toBe(2);
+ }finally{await a.release(f.task.id,ta);await b.release(other.task.id,tb);await small.close();}
 });
 
 it('keeps a submitted intent executable after unrelated graph changes',async()=>{
