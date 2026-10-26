@@ -308,7 +308,7 @@ export const api = {
       intent_ids,
     }),
   workerQueue: (taskId: string) =>
-    get<{ items: TaskNode[]; version: number; manual: boolean; scheduling?: {limit:number;global_active:number;task_active:number;exiting:number;ready:number;planning:number;available:number}; execution_mode?: "managed" | "manual" }>(
+    get<{ items: TaskNode[]; version: number; manual: boolean; scheduling?: {limit_scope?:"task";limit:number;global_active:number;task_active:number;exiting:number;ready:number;planning:number;available:number}; execution_mode?: "managed" | "manual" }>(
       `/tasks/${taskId}/worker-queue`,
     ),
   moveWorker: (taskId: string, id: string, beforeId: string | null, version: number) =>
