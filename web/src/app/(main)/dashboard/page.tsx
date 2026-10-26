@@ -141,6 +141,8 @@ export default function DashboardPage() {
   const [activity, setActivity] = React.useState<Activity[]>([]);
   const [tokenDays, setTokenDays] = React.useState<7 | 30 | 90 | 180 | 365>(30);
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
+  const [usageError,setUsageError]=React.useState(false);
+  const tasksRef=React.useRef(tasks);tasksRef.current=tasks;
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
   const [agents, setAgents] = React.useState<Agent[]>([]);
@@ -183,24 +185,26 @@ export default function DashboardPage() {
   // The remaining fast sources stay batched so one poll causes a single render.
   React.useEffect(() => {
     let alive = true;
+    setUsageStats(null);
     let loading = false;
     const load = async () => {
       if (loading) return;
       loading = true;
       try {
-        const [findings, stats, settings, activity, usage] = await Promise.all([
+        const [findings, stats, settings, activity, usage] = await Promise.allSettled([
           api.findings(),
           api.stats(),
           api.settings(),
-          api.activity(undefined, { limit: 30 }),
+          tasksRef.current[0]?api.activity(tasksRef.current[0].id,{limit:30}):Promise.resolve({items:[]}),
           api.usageStats(tokenDays),
         ]);
         if (!alive) return;
-        setFindings(findings);
-        setStats(stats);
-        setSettings(settings);
-        setActivity(activity.items);
-        setUsageStats(usage);
+        if(findings.status==='fulfilled')setFindings(findings.value);
+        if(stats.status==='fulfilled')setStats(stats.value);
+        if(settings.status==='fulfilled')setSettings(settings.value);
+        if(activity.status==='fulfilled')setActivity(activity.value.items);
+        setUsageError(usage.status==='rejected');
+        if(usage.status==='fulfilled')setUsageStats(usage.value);
       } catch {
         // Preserve stale data and retry on the next interval.
       } finally {
@@ -323,7 +327,7 @@ export default function DashboardPage() {
   const tokenByProfile=new Map((usageStats?.by_profile??[]).map(p=>[p.profile_id==null?null:Number(p.profile_id),p]));
   const selectedUsage=tokenTab==='all'?usageStats?.total:tokenByProfile.get(tokenTab);
   const displayedTokens={input:selectedUsage?.input_tokens??0,output:selectedUsage?.output_tokens??0,cacheRead:selectedUsage?.cache_read_tokens??0,
-    cacheWrite:selectedUsage?.cache_write_tokens??0,taskCount:tokenTab==='all'?tasks.length:tokenByProfile.get(tokenTab)?.tasks??0,
+    cacheWrite:selectedUsage?.cache_write_tokens??0,taskCount:selectedUsage?.tasks??0,
     complete:selectedUsage?.usage_complete===true,knownInput:selectedUsage?.input_complete===true};
   const dailyTokenData=React.useMemo(()=>{
     const buckets=new Map<string,{input:number;output:number;cacheRead:number;cacheWrite:number}>();
@@ -442,7 +446,7 @@ export default function DashboardPage() {
               <ZapIcon className="size-3" /> Token 用量
             </div>
             <div className="text-2xl font-semibold tabular-nums">
-              {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+              {usageStats?fmtTokens(displayedTokens.input+displayedTokens.output):"—"}
             </div>
           </CardHeader>
           <CardContent className="text-[10px] text-muted-foreground">
@@ -460,7 +464,7 @@ export default function DashboardPage() {
             <ZapIcon className="size-3.5 text-muted-foreground" />
             LLM Token 消耗
             {/* One ledger source across tasks and conversations. */}
-            <span className="text-[10px] font-normal text-muted-foreground">统一计量 · 北京时间 · {tokenDays} 天</span>
+            <span className="text-[10px] font-normal text-muted-foreground">累计计量 · 北京时间 · 近 {tokenDays} 天趋势{usageError?" · 读取失败，等待重试":!usageStats?" · 加载中":""}</span>
           </div>
           {/* Profile tabs */}
           <div className="flex flex-wrap items-center gap-1">
@@ -481,12 +485,13 @@ export default function DashboardPage() {
               const deleted=key!=null&&!llmProfiles.some(current=>Number(current.id)===key);
               return <button type="button" key={key??'unknown'} onClick={()=>setTokenTab(key)}
                 className={cn('rounded-md border px-2.5 py-1 text-[10px] font-medium',tokenTab===key?'border-foreground':'border-transparent text-muted-foreground')}>
-                {p.profile_name||'未记录配置'}{deleted?'（已删除）':''}
+                {p.profile_name||(p.profile_id==null?'未记录配置':`配置 #${p.profile_id}（历史名称未记录）`)}{deleted?'（已删除）':''}
               </button>;
             })}
           </div>
         </div>
 
+        {usageStats?.total.time_unknown_records? <p className="mb-3 text-xs text-muted-foreground">{usageStats.total.time_unknown_records} 条历史用量无法核定请求日期，累计量予以保留，未分配到每日趋势。</p>:null}
         {/* Body: metrics left + bar chart right */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">
           {/* Left: key metrics */}
@@ -495,7 +500,7 @@ export default function DashboardPage() {
             <div>
               <div className="text-[10px] text-muted-foreground">{displayedTokens.complete?"合计（输入＋输出）":"已记录用量（存在缺口）"}</div>
               <div className="mt-0.5 text-3xl font-bold tabular-nums tracking-tight">
-                {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+                {usageStats?fmtTokens(displayedTokens.input+displayedTokens.output):"—"}
               </div>
               <div className="mt-0.5 text-[10px] text-muted-foreground">{displayedTokens.taskCount} 个任务</div>
             </div>
@@ -525,7 +530,7 @@ export default function DashboardPage() {
                     barColor: dailyTrendConfig.output.color!,
                     text: "text-violet-400",
                   },
-                ].map(({ label, value, barColor, text }) => {
+                ].filter(item=>displayedTokens.knownInput||!['缓存命中','缓存写入'].includes(item.label)).map(({ label, value, barColor, text }) => {
                   const pct = total > 0 ? (value / total) * 100 : 0;
                   return (
                     <div key={label}>
@@ -545,6 +550,7 @@ export default function DashboardPage() {
               })()}
             </div>
 
+            {!displayedTokens.knownInput&&usageStats&&<p className="text-[10px] text-muted-foreground">缓存读取已记录 {fmtTokens(displayedTokens.cacheRead)}；部分历史口径未核定，暂不估算占比。</p>}
             {/* Cache hit rate */}
             {(() => {
               // input 已含缓存 → 命中率 = 缓存命中 / 总输入。

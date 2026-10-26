@@ -851,7 +851,7 @@ export interface BatchCategoryItem {
 
 // Whole-task (all agents) token aggregate.
 export interface UsageQuality {
-  history_gap_requests?:number; version?:string; input_semantics?:"inclusive_cache"|"unknown"; usage_complete?:boolean; input_complete?:boolean; calls_complete?:boolean; unknown_usage_calls?:number; uncached_input_tokens?:number; calls?:number|null;
+  time_unknown_records?:number; tasks?:number; history_gap_requests?:number; version?:string; input_semantics?:"inclusive_cache"|"unknown"; usage_complete?:boolean; input_complete?:boolean; calls_complete?:boolean; unknown_usage_calls?:number; uncached_input_tokens?:number; calls?:number|null;
 }
 export interface TokenTotal extends UsageQuality {
   input_tokens: number;
