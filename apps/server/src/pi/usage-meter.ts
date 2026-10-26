@@ -38,9 +38,10 @@ export class UsageObservation {
   if(!this.seen&&fields.every(k=>number(n?.[k])!==undefined)&&fields.some(k=>n[k]>0))for(const k of fields)c[k]=n[k];
   const known=fields.filter(k=>c[k]!==undefined);
   const inputTotal=this.inputTotal??(known.length===4?c.input!+c.cacheRead!+c.cacheWrite!:undefined);
-  const quality=known.length===4?(interrupted&&!this.finalUsage?'partial':'complete'):notSent&&!known.length?'not_sent':known.length?'partial':'unknown';
+  const consistent=inputTotal===undefined||(c.cacheRead??0)+(c.cacheWrite??0)<=inputTotal;
+  const quality=known.length===4&&consistent?(interrupted&&!this.finalUsage?'partial':'complete'):notSent&&!known.length?'not_sent':known.length?'partial':'unknown';
   return {input:c.input??0,output:c.output??0,cacheRead:c.cacheRead??0,cacheWrite:c.cacheWrite??0,
-   inputTotal:inputTotal??0,totalTokens:(inputTotal??0)+(c.output??0),_input_total_known:inputTotal!==undefined||notSent,_cache_read_known:c.cacheRead!==undefined||notSent,_quality:quality,_known_fields:quality==='not_sent'?[...fields]:known,_source:'provider',_receipt_seq:1};
+   inputTotal:inputTotal??0,totalTokens:(inputTotal??((c.input??0)+(c.cacheRead??0)+(c.cacheWrite??0)))+(c.output??0),_input_total_known:inputTotal!==undefined||notSent,_cache_read_known:(c.cacheRead!==undefined||notSent)&&consistent,_quality:quality,_known_fields:quality==='not_sent'?[...fields]:known,_source:'provider',_receipt_seq:1};
  }
 }
 type Receipt={requestID:string;auditID:number;status:string;usage:ReturnType<UsageObservation['result']>;finishedAt:string|null};
