@@ -907,8 +907,10 @@ export class Engine {
     if(!rt?.started||!rt.lease||rt.stopped||rt.paused)throw Object.assign(new Error('任务执行器尚未就绪'),{statusCode:409});
     const model=await this.modelFor(rt,'worker');
     if(!model)throw new Error('Worker 模型不可用');
-    const name=`manual#${intentID}`,slot=randomUUID();
+    const name=`manual#${intentID}`;
+    let slot:string|undefined;
     const inserted=await this.db.transaction(async db=>{
+      if(!await this.coordinator.lockWorkerCapacity(db))throw Object.assign(new Error('调度正在处理其他领取，请重试恢复'),{statusCode:409});
       await this.coordinator.assert(taskID,rt.lease!,db);
       await db.query('SELECT pg_advisory_xact_lock($1)',[-rt.expID]);
       const live=await db.tasks().getTask(taskID);
@@ -920,14 +922,15 @@ export class Engine {
       if(node.state==='running'&&active)return false;
       if(active||rt.work.has(intentID))throw Object.assign(new Error('旧 Worker 尚未退出'),{statusCode:409});
       if(node.state!=='paused'||node.payload.cancelled_by_user===true)throw Object.assign(new Error('仅允许恢复已暂停的 Worker'),{statusCode:409});
+      slot=await this.coordinator.reserveWorkerSlot(db,taskID,rt.lease!,true,intentID);
+      if(!slot)throw Object.assign(new Error('本任务 Worker 并发名额已满，请等待执行器退出后恢复'),{statusCode:409,code:'TASK_WORKER_CAPACITY_FULL'});
       await db.query(`UPDATE exploration_nodes SET state='running',owner=$3,completed_at=NULL,blocked_reason=NULL,content_version=content_version+1,
         payload=(CASE WHEN payload ? 'execution_result' THEN (payload-'execution_result'-'execution_result_basis')||jsonb_build_object('previous_result',payload->'execution_result') ELSE payload END)
           ||'{"resume_requested":true}'::jsonb WHERE exploration_id=$1 AND id=$2`,[rt.expID,intentID,name]);
-      await db.query("INSERT INTO engine_worker_slots(id,task_id,token,intent_id,phase,manual) VALUES($1,$2,$3,$4,'running',true)",[slot,taskID,rt.lease,intentID]);
       await db.exploration(rt.expID).appendActivity({node_id:intentID,worker:'system',kind:'text',summary:'通过按钮恢复当前 Worker',metadata:{event_type:'lifecycle',status:'resume_requested',source:'user'}});
       return true;
     });
-    if(inserted)void this.runOneIntent(rt,{id:intentID},name,model).catch(error=>{this.emitActivity(taskID,{nodeID:intentID,worker:name,kind:'result',isError:true,summary:String(error)});}).finally(async()=>{await this.coordinator.releaseSlot(slot);await markWorkerReleased(this.db,rt.expID,intentID);await this.publishFeedback(taskID);this.notify(taskID);});
+    if(inserted)void this.runOneIntent(rt,{id:intentID},name,model).catch(error=>{this.emitActivity(taskID,{nodeID:intentID,worker:name,kind:'result',isError:true,summary:String(error)});}).finally(async()=>{await this.coordinator.releaseSlot(slot!);await markWorkerReleased(this.db,rt.expID,intentID);await this.publishFeedback(taskID);this.notify(taskID);});
     return {id:intentID,state:'running' as const,status:'running',execution_confirmed:true,cancelled_by_user:false,duplicate:!inserted};
   }
 
