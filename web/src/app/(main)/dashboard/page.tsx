@@ -46,7 +46,7 @@ import { cn } from "@/lib/utils";
 // ── chart constants ───────────────────────────────────────────────────────────
 
 const dailyTrendConfig = {
-  input: { label: "未缓存输入", color: "hsl(217 91% 60%)" },
+  input: { label: "其他输入", color: "hsl(217 91% 60%)" },
   output: { label: "输出", color: "hsl(263 70% 60%)" },
   cacheRead: { label: "缓存读", color: "hsl(160 60% 45%)" },
   cacheWrite:{label:"缓存写入",color:"hsl(40 70% 50%)"},
@@ -443,14 +443,14 @@ export default function DashboardPage() {
         <Card className="gap-1">
           <CardHeader className="pb-0">
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <ZapIcon className="size-3" /> Token 用量
+              <ZapIcon className="size-3" /> {displayedTokens.complete?"Token 用量":"Token 用量（已记录）"}
             </div>
             <div className="text-2xl font-semibold tabular-nums">
               {usageStats?fmtTokens(displayedTokens.input+displayedTokens.output):"—"}
             </div>
           </CardHeader>
           <CardContent className="text-[10px] text-muted-foreground">
-            入 {fmtTokens(displayedTokens.input)}（含缓存 {fmtTokens(displayedTokens.cacheRead)}）· 出{" "}
+            入 {fmtTokens(displayedTokens.input)}{displayedTokens.knownInput?`（含缓存 ${fmtTokens(displayedTokens.cacheRead)}）`:"（历史口径未核定）"} · 出{" "}
             {fmtTokens(displayedTokens.output)}
           </CardContent>
         </Card>
