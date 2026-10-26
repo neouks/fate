@@ -377,7 +377,7 @@ export async function runPlannerRound(input: PlannerRoundInput): Promise<Planner
   const unlock=await lockPlannerSession(input.db,input.expID,input.signal);
   try{
     await input.hooks.assertOwnership?.(input.db);
-    validatePlannerSession(plannerSessionFile(input.dataDir,input.expID));
+    await validatePlannerSession(plannerSessionFile(input.dataDir,input.expID));
     const planningRoundID=input.planningRoundID??randomUUID();
     await beginPlannerDisplayRound(input.db,input.expID,planningRoundID);
     try {

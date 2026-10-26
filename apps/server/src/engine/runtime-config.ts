@@ -85,7 +85,8 @@ export async function createTrackedRunner(db:Database,taskID:number,role:string,
  Object.assign(effective,{active_tools:runner.activeToolNames,prompt_diagnostics:runner.promptDiagnostics,prompt_source:configured.prompt_source,prompt_version:configured.prompt_version});
  try{await db.query('INSERT INTO runtime_role_configs(id,task_id,conversation_id,role,configured,effective,expires_at) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,now()+interval \'20 seconds\')',[id,taskID||null,conversationID??null,role,JSON.stringify(configured),JSON.stringify(effective)]);}
  catch(error){await runner.dispose();throw error;}
- const heartbeat=setInterval(()=>{void db.query("UPDATE runtime_role_configs SET expires_at=now()+interval '20 seconds' WHERE id=$1 AND finished_at IS NULL AND expires_at>clock_timestamp() RETURNING id",[id]).then(r=>{if(!r.rowCount)controller.abort('执行器已过期');}).catch(()=>{});},5000);heartbeat.unref();
+ let renewing=false;
+ const heartbeat=setInterval(()=>{if(renewing)return;renewing=true;void db.control().query("UPDATE runtime_role_configs SET expires_at=now()+interval '20 seconds' WHERE id=$1 AND finished_at IS NULL AND expires_at>clock_timestamp() RETURNING id",[id]).then(r=>{if(!r.rowCount)controller.abort('执行器已过期');}).catch(()=>{}).finally(()=>{renewing=false;});},5000);heartbeat.unref();
  const dispose=runner.dispose.bind(runner);
  const prompt=runner.prompt.bind(runner);
  runner.prompt=async(...args:Parameters<typeof runner.prompt>)=>{

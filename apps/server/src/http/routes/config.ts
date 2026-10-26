@@ -193,7 +193,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       platform().workers(),
       platform().getSetting("active_task"),
     ]);
-    return { workers, pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"global; next claim",role_settings:"next session",task_concurrency:"next admission"}, active_task: activeTask ?? "" };
+    return { workers, pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission"}, active_task: activeTask ?? "" };
   });
 
   const setSettings = async (req: { body?: unknown }, reply: { code(c: number): { send(v: unknown): unknown } }): Promise<unknown> => {
@@ -208,6 +208,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     if (b["workers"] !== undefined) {
       const n = Number(b["workers"]);
       if (!Number.isInteger(n) || n <= 0) return reply.code(400).send({ error: "workers 必须 >0" });
+      try{await app.db.plannerLockPool(Math.min(128,n));}catch(error){return reply.code(400).send({error:(error as Error).message});}
       await platform().setWorkers(n);
       out["workers"] = n;
     }

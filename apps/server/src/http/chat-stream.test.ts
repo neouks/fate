@@ -107,7 +107,7 @@ it('final commit between poll queries never removes the partial body before its 
  // precede it, otherwise this poll publishes [] while the final row is absent.
  other.query=(async(sql:string,args?:unknown[])=>{
   const rows=await original(sql,args);
-  if(armed&&sql.startsWith('SELECT * FROM activity')&&args?.[0]===task.exploration_id){
+  if(armed&&(sql.startsWith('SELECT * FROM activity')||sql.startsWith('WITH page AS MATERIALIZED'))&&args?.[0]===task.exploration_id){
    armed=false;
    finalID=await db.exploration(task.exploration_id).appendActivity({worker:'main',kind:'text',detail:'保持可见完成',metadata:{turn_id:'atomic-turn',stream_id:'atomic-stream',channel:'text'}});
    await writer.committed('atomic-stream','text');

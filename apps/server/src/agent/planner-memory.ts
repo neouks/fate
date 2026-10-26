@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {existsSync,readFileSync} from 'node:fs';
+import {createReadStream} from 'node:fs';
+import {createInterface} from 'node:readline';
 import path from 'node:path';
 import type {SessionEntry} from '@earendil-works/pi-coding-agent';
 import type {Database} from '../db/index.js';
@@ -20,20 +21,25 @@ export function plannerSessionFile(dataDir:string,expID:number){
 }
 
 /** The SDK silently starts over on an invalid file. A Planner must fail recoverably instead. */
-export function validatePlannerSession(file:string){
-  if(!existsSync(file))return;
-  const lines=readFileSync(file,'utf8').split('\n').filter(l=>l.trim());
+export async function validatePlannerSession(file:string){
+  const input=createReadStream(file,{encoding:'utf8'});
+  const lines=createInterface({input,crlfDelay:Infinity});
+  let count=0;
   try{
-    if(!lines.length)throw new Error('empty');
-    const entries=lines.map(l=>JSON.parse(l));
-    if(entries[0].type!=='session'||!entries[0].id)throw new Error('header');
-    if(entries.slice(1).some(e=>!e.id||!e.type))throw new Error('entry');
-  }catch{throw new Error('Planner 会话文件损坏，已保留原文；请恢复文件后重试，不会创建空会话覆盖历史');}
+    for await(const line of lines){
+      if(!line.trim())continue;
+      const e=JSON.parse(line);
+      if(count++===0 ? e.type!=='session'||!e.id : !e.id||!e.type)throw new Error('entry');
+    }
+    if(!count)throw new Error('empty');
+  }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw new Error('Planner 会话文件损坏，已保留原文；请恢复文件后重试，不会创建空会话覆盖历史');}
+  finally{lines.close();input.destroy();}
 }
 
 /** A session-level advisory lock prevents a stale executor from writing the same file. */
 export async function lockPlannerSession(db:Database,expID:number,signal?:AbortSignal){
-  const client=await db.pool.connect(),key=`fate:planner-session:${expID}`;
+  const limit=Math.min(128,Math.max(1,Number(await db.control().platform().getSetting('workers'))||3));
+  const client=await(await db.plannerLockPool(limit)).connect(),key=`fate:planner-session:${expID}`;
   const controller=new AbortController();let lost:Error|undefined;
   const onError=(error:Error)=>{lost=error;controller.abort(error);};
   client.on('error',onError);

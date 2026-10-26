@@ -251,6 +251,24 @@ it('reserves capacity without borrowing another connection while holding the tra
  }finally{await a.release(f.task.id,ta);await b.release(other.task.id,tb);await small.close();}
 });
 
+it('does not queue a second owner on capacity locks and renews leases outside a saturated business pool',async()=>{
+ const f=await fixture(false);await db.query("UPDATE tasks SET status='running' WHERE id=$1",[f.task.id]);
+ const aDB=new Database(new pg.Pool({connectionString:process.env.SERIES_PG_DSN,max:1,connectionTimeoutMillis:1000}));
+ const bDB=new Database(new pg.Pool({connectionString:process.env.SERIES_PG_DSN,max:1,connectionTimeoutMillis:1000}));
+ const a=new Coordinator(aDB,2),b=new Coordinator(bDB,2),token=(await a.acquire(f.task.id))!;
+ try{
+  await aDB.transaction(async tx=>{
+   expect(await a.lockWorkerCapacity(tx)).toBe(true);
+   const started=Date.now();
+   expect(await b.workerSlot(f.task.id,token)).toBeUndefined();
+   expect(Date.now()-started).toBeLessThan(500);
+   await a.renew(f.task.id,token); // The only business connection remains held by tx.
+   expect(aDB.control().runtimeMetrics().pools.primary.waiting).toBe(0);
+   expect(tx.control()).toBe(tx);
+  });
+ }finally{await a.release(f.task.id,token);await aDB.close();await bDB.close();}
+});
+
 it('keeps a submitted intent executable after unrelated graph changes',async()=>{
  await db.platform().setSetting('workers','1');const f=await fixture(false),a=new Coordinator(db,1),token=(await a.acquire(f.task.id))!;
  await db.query("UPDATE tasks SET status='running',execution_mode='managed' WHERE id=$1",[f.task.id]);

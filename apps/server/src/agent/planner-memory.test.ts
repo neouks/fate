@@ -119,7 +119,7 @@ it('delivers asset invalidations and deleted-node notices without pretending the
 });
 
 it('preserves corrupted sessions and excludes simultaneous writers',async()=>{
-  const file=path.join(dir,'broken.jsonl');writeFileSync(file,'invalid original');expect(()=>validatePlannerSession(file)).toThrow('保留原文');expect(readFileSync(file,'utf8')).toBe('invalid original');
+  const file=path.join(dir,'broken.jsonl');writeFileSync(file,'invalid original');await expect(validatePlannerSession(file)).rejects.toThrow('保留原文');expect(readFileSync(file,'utf8')).toBe('invalid original');
   const x=await fixture(),release=await lockPlannerSession(db,x.task.exploration_id);
   try{await expect(runPlannerRound(x.input)).rejects.toThrow('已有运行者');expect(x.f.state.callCount).toBe(0);}finally{await release();}
 });

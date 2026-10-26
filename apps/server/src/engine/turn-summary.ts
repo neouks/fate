@@ -62,15 +62,17 @@ export async function readTurnSummaries(db:Database,scope:StreamScope,id:number,
   ${scope==='task'?'AND exploration_activity_readable($1,node_id,metadata)':''} ORDER BY id`,[id,ids])).rows;
  const runtimeIDs=rows.filter(r=>r.metadata?.event_type==='turn_start').map(r=>r.metadata.runtime_id).filter(Boolean);
  const runtimes=runtimeIDs.length?(await db.query("SELECT id,role,finished_at,expires_at,effective->>'stop_reason' AS stop_reason FROM runtime_role_configs WHERE id=ANY($1::text[])",[runtimeIDs])).rows:[];
- const attempts=runtimeIDs.length?(await db.query(`WITH ${CANONICAL_USAGE_CTE} SELECT * FROM canonical WHERE runtime_id=ANY($1::text[]) ORDER BY created_at,request_id`,[runtimeIDs])).rows:[];
+ const taskID=scope==='task'?Number((await db.query('SELECT id FROM tasks WHERE exploration_id=$1',[id])).rows[0]?.id):undefined;
+ const domainColumn=scope==='task'?'task_id':'conversation_id',domainID=scope==='task'?taskID:id;
+ const attempts=runtimeIDs.length?(await db.query(`WITH ${CANONICAL_USAGE_CTE.replace('/* usage_scope */',`WHERE ${domainColumn}=$2`)} SELECT runtime_id,model,usage,status,quality,purpose,created_at,finished_at FROM canonical WHERE runtime_id=ANY($1::text[]) ORDER BY created_at,request_id`,[runtimeIDs,domainID])).rows:[];
+ const usageByTurn=new Map((await aggregateUsage(db,{taskID,conversationID:scope==='conversation'?id:undefined},'turn')).map(row=>[row.bucket,row]));
  const groups=new Map<string,Row[]>();
  for(const row of rows){const key=String(row.metadata.turn_id);const group=groups.get(key)??[];group.push(row);groups.set(key,group);}
- return Promise.all([...groups.values()].map(async group=>{
+ return [...groups.values()].map(group=>{
   const groupRuntimes=group.filter(r=>r.metadata?.event_type==='turn_start').map(r=>r.metadata.runtime_id);
   const turnID=String(group[0]!.metadata.turn_id);
   const projection=projectTurn(group,attempts.filter(a=>groupRuntimes.includes(a.runtime_id)),runtimes.find(r=>r.id===groupRuntimes.at(-1)));
-  const taskID=scope==='task'?Number((await db.query('SELECT id FROM tasks WHERE exploration_id=$1',[id])).rows[0]?.id):undefined;
-  const [usage]=await aggregateUsage(db,{taskID,conversationID:scope==='conversation'?id:undefined,turnID});
+  const usage=usageByTurn.get(turnID);
   if(usage&&Number(usage.calls)+Number(usage.legacy_records)>0){
    const turnAttempts=attempts.filter(a=>groupRuntimes.includes(a.runtime_id));
    const total=(a:Row)=>tokenTotal(a.usage??{});
@@ -79,5 +81,5 @@ export async function readTurnSummaries(db:Database,scope:StreamScope,id:number,
     compaction_tokens:turnAttempts.filter(a=>a.purpose==='compaction').reduce((n,a)=>n+total(a),0),failed_requests:usage.failed_calls,failed_request_tokens:turnAttempts.filter(a=>['failed','aborted'].includes(String(a.status))).reduce((n,a)=>n+total(a),0)};
   }
   return projection;
- }));
+ });
 }

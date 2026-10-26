@@ -1,4 +1,5 @@
 import {activityControlFields} from './activity-presentation.js';
+import {streamChanges} from './stream-changes.js';
 import type { Database } from '../db/index.js';
 import type { RunnerActivity } from '../pi/runner.js';
 
@@ -22,7 +23,7 @@ export class LiveStreamWriter {
   private heartbeat = 0;
   private flushing = false;
   constructor(private db: Database, private scope: StreamScope, private id: number, readonly identity: StreamIdentity) {
-    this.timer = setInterval(() => this.flush(), 75);
+    this.timer = setInterval(() => this.flush(), 250);
     this.timer.unref();
   }
   push(a: RunnerActivity) {
@@ -57,6 +58,7 @@ export class LiveStreamWriter {
     this.flushing = true;
     this.tail = this.tail.catch(() => undefined).then(async () => {
       for (const save of batch) await save();
+      streamChanges.emit('change',this.scope,this.id);
     }).finally(() => { this.flushing = false; });
   }
   /** Called only after the authoritative final activity commits. */
@@ -66,6 +68,7 @@ export class LiveStreamWriter {
       'DELETE FROM agent_stream_snapshots WHERE scope=$1 AND scope_id=$2 AND stream_id=$3 AND channel=$4', [this.scope,this.id,stream,channel]));
     this.tail = pending;
     await pending;
+    streamChanges.emit('change',this.scope,this.id);
   }
   async close() {
     clearInterval(this.timer);
