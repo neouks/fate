@@ -1,3 +1,4 @@
+import {activityControlFields} from './activity-presentation.js';
 import type { Database } from '../db/index.js';
 import type { RunnerActivity } from '../pi/runner.js';
 
@@ -96,7 +97,7 @@ export class LiveStreamWriter {
 
 export function activityDTO(row: Record<string, unknown>) {
   const metadata = (row.metadata ?? {}) as Record<string, unknown>;
-  return { ...row, id: Number(row.id), seq: Number(row.id), ts: row.created_at,
+  return { ...row, ...activityControlFields(row), id: Number(row.id), seq: Number(row.id), ts: row.created_at,
     worker: row.worker === 'main' ? 'mainagent' : row.worker,
     intent_id: row.node_id == null ? undefined : String(row.node_id),
     main_seg: row.main_seg == null ? undefined : Number(row.main_seg),

@@ -20,7 +20,7 @@ export function projectTurn(rows:Row[],attempts:Row[],runtime?:Row) {
  const statusOverride=terminal?.metadata.event_type!=='outcome'&&nativeEnd?.metadata.stop_reason==='budget'&&['completed','stopped'].includes(terminal?.metadata.status)?'exhausted':undefined;
  const completed=terminal&&!statusOverride&&['completed','done'].includes(terminal.metadata.status);
  // A native stop without tool calls is only final after the HOST accepts completion.
- const explicit=rows.findLast(r=>r.metadata?.final_answer);
+ const explicit=rows.findLast(r=>r.metadata?.final_answer&&r.metadata?.event_type!=='steering');
  const final=terminal?.metadata.event_type==='outcome'?terminal:completed&&explicit?explicit:completed&&response?.metadata.response.stop_reason==='stop'&&!response.metadata.response.has_tools&&response.kind!=='status'&&response.summary?response:undefined;
  const expired=runtime&&(runtime.stop_reason==='executor_expired'||!runtime.finished_at&&new Date(runtime.expires_at).getTime()<=Date.now()||runtime.finished_at&&Date.now()-new Date(runtime.finished_at).getTime()>12000);
  const status=statusOverride??terminal?.metadata.status??(expired?'interrupted':runtime?.finished_at?'awaiting_confirmation':start?'running':'unknown');
@@ -34,7 +34,7 @@ export function projectTurn(rows:Row[],attempts:Row[],runtime?:Row) {
  const sum=(kind:string)=>usageRows.reduce((n,u)=>n+(Number(u[kind])||0),0);
  const auditKnown=attempts.length>0;
  const startedAt=iso(start?.metadata.started_at);
- const requested=rows.find(r=>r.kind==='user');
+ const requested=rows.find(r=>r.kind==='user'&&r.metadata?.event_type!=='steering');
  return {version:1,turn_id:String(first.metadata.turn_id),revision:Number(last.id),updated_at:new Date(Math.max(new Date(last.created_at).getTime(),...attempts.map(a=>new Date(a.finished_at??0).getTime()),new Date(runtime?.finished_at??0).getTime(),expired?new Date(runtime?.expires_at??0).getTime():0)).toISOString(),
   worker:first.worker,role:start?.metadata.role??runtime?.role??null,intent_id:first.node_id==null?null:String(first.node_id),main_seg:first.main_seg??null,
   status,started_at:startedAt,finished_at:iso(terminal?.created_at??(expired?runtime?.finished_at??runtime?.expires_at:null)),

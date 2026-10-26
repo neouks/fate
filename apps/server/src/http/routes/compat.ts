@@ -1,3 +1,4 @@
+import {activityControlFields} from '../../engine/activity-presentation.js';
 import {aggregateUsage,unverifiedUsageHistory} from '../../db/usage-ledger.js';
 import {coverageGraph,queryAssets} from '../../db/asset-query.js';
 import {READABLE_FINDINGS} from "./finding-projection.js";
@@ -58,7 +59,7 @@ function mapActivity(row: Record<string, unknown>): Record<string, unknown> {
   for (const k of ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"] as const) {
     if (row[k] !== null && row[k] !== undefined) out[k] = Number(row[k]);
   }
-  return out;
+  return {...out,...activityControlFields(row)};
 }
 
 function mapFinding(row: Record<string, unknown>, task?: Record<string, unknown>): Record<string, unknown> {
@@ -336,13 +337,14 @@ export function registerCompatRoutes(app: FastifyInstance): void {
       where += ` AND summary ILIKE $${params.length}`;
     }
     const rows = await db().query(
-      `SELECT id, kind, summary FROM activity WHERE ${where} ORDER BY id DESC LIMIT $${params.length + 1}`,
+      `SELECT id, kind, summary, metadata FROM activity WHERE ${where} ORDER BY id DESC LIMIT $${params.length + 1}`,
       [...params, limit + 1],
     );
     const items = rows.rows.slice(0, limit).map((r) => ({
       id: Number(r["id"]),
       kind: String(r["kind"] ?? ""),
       snippet: String(r["summary"] ?? "").slice(0, 240),
+      ...activityControlFields(r),
     }));
     return { items, next_cursor: rows.rows.length > limit ? String(items[items.length - 1]!.id) : "" };
   });

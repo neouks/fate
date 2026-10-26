@@ -159,3 +159,20 @@ it('summary batches retain authentication, task isolation, and revoked node visi
  expect((await app.inject({url,headers})).statusCode).toBe(404);
 
 });
+
+it('steering history/list/search and replay normalize legacy activity without mutating stored users',async()=>{
+ const task=await db.tasks().createTaskWithOptions('LOCAL steering history','',{executionMode:'manual'}),store=db.exploration(task.exploration_id);
+ const intent=await store.addIntent({summary:'LOCAL read-only fixture'},1,[],'user');
+ const seq=await store.appendActivity({node_id:intent,worker:'work#1',kind:'user',summary:'LOCAL steering history',detail:'LOCAL full original',metadata:{event_type:'steering',source:'planner'}});
+ const current=await store.appendActivity({node_id:intent,worker:'work#1',kind:'status',tool:'steer_work',summary:'LOCAL Main notice',metadata:{event_type:'steering',turn_id:'notice-turn',steering:{id:'local-id',source:'mainagent',target_turn_id:'notice-turn',intent_id:intent,status:'submitted'}}});
+ for(const url of [`/api/exploration/activity?task=${task.id}`,`/api/exploration/activity/history?task=${task.id}&session=intent:${intent}`]){
+  const r=await app.inject({url,headers:{authorization:`Bearer ${token}`}});expect(r.statusCode).toBe(200);
+  expect(r.json().items.find((a:any)=>a.seq===seq)).toMatchObject({kind:'status',tool:'steer_work',summary:'LOCAL steering history',metadata:{source:'planner'}});
+  expect(r.json().items.find((a:any)=>a.seq===current)).toMatchObject({turn_id:'notice-turn',metadata:{steering:{source:'mainagent',status:'submitted'}}});
+ }
+ const search=await app.inject({url:`/api/exploration/activity/search?task=${task.id}&session=intent:${intent}&q=steering`,headers:{authorization:`Bearer ${token}`}});
+ expect(search.json().items).toContainEqual(expect.objectContaining({id:seq,kind:'status'}));
+ const s=await stream(`/api/exploration/activity/stream?task=${task.id}`);await wait(()=>s.frames.some(f=>f.id===current));
+ expect(s.frames.find(f=>f.id===seq)?.data).toMatchObject({kind:'status',tool:'steer_work',metadata:{source:'planner'}});s.close();
+ expect((await db.query('SELECT kind,detail,metadata FROM activity WHERE id=$1',[seq])).rows[0]).toEqual({kind:'user',detail:'LOCAL full original',metadata:{event_type:'steering',source:'planner'}});
+});

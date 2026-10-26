@@ -55,6 +55,7 @@ export function defaultEngineConfig(): EngineConfig {
 export type AbortCause = "pause" | "cancel" | "kill" | "task-timeout" | "stop" | "lease-lost" | "task-completed" | "task-ended" | "shutdown";
 
 interface WorkHandle {
+  turnID: string;
   abort: (cause: AbortCause, detail?:string) => Promise<void>;
   runner:Promise<{steer(message:string):Promise<void>}>;
   settled?: boolean;
@@ -587,6 +588,7 @@ export class Engine {
     let complete!: () => void;
     let ready!: (runner:{steer(message:string):Promise<void>})=>void;
     const handle: WorkHandle = {
+      turnID: turn.turnID,
       runner:new Promise(resolve=>{ready=resolve;}),
       abort: async (c, detail='') => {
         if(controller.signal.aborted)return; // Keep the first actual cancellation cause.
@@ -896,7 +898,13 @@ export class Engine {
     const runner=await Promise.race([handle.runner,handle.done.then(()=>undefined)]);
     if(!runner||handle.settled)throw Object.assign(new Error('Worker 已退出'),{statusCode:409});
     await runner.steer(`【${source} 对当前意图的纠偏；不扩大授权】\n${message}`);
-    await this.db.exploration(rt.expID).appendActivity({node_id:intentID,worker:node.owner,kind:'user',summary:message,detail:message,metadata:{event_type:'steering',source}});
+    // Platform control activity is distinct from pi's internal steering message role.
+    // Native enqueue confirms submission only, not delivery or semantic effect.
+    await this.db.exploration(rt.expID).appendActivity({
+      node_id:intentID,worker:node.owner,kind:'status',tool:'steer_work',summary:message,detail:message,
+      metadata:{event_type:'steering',turn_id:handle.turnID,source,
+        steering:{id:randomUUID(),source,intent_id:intentID,target_turn_id:handle.turnID,status:'submitted'}},
+    });
   }
 
   /** Explicit button continuation; no chat injection and no task admission. */
