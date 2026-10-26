@@ -693,6 +693,8 @@ export interface Activity {
     status?: string;
     attachments?: ChatAttachment[];
     llm_transition?: LLMTransition;
+    source?: string;
+    steering?: { id?: string; source?: string; intent_id?: number | string; target_turn_id?: string; status?: string };
     worker_feedback?: { id: number; intent_id: number; state: string; source_activity_id?: number };
   };
   source_task_id?: string;
