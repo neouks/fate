@@ -49,7 +49,7 @@ it('marks unknown old semantics and groups actual request times in Shanghai',asy
  await audit(t.id,'day1',usage(),{at:'2026-10-25T15:59:59Z'});await audit(t.id,'day2',usage(),{at:'2026-10-25T16:00:00Z'});
  expect((await aggregateUsage(db,{taskID:t.id},'day')).map(r=>r.bucket)).toEqual(['2026-10-25','2026-10-26']);
  const old=await fixture();await db.exploration(old.exploration_id).appendActivity({worker:'main',kind:'result',input_tokens:10,output_tokens:5,cache_read_tokens:50});
- expect((await aggregateUsage(db,{taskID:old.id}))[0]).toMatchObject({calls:0,input_tokens:10,output_tokens:5,input_semantics:'unknown',usage_complete:false,legacy_records:1});
+ expect((await aggregateUsage(db,{taskID:old.id}))[0]).toMatchObject({calls:0,input_tokens:10,output_tokens:5,input_semantics:'unknown',usage_complete:false,legacy_records:1,unknown_usage_calls:0,calls_complete:false});
 });
 it('discloses ambiguous overlapping legacy totals and never calls them complete',async()=>{
  const t=await fixture();await audit(t.id,'unmapped-runtime',usage(20,2,0));

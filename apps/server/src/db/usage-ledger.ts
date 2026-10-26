@@ -70,7 +70,7 @@ export const USAGE_SUM_SQL=`count(DISTINCT task_id) tasks,count(*) FILTER(WHERE 
  COALESCE(sum(CASE WHEN usage->>'_input_total_known'='true' THEN (usage->>'inputTotal')::bigint ELSE i+CASE WHEN input_semantics='exclusive_cache' THEN cr+cw ELSE 0 END END),0) input_tokens,
  COALESCE(sum(i) FILTER(WHERE input_semantics='exclusive_cache'),0) uncached_input_tokens,COALESCE(sum(o),0) output_tokens,
  COALESCE(sum(cr),0) cache_read_tokens,COALESCE(sum(cw),0) cache_write_tokens,
- count(*) FILTER(WHERE quality NOT IN ('complete','not_sent')) unknown_usage_calls,
+ count(*) FILTER(WHERE source<>'legacy_results' AND quality NOT IN ('complete','not_sent')) unknown_usage_calls,
  count(*) FILTER(WHERE history_gap) history_gap_requests,
  count(*) FILTER(WHERE source NOT IN ('provider','request_audit')) time_unknown_records,
  count(*) FILTER(WHERE source='legacy_results') legacy_records,
