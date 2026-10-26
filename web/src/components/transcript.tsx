@@ -17,6 +17,8 @@ import {
   Wrench,
   XIcon,
 } from "lucide-react";
+import {plannerRoundView,isPlannerBoundary} from '@/lib/planner-round';
+import {PlannerRoundMarker} from '@/components/planner-round-marker';
 import {SteeringNotice} from '@/components/steering-notice';
 import {isSteering} from '@/lib/steering';
 import {useTurnSummaries} from '@/hooks/use-turn-summaries';
@@ -718,7 +720,9 @@ function ExecutionTurn({turn,summary,latest,...props}:ExecutionProps&{turn:Retur
   const [now,setNow]=React.useState(Date.now);
   React.useEffect(()=>{if(!live)return;const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[live]);
   const elapsed=durationLabel(summary?.started_at??null,summary?.finished_at??terminal?.ts??null,now);
-  const {final,process}=turnParts(turn.steps,summary);
+  const {final,process:rawProcess}=turnParts(turn.steps,summary);
+  const planning=plannerRoundView(turn.steps,summary,live,ended);
+  const process=planning?rawProcess.filter(a=>!isPlannerBoundary(a)):rawProcess;
   const workerResults=!!props.taskId&&!props.conversationId&&ended&&(summary?.role==='worker'||last.worker.startsWith('work#'));
   const [steeringFocus,setSteeringFocus]=React.useState<number>();
   const [steeringExpanded,setSteeringExpanded]=React.useState<Record<number,boolean>>({});
@@ -733,7 +737,7 @@ function ExecutionTurn({turn,summary,latest,...props}:ExecutionProps&{turn:Retur
   },[props.onLocated]);
   const stepProps={...props,onLocated:locate,focusActivity:focus,steeringExpanded,onSteeringExpanded};
   // Search can reveal the original duplicate receipt without corrupting the normal assembly.
-  const focusedOriginal=turn.steps.find(s=>s.seq===focus);
+  const focusedOriginal=turn.steps.find(s=>s.seq===focus&&!(planning&&isPlannerBoundary(s)));
   const processSteps=focusedOriginal&&focusedOriginal.seq!==final?.seq&&!process.some(s=>s.seq===focus)?[...process,focusedOriginal].sort((a,b)=>a.seq-b.seq):process;
   const hasProcess=processSteps.length>0&&(processSteps.some(s=>isSteering(s)||['thinking','tool_use','tool_result','round'].includes(s.kind))||(summary?.steps??0)>1);
   const [manualOpen,setManualOpen]=React.useState<{open:boolean;focus?:number}|undefined>(undefined);
@@ -748,6 +752,7 @@ function ExecutionTurn({turn,summary,latest,...props}:ExecutionProps&{turn:Retur
   if(turn.user)return <UserRow step={last} intent={last.kind==='intent'} getDetail={getDetail}/>;
   if(last.metadata?.worker_feedback||last.worker==='system')return <Message align="start"><MessageContent><Bubble variant="muted"><BubbleContent><ActivitySteps {...stepProps} activity={turn.steps}/></BubbleContent></Bubble></MessageContent></Message>;
   return <Message data-turn-id={turn.key} data-run-status={label} align="start"><MessageContent>
+    {planning&&<PlannerRoundMarker round={planning} focusActivity={focus} onLocated={props.onLocated}/> }
     <Bubble variant="ghost" className="w-full max-w-full"><BubbleContent className="flex w-full min-w-0 flex-col gap-4 py-2">
       <div className="flex flex-wrap items-center gap-2"><span role="status" className={statusClass}><span className="execution-status-dot" aria-hidden="true"/>{label}</span><span aria-hidden="true" className="text-muted-foreground">/</span><span className="text-sm text-muted-foreground tabular-nums">{elapsed}</span><TurnDetails summary={summary} label={label} elapsed={elapsed} conversationId={props.conversationId}/></div>
       {hasProcess?<Collapsible open={open} onOpenChange={open=>{setManualOpen({open,focus:props.focusActivity});setSteeringFocus(undefined);}}>
