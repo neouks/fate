@@ -7,6 +7,7 @@ import {postgresDSN} from '../config/index.js';
 import {openDatabase,Database} from '../db/index.js';
 import {LiveStreamWriter} from '../engine/live-stream.js';
 import {readTurnSummaries} from '../engine/turn-summary.js';
+import {beginPlannerDisplayRound,finishPlannerDisplayRound} from '../db/planner-rounds.js';
 import {Engine,defaultEngineConfig} from '../engine/engine.js';
 import {buildApp} from './app.js';
 import {signJWT} from './auth.js';
@@ -175,4 +176,25 @@ it('steering history/list/search and replay normalize legacy activity without mu
  const s=await stream(`/api/exploration/activity/stream?task=${task.id}`);await wait(()=>s.frames.some(f=>f.id===current));
  expect(s.frames.find(f=>f.id===seq)?.data).toMatchObject({kind:'status',tool:'steer_work',metadata:{source:'planner'}});s.close();
  expect((await db.query('SELECT kind,detail,metadata FROM activity WHERE id=$1',[seq])).rows[0]).toEqual({kind:'user',detail:'LOCAL full original',metadata:{event_type:'steering',source:'planner'}});
+});
+
+it('Planner boundaries survive list/history pagination and SSE reconnect, with replayable title updates',async()=>{
+ const task=await db.tasks().createTaskWithOptions('LOCAL planner headers','LOCAL synthetic',{executionMode:'manual'}),store=db.exploration(task.exploration_id);
+ const old=await store.appendActivity({worker:'planner',kind:'round',summary:'第 258 轮规划'});
+ const ignored=await store.appendActivity({worker:'work#1',kind:'round',summary:'old worker marker'});
+ await beginPlannerDisplayRound(db,task.exploration_id,'round-header');
+ const start=Number((await db.query("SELECT id FROM activity WHERE exploration_id=$1 AND metadata->>'event_type'='planner_round_start'",[task.exploration_id])).rows[0]!.id);
+ for(const url of [`/api/exploration/activity?task=${task.id}`,`/api/exploration/activity/history?task=${task.id}&session=plan&limit=1&before=${start+1}`]){
+  const r=await app.inject({url,headers:{authorization:`Bearer ${token}`}});expect(r.statusCode).toBe(200);
+  expect(r.json().items.find((a:any)=>a.seq===start)).toMatchObject({kind:'round',metadata:{planner_round:{number:259,title:null}}});
+  expect(r.json().items.some((a:any)=>a.seq===ignored)).toBe(false);
+ }
+ const history=await app.inject({url:`/api/exploration/activity/history?task=${task.id}&session=plan&before=${start}`,headers:{authorization:`Bearer ${token}`}});
+ expect(history.json().items.find((a:any)=>a.seq===old)?.summary).toBe('第 258 轮规划');
+ const a=await stream(`/api/exploration/activity/stream?task=${task.id}`);
+ await wait(()=>a.frames.some(f=>f.id===start));
+ await finishPlannerDisplayRound(db,task.exploration_id,'round-header','文件上传全面探测');
+ await wait(()=>a.frames.some(f=>f.event==='turn_summary'&&f.data.items.some((v:any)=>v.planner_round?.title==='文件上传全面探测')));
+ a.close();const b=await stream(`/api/exploration/activity/stream?task=${task.id}`);
+ await wait(()=>b.frames.some(f=>f.event==='turn_summary'&&f.data.items.some((v:any)=>v.planner_round?.number===259&&v.planner_round.title==='文件上传全面探测')));b.close();
 });

@@ -234,7 +234,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const q = req.query as Record<string, string>;
     const expID = await expOf(q2n(q["task"], 0));
     const params: unknown[] = [expID];
-    let where = `exploration_id=$1 AND kind NOT IN ('round') AND exploration_activity_readable($1,node_id,metadata)`;
+    let where = `exploration_id=$1 AND (kind<>'round' OR worker='planner') AND exploration_activity_readable($1,node_id,metadata)`;
     if (q["intent"]) {
       params.push(Number(q["intent"]));
       where += ` AND node_id=$${params.length}`;
@@ -288,14 +288,14 @@ export function registerCompatRoutes(app: FastifyInstance): void {
       const rangeIdx = params.length;
       params.push(limit);
       var rows = await db().query(
-        `SELECT ${ACT_COLS} FROM activity WHERE exploration_id=$1 AND id <= $2 AND kind NOT IN ('round')${sessionWhere} AND id < $${rangeIdx}
+        `SELECT ${ACT_COLS} FROM activity WHERE exploration_id=$1 AND id <= $2 AND (kind<>'round' OR worker='planner')${sessionWhere} AND id < $${rangeIdx}
          ORDER BY id DESC LIMIT $${params.length}`,
         params,
       );
     } else {
       params.push(limit);
       var rows = await db().query(
-        `SELECT ${ACT_COLS} FROM activity WHERE exploration_id=$1 AND id <= $2 AND kind NOT IN ('round')${sessionWhere}
+        `SELECT ${ACT_COLS} FROM activity WHERE exploration_id=$1 AND id <= $2 AND (kind<>'round' OR worker='planner')${sessionWhere}
          ORDER BY id DESC LIMIT $${params.length}`,
         params,
       );

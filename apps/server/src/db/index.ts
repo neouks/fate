@@ -22,6 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 以本目录为 schema 与兼容迁移的唯一数据源。
 const schemaSQL = readFileSync(path.join(__dirname, "sql", "schema.sql"), "utf8");
 const retirementSQL = readFileSync(path.join(__dirname, 'sql', 'retire-approvals.sql'), 'utf8');
+const plannerRoundsSQL=readFileSync(path.join(__dirname,'sql','planner-rounds.sql'),'utf8');
 const usageSQL=readFileSync(path.join(__dirname,'sql','usage-ledger.sql'),'utf8');
 
 const SCHEMA_MIGRATION_LOCK_KEY = 7337741001;
@@ -158,7 +159,7 @@ export async function openDatabase(): Promise<Database> {
     try {
       await prepareToolOutputAccessMigration(client);
       // 无参数的 query 走简单查询协议，支持单次执行整份多语句 schema。
-      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+usageSQL;
+      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+usageSQL+'\n'+plannerRoundsSQL;
       for (let attempt = 0; ; attempt++) {
         try {
           await client.query(ddl);

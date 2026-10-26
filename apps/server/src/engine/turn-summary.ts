@@ -1,3 +1,4 @@
+import {projectPlannerDisplay} from '../db/planner-rounds.js';
 import {CANONICAL_USAGE_CTE,aggregateUsage} from '../db/usage-ledger.js';
 import type {Database} from '../db/index.js';
 import {activityDTO,type StreamScope} from './live-stream.js';
@@ -35,7 +36,7 @@ export function projectTurn(rows:Row[],attempts:Row[],runtime?:Row) {
  const auditKnown=attempts.length>0;
  const startedAt=iso(start?.metadata.started_at);
  const requested=rows.find(r=>r.kind==='user'&&r.metadata?.event_type!=='steering');
- return {version:1,turn_id:String(first.metadata.turn_id),revision:Number(last.id),updated_at:new Date(Math.max(new Date(last.created_at).getTime(),...attempts.map(a=>new Date(a.finished_at??0).getTime()),new Date(runtime?.finished_at??0).getTime(),expired?new Date(runtime?.expires_at??0).getTime():0)).toISOString(),
+ return {planner_round:projectPlannerDisplay(rows),version:1,turn_id:String(first.metadata.turn_id),revision:Number(last.id),updated_at:new Date(Math.max(new Date(last.created_at).getTime(),...attempts.map(a=>new Date(a.finished_at??0).getTime()),new Date(runtime?.finished_at??0).getTime(),expired?new Date(runtime?.expires_at??0).getTime():0)).toISOString(),
   worker:first.worker,role:start?.metadata.role??runtime?.role??null,intent_id:first.node_id==null?null:String(first.node_id),main_seg:first.main_seg??null,
   status,started_at:startedAt,finished_at:iso(terminal?.created_at??(expired?runtime?.finished_at??runtime?.expires_at:null)),
   queue_ms:startedAt&&requested?Math.max(0,Date.parse(startedAt)-new Date(requested.created_at).getTime()):null,
