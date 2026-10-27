@@ -132,6 +132,9 @@ export interface AgentRunnerOptions {
   turnID?:string;
   mainSegment?:number;
   compactionSettings?: {reserveTokens?:number;keepRecentTokens?:number};
+  contextPolicy?: ReturnType<typeof import('../agent/planner-context-policy.js').plannerContextPolicy>;
+  /** Independent of compaction reserve/headroom, which can be very large. */
+  summaryMaxTokens?:number;
   /** Adds role-specific retention requirements to native SDK compaction. */
   compactionInstructions?: string;
   onRequestSize?: (size: ReturnType<typeof requestSize>,purpose?:'conversation'|'compaction') => void | Promise<void>;

@@ -1,4 +1,5 @@
 import {PLANNER_TITLE_PROTOCOL} from './planner-title.js';
+import {plannerContextPolicy} from './planner-context-policy.js';
 import {beginPlannerDisplayRound,finishPlannerDisplayRound} from '../db/planner-rounds.js';
 import {goalsBootstrap,activeBootstrap,saveBootstrapGoals,type GoalsPhase} from '../db/goals-bootstrap.js';
 import {GOALS_STAGE_TOOLS,GOALS_STAGE_PROTOCOL,goalsStageVariables} from './goals-policy.js';
@@ -399,6 +400,7 @@ async function runPlannerSession(input:PlannerRoundInput):Promise<PlannerRoundRe
   const disabled = await disabledBuiltinTools(db, "planner");
   const prc = await agentRunConfig(db, "planner");
   const plannerBudget = agentBudgets(prc,{maxTurns:input.maxTurns,maxDurationMs:120_000});
+  const contextPolicy=plannerContextPolicy(model.model.contextWindow,await db.platform().getSetting('planner_context_budget_tokens'));
   // A task already past its deadline only permits the host's bounded final review.
   if(input.terminalOnly){
     plannerBudget.maxTurns=plannerBudget.maxTurns>0?Math.min(plannerBudget.maxTurns,input.maxTurns):input.maxTurns;
@@ -446,6 +448,9 @@ async function runPlannerSession(input:PlannerRoundInput):Promise<PlannerRoundRe
     signal: input.signal, ...plannerBudget,
     toolAllowlist: ["read",...(!input.terminalOnly?["write","edit","bash","mcp__*",...execution.names]:[]), ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     resumeSessionPath:plannerSessionFile(dataDir,expID),
+    contextPolicy,
+    compactionSettings:contextPolicy.compactionSettings,
+    summaryMaxTokens:contextPolicy.summaryMaxTokens,
     compactionInstructions:PLANNER_COMPACTION_RULES+'\n'+CONTEXT_RETENTION_RULES,
     wrapup: ({reason}) => reason==='settled'?undefined:{prompt:input.wrapupPromptOverride??(input.terminalOnly?PLANNER_TASK_TIMEOUT_WRAPUP:prc.wrapupPrompt||'预算将尽，停止新探测，保存已确定的规划并简述结果。')},
     maxWrapupTurns: prc.wrapupMaxTurns || 1,

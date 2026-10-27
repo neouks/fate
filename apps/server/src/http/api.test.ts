@@ -299,6 +299,21 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
     // 未实现但未删除的端点：通用 not found（区分文案）。/api/stats 已由兼容层实现（200）。
   });
 
+  it('Planner context budget supports explicit rollback and rejects invalid settings without changing workers',async()=>{
+    const before=(await authed('GET','/api/settings')).json();
+    try{
+      for(const value of [48000,0,8192]){
+        const saved=await authed('PUT','/api/settings',{planner_context_budget_tokens:value});
+        expect(saved.statusCode).toBe(200);expect(saved.json()).toMatchObject({planner_context_budget_tokens:value,applies:'next_session'});
+        expect((await authed('GET','/api/settings')).json()).toMatchObject({planner_context_budget_tokens:value,workers:before.workers});
+      }
+      for(const value of [-1,1,8191,1000001,1.5,'48000',null]){
+        expect((await authed('PUT','/api/settings',{planner_context_budget_tokens:value,workers:before.workers+1})).statusCode).toBe(400);
+        expect((await authed('GET','/api/settings')).json()).toMatchObject({planner_context_budget_tokens:8192,workers:before.workers});
+      }
+    }finally{await authed('PUT','/api/settings',{planner_context_budget_tokens:before.planner_context_budget_tokens});}
+  });
+
   it("系统配置：settings/agents/llm profiles/mcp/skills 最小面", async () => {
     const settings = await authed("GET", "/api/settings");
     expect(settings.statusCode).toBe(200);

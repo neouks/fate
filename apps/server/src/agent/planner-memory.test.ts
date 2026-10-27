@@ -1,5 +1,6 @@
 import {plannerReadCoverage,plannerGrounding,projectPlannerReceipts} from './planner-grounding.js';
 import {proveGoalTool} from '../tools/findings.js';
+import {addIntentTool} from '../tools/intents.js';
 import {beforeAll,afterAll,it,expect} from 'vitest';
 import {mkdtempSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';import path from 'node:path';import pg from 'pg';
@@ -273,4 +274,44 @@ it('does not reuse complete coverage of a revoked or updated node',async()=>{
   expect((await plannerGrounding(x.ctx,entries)).reads).toHaveLength(1);
   await db.query('UPDATE exploration_nodes SET content_version=content_version+1 WHERE id=$1',[id]);
   expect((await plannerGrounding(x.ctx,entries)).reads).toHaveLength(0);
+});
+
+it.each([false,true])('bounds restored Planner history using native compaction without replay (failure=%s)',async fail=>{
+  const x=await fixture();let toolCalls=0;
+  const original='LOCAL_NEGATIVE node:7 v2; only port 8000 tested; pending node:9. '+' evidence '.repeat(28000);
+  const seed=await AgentRunner.create({...x.input.model,cwd:path.join(dir,'budget-seed'),agentDir:path.join(dir,'agent'),
+    resumeSessionPath:x.file,systemPrompt:'LOCAL test',toolAllowlist:['local_fixture'],
+    customTools:[{name:'local_fixture',label:'LOCAL fixture',description:'Read local synthetic evidence',parameters:{type:'object',properties:{}},
+      async execute(){toolCalls++;return {content:[{type:'text',text:original}],details:{}};}}]});
+  x.f.setResponses([fauxAssistantMessage([fauxToolCall('local_fixture',{})]),fauxAssistantMessage('Read synthetic evidence.')]);
+  try{await seed.prompt('Read the LOCAL synthetic evidence once.');}finally{await seed.dispose();}
+  const before=readFileSync(x.file,'utf8'),raw=x.entries().find(e=>e.type==='message'&&e.message.role==='toolResult')!;
+  const submitted=await call(addIntentTool(x.ctx),{intents:[{summary:'LOCAL one unchanged direction',asset_ids:[]}]});
+  const intentID=submitted.intents[0].intent_id;
+  const startCalls=x.f.state.callCount;let summaries=0,conversations=0,afterBytes=0;
+  x.f.setResponses(Array.from({length:8},()=>((context,options)=>{
+    if(options?.maxTokens){
+      summaries++;expect(options.maxTokens).toBeLessThanOrEqual(2048);
+      expect(JSON.stringify(context.messages)).toContain('LOCAL_NEGATIVE');
+      return fauxAssistantMessage(fail?'':'LOCAL_NEGATIVE node:7 v2 port 8000 only; pending node:9; originals recallable.');
+    }
+    conversations++;const text=JSON.stringify(context.messages);afterBytes=Buffer.byteLength(text);
+    expect(text).toContain('LOCAL_NEGATIVE');expect(text).toContain('宿主当前状态');
+    expect(text.length).toBeLessThan(original.length/2);
+    return fauxAssistantMessage('Review retained evidence before any dispatch.');
+  })));
+  if(fail){await expect(runPlannerRound(x.input)).rejects.toThrow();expect(conversations).toBe(0);expect(x.entries().filter(e=>e.type==='compaction')).toHaveLength(0);}
+  else{
+    await runPlannerRound(x.input);expect(conversations).toBe(1);expect(afterBytes).toBeLessThan(Buffer.byteLength(original)/2);
+    expect(x.entries().filter(e=>e.type==='compaction').length).toBeGreaterThan(0);
+    const r=await call(contextGetTool(x.ctx),{items:[{ref:`session:${raw.id}`,field:'/content'}],max_chars:500});
+    expect(r.items[0].content).toContain('LOCAL_NEGATIVE');expect(r.items[0].next_offset).toBeGreaterThan(0);
+    const runtime=(await db.query("SELECT effective FROM runtime_role_configs WHERE task_id=$1 AND role='planner' ORDER BY started_at DESC LIMIT 1",[x.task.id])).rows[0]!;
+    expect(runtime.effective.context_policy).toMatchObject({version:'planner-context-v2',thresholdTokens:48000});
+    expect(runtime.effective.compaction.requests).toBe(summaries);
+    const duplicate=await call(addIntentTool(x.ctx),{intents:[{summary:'LOCAL one unchanged direction',asset_ids:[]}]});
+    expect(duplicate.intents[0]).toMatchObject({intent_id:intentID,created:false});
+  }
+  expect(summaries).toBeGreaterThan(0);expect(x.f.state.callCount-startCalls).toBe(summaries+conversations);
+  expect(toolCalls).toBe(1);expect(readFileSync(x.file,'utf8').startsWith(before)).toBe(true);
 });

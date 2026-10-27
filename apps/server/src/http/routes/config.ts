@@ -1,4 +1,5 @@
 import {catalogTools} from '../../agent/tool-catalog.js';
+import {plannerContextPolicy} from '../../agent/planner-context-policy.js';
 import {toolIdentity} from '../../agent/tool-registry.js';
 import {assertActiveRole} from '../../agent/retired-roles.js';
 import {resolveRolePrompt,PROMPT_VERSION,hostProtocol} from '../../agent/prompts.js';
@@ -193,7 +194,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       platform().workers(),
       platform().getSetting("active_task"),
     ]);
-    return { workers, pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission"}, active_task: activeTask ?? "" };
+    return { workers, planner_context_budget_tokens:Number((await platform().getSetting('planner_context_budget_tokens'))??48000),pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission",planner_context_budget_tokens:'next planner session'}, active_task: activeTask ?? "" };
   });
 
   const setSettings = async (req: { body?: unknown }, reply: { code(c: number): { send(v: unknown): unknown } }): Promise<unknown> => {
@@ -201,6 +202,14 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     const out: Record<string, unknown> = {};
     for(const [key,allowed] of Object.entries({pi_context_policy:['domain','native'],pi_mcp_loading:['deferred','direct']})){
       if(b[key]!==undefined&&!allowed.includes(String(b[key])))return reply.code(400).send({error:`无效 ${key}`});
+    }
+    if(b.planner_context_budget_tokens!==undefined){
+      if(typeof b.planner_context_budget_tokens!=='number')return reply.code(400).send({error:'planner_context_budget_tokens 必须为整数'});
+      try{plannerContextPolicy(0,String(b.planner_context_budget_tokens));}catch(error){return reply.code(400).send({error:(error as Error).message});}
+    }
+    if(b.planner_context_budget_tokens!==undefined){
+      await platform().setSetting('planner_context_budget_tokens',String(b.planner_context_budget_tokens));
+      out.planner_context_budget_tokens=b.planner_context_budget_tokens;out.applies='next_session';
     }
     for(const key of ['pi_context_policy','pi_mcp_loading'])if(b[key]!==undefined){await platform().setSetting(key,String(b[key]));out[key]=b[key];out.applies='next_session';}
     if(b["task_concurrency_enabled"]!==undefined)await platform().setSetting("task_concurrency_enabled",String(b["task_concurrency_enabled"]===true));
