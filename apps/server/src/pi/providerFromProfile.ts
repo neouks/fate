@@ -49,7 +49,9 @@ function configuredStreams(module:unknown,profile:ProfileLike,api:string){
       const onPayload=async(payload:unknown,selectedModel:unknown)=>{
         const next=(await previous?.(payload,selectedModel))??payload;
         if(!next||typeof next!=='object')return next;
-        if(profile.maxTokens<=0){
+        const requested=Number(original.maxTokens);
+        const explicitLimit=Number.isFinite(requested)&&requested>0;
+        if(profile.maxTokens<=0&&!explicitLimit){
           // OpenAI accepts an omitted limit. PI's model-capacity default must not
           // turn an unset profile limit into an application output budget.
           if(api==='anthropic-messages')return next;
@@ -60,8 +62,7 @@ function configuredStreams(module:unknown,profile:ProfileLike,api:string){
         const field=profile.maxTokensField?.trim()||(api==='anthropic-messages'?'max_tokens':api==='openai-responses'?'max_output_tokens':'max_completion_tokens');
         const result={...next as Record<string,unknown>};
         for(const key of ['max_tokens','max_completion_tokens','max_output_tokens'])delete result[key];
-        const requested=Number(original.maxTokens);
-        result[field]=Number.isFinite(requested)&&requested>0?Math.min(profile.maxTokens,requested):profile.maxTokens;
+        result[field]=explicitLimit?(profile.maxTokens>0?Math.min(profile.maxTokens,requested):requested):profile.maxTokens;
         return result;
       };
       return (base as (model:unknown,context:unknown,options:Record<string,unknown>)=>unknown)(model,context,{

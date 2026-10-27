@@ -52,5 +52,7 @@ it.each(['openai','openai-responses'])('omits implicit output limits for an unli
   const result=await source.modelRuntime.completeSimple(source.model,{messages:[{role:'user',content:'ping',timestamp:Date.now()}]});
   expect(result.errorMessage).toBeUndefined();
   for(const key of ['max_tokens','max_completion_tokens','max_output_tokens'])expect(received).not.toHaveProperty(key);
+  await source.modelRuntime.completeSimple(source.model,{messages:[{role:'user',content:'LOCAL bounded summary',timestamp:Date.now()}]},{maxTokens:128});
+  expect(received[format==='openai-responses'?'max_output_tokens':'max_completion_tokens']).toBe(128);
  }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });
