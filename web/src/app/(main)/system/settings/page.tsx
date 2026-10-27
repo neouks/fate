@@ -2,6 +2,7 @@
 import { PageHeading } from "@/components/workspace";
 
 import { HTTPAuthCard } from "./_components/http-auth-card";
+import { ContextBudgetCard } from "./_components/context-budget-card";
 import * as React from "react";
 
 import {
@@ -307,6 +308,7 @@ export default function SystemSettingsPage() {
           多列则自动按内容高度平衡填充。卡片间距靠 mb 而非 gap——多列布局下
           column-gap 只管列间距，行间距要由子元素自己给。 */}
       <div className="columns-1 gap-4 md:gap-6 lg:columns-2">
+        <ContextBudgetCard />
         <HTTPAuthCard />
 
         <Card className="mb-4 break-inside-avoid md:mb-6">
