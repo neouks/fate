@@ -128,9 +128,16 @@ it('preserves corrupted sessions and excludes simultaneous writers',async()=>{
 it('aborts the session when its database writer lock is lost',async()=>{
   const x=await fixture(),release=await lockPlannerSession(db,x.task.exploration_id);
   try{
-    const row=(await db.query("SELECT pid FROM pg_stat_activity WHERE datname=$1 AND query LIKE 'SELECT pg_try_advisory_lock%'",[name])).rows[0];
+    // Released pool clients retain their previous query text. Target the actual
+    // granted lock, not an arbitrary idle connection that once requested one.
+    const rows=(await db.query(`SELECT l.pid FROM pg_locks l JOIN pg_database d ON d.oid=l.database
+      WHERE d.datname=$1 AND l.locktype='advisory' AND l.granted AND l.objsubid=1
+      AND l.classid=((hashtextextended($2,0)>>32)&4294967295)::oid
+      AND l.objid=(hashtextextended($2,0)&4294967295)::oid`,[name,`fate:planner-session:${x.task.exploration_id}`])).rows;
+    expect(rows).toHaveLength(1);const row=rows[0];
     expect(row).toBeDefined();
-    const aborted=new Promise<void>(resolve=>release.signal.addEventListener('abort',()=>resolve(),{once:true}));
+    const wait=AbortSignal.any([release.signal,AbortSignal.timeout(5000)]);
+    const aborted=new Promise<void>(resolve=>wait.addEventListener('abort',()=>resolve(),{once:true}));
     await db.query('SELECT pg_terminate_backend($1)',[row.pid]);await aborted;
     expect(release.signal.aborted).toBe(true);
   }finally{await release();}
@@ -197,7 +204,9 @@ it('delivers and acknowledges a newly compacted graph in the same planning round
   const engine=new Engine(db,{...defaultEngineConfig(),heartbeatMs:600000,debounceMs:1},async()=>x.input.model,dir);
   try{
     await engine.run(x.task.id);
-    const deadline=Date.now()+10000;let completed=false;
+    // This checks durable ordering, not a latency SLO; allow database fsync and
+    // lease setup on a loaded local PostgreSQL instance without weakening assertions.
+    const deadline=Date.now()+30000;let completed=false;
     while(Date.now()<deadline){
       try{completed=plannerDeliveries(x.entries()).completed.size===1;}catch{/* First file has not yet been flushed. */}
       if(completed)break;await new Promise(r=>setTimeout(r,20));
