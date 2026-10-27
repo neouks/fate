@@ -1,4 +1,5 @@
 import {streamChanges} from './stream-changes.js';
+import {pendingPlannerWakeups,plannerWakeupReady} from './planner-wakeup.js';
 import {goalsBootstrap} from '../db/goals-bootstrap.js';
 import {blackboardRevision,markWorkerReleased,recoverWorkerSettlements} from '../db/worker-drafts.js';
 import {LiveStreamWriter,runnerActivityMetadata} from './live-stream.js';
@@ -499,11 +500,11 @@ export class Engine {
         continue;
       }
       if(Date.now()<retryAfter)continue;
-      const wakeups=(await this.db.query('SELECT id,node_id,kind FROM blackboard_wakeups WHERE exploration_id=$1 AND acknowledged_at IS NULL ORDER BY id LIMIT 50',[rt.expID])).rows;
+      const wakeups=await pendingPlannerWakeups(this.db,rt.expID);
       const revision=await blackboardRevision(this.db,rt.expID);
       const heartbeat=Math.max(1,settings?.plan_heartbeat_seconds?settings.plan_heartbeat_seconds*1000:this.cfg.heartbeatMs);
       const inspect=Date.now()-lastPlannedAt>=heartbeat&&(counts.running>0||revision!==lastRevision);
-      if(!wakeups.length&&!rt.triggers.length&&!inspect)continue;
+      if(!plannerWakeupReady(wakeups,{now:Date.now(),running:counts.running,hasControl:rt.triggers.length>0,heartbeatDue:inspect}))continue;
       if(!await this.acquirePlanner(rt))continue;
       try{
       if(rt.stopped||rt.paused||rt.settling)continue;
@@ -1168,7 +1169,10 @@ export class Engine {
       } : undefined,
       notifyFinding: (expID: number, nodeID: number) => {
         void expID;
-        this.notify(rt.taskID, `已发布漏洞：节点 #${nodeID}`);
+        // report_finding already committed a durable finding_published event.
+        // Do not misclassify it as a second, urgent user control change.
+        void nodeID;
+        this.notify(rt.taskID);
       },
       notifyGoalMet: (expID: number, goalID: number) => {
         void expID;

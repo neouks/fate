@@ -337,7 +337,7 @@ it('allows independent incremental observations while refusing draft-style overw
  expect(((await f.s.listByKind('fact')).filter(n=>n.payload.from_intent===f.id)).map(n=>n.id).sort((a,b)=>a-b)).toEqual([first.fact_id,second.fact_id]);
 });
 
-it('lets Planner read a live Worker finding and wakes again after Worker release',async()=>{
+it('coalesces a live Worker finding, keeps it readable immediately and wakes again after Worker release',async()=>{
  await db.platform().setSetting('workers','3');
  const task=await db.tasks().createTaskWithOptions('LOCAL live writeback','Observe LOCAL fixture',{executionMode:'managed'}),s=db.exploration(task.exploration_id);
  const goal=await s.addGoal({text:task.goal},'user');
@@ -353,7 +353,17 @@ it('lets Planner read a live Worker finding and wakes again after Worker release
  worker.setResponses([fauxAssistantMessage([fauxToolCall('record_fact',observation),fauxToolCall('report_finding',{vulnclass:'LOCAL fixture',severity:'low',summary:'LOCAL finding',evidence:'Synthetic evidence only'})]),
  async(_context,options)=>{holding=true;await Promise.race([held,new Promise<void>(r=>options?.signal?.addEventListener('abort',()=>r(),{once:true}))]);return fauxAssistantMessage('LOCAL observations saved.');}]);
  const e=new Engine(db,{...defaultEngineConfig(),workers:3,debounceMs:5},async(_id,role)=>({modelRuntime:runtime,model:(role==='planner'?planner:worker).getModel() as never}),dir);engines.push(e);
- try{await e.run(task.id);await until(async()=>holding&&liveObserved,12000);release();await until(async()=>(await db.tasks().getTask(task.id))?.status==='done',12000);expect(worker.state.callCount).toBe(2);}
+ try{
+  await e.run(task.id);await until(async()=>holding,12000);
+  expect(await s.listByKind('finding')).toHaveLength(1); // publication itself is never delayed
+  const calls=planner.state.callCount;e.notify(task.id);await new Promise(r=>setTimeout(r,100));
+  expect(planner.state.callCount).toBe(calls);expect(liveObserved).toBe(false);
+  expect((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1 AND kind='control_changed'",[task.exploration_id])).rowCount).toBe(0);
+  // Advance only this synthetic event's durable age, without a 30-second test sleep.
+  await db.query("UPDATE blackboard_wakeups SET created_at=now()-interval '31 seconds' WHERE exploration_id=$1 AND kind='finding_published'",[task.exploration_id]);
+  e.notify(task.id);await until(async()=>liveObserved,12000);release();
+  await until(async()=>(await db.tasks().getTask(task.id))?.status==='done',12000);expect(worker.state.callCount).toBe(2);
+ }
  finally{release();await e.stop(task.id);}
 });
 
