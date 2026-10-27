@@ -1,5 +1,6 @@
 import {PLANNER_TITLE_PROTOCOL} from './planner-title.js';
 import {plannerContextPolicy} from './planner-context-policy.js';
+import {roleContextPolicy} from './context-policy.js';
 import {beginPlannerDisplayRound,finishPlannerDisplayRound} from '../db/planner-rounds.js';
 import {goalsBootstrap,activeBootstrap,saveBootstrapGoals,type GoalsPhase} from '../db/goals-bootstrap.js';
 import {GOALS_STAGE_TOOLS,GOALS_STAGE_PROTOCOL,goalsStageVariables} from './goals-policy.js';
@@ -244,6 +245,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
   const tools = await applyToolBindings(db, "worker", workerTools(ctx));
   const disabledBuiltin = await disabledBuiltinTools(db);
   const rc = await agentRunConfig(db, "worker");
+  const contextPolicy=roleContextPolicy('worker',model.model.contextWindow,await db.platform().getSetting('worker_context_budget_tokens'));
 
   // Keep role/Skill/tool prefixes stable. The host supplies the immutable mandate
   // at every request boundary, including after compaction and session recovery.
@@ -276,6 +278,9 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     stopOnRecoveryBlock:()=>journal.recoveryBlocked,
     contextLayout: CONTEXT_LAYOUT_VERSION,
     taskContext,
+    contextPolicy,
+    compactionSettings:contextPolicy.compactionSettings,
+    summaryMaxTokens:contextPolicy.summaryMaxTokens,
     reserveSettlementTurns: 2,
     boundaryContext: async()=>constraintBlock(await loadConstraints(db,expID))+'\n'+await contextNeedBoundary(ctx),
     compactionInstructions:CONTEXT_RETENTION_RULES,

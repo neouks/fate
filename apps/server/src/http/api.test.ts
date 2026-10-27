@@ -314,6 +314,26 @@ describe.skipIf(!haveDB)("M5 HTTP API", () => {
     }finally{await authed('PUT','/api/settings',{planner_context_budget_tokens:before.planner_context_budget_tokens});}
   });
 
+  it('Worker context is independent; invalid paired settings cannot partially persist',async()=>{
+    const before=(await authed('GET','/api/settings')).json();
+    expect(before.worker_context_budget_tokens).toBe(0);
+    try{
+      for(const value of [64000,0,8192,1000000]){
+        const saved=await authed('PUT','/api/settings',{worker_context_budget_tokens:value});
+        expect(saved.statusCode).toBe(200);
+        expect(saved.json()).toMatchObject({worker_context_budget_tokens:value,applies:'next_session'});
+        expect((await authed('GET','/api/settings')).json()).toMatchObject({worker_context_budget_tokens:value,planner_context_budget_tokens:before.planner_context_budget_tokens});
+      }
+      for(const value of [-1,1,8191,1000001,1.5,'64000',null,true]){
+        expect((await authed('PUT','/api/settings',{planner_context_budget_tokens:96000,worker_context_budget_tokens:value})).statusCode).toBe(400);
+        expect((await authed('GET','/api/settings')).json()).toMatchObject({worker_context_budget_tokens:1000000,planner_context_budget_tokens:before.planner_context_budget_tokens});
+      }
+      const pair=await authed('PUT','/api/settings',{planner_context_budget_tokens:48000,worker_context_budget_tokens:64000});
+      expect(pair.statusCode).toBe(200);
+      expect((await authed('GET','/api/settings')).json()).toMatchObject({planner_context_budget_tokens:48000,worker_context_budget_tokens:64000,effective:{worker_context_budget_tokens:'next worker session'}});
+    }finally{await authed('PUT','/api/settings',{planner_context_budget_tokens:before.planner_context_budget_tokens,worker_context_budget_tokens:before.worker_context_budget_tokens});}
+  });
+
   it("系统配置：settings/agents/llm profiles/mcp/skills 最小面", async () => {
     const settings = await authed("GET", "/api/settings");
     expect(settings.statusCode).toBe(200);

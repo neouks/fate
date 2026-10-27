@@ -21,6 +21,7 @@ export async function configuredRole(db:Database,taskID:number,role:string,conve
  const conv=conversationID?(await db.query('SELECT llm_profile_id FROM conversations WHERE id=$1',[conversationID])).rows[0]:undefined;
  const resolved=await resolveModelProfiles(db,taskID,role,{conversationID,profileID:Number(conv?.llm_profile_id)||undefined});
  return {planner_context_budget_tokens:role==='planner'?await db.platform().getSetting('planner_context_budget_tokens'):undefined,
+  worker_context_budget_tokens:role==='worker'?await db.platform().getSetting('worker_context_budget_tokens'):undefined,
   platform_policy:await platformPolicy(db,role),enabled:agent?.enabled??true,prompt_source:prompt.source,prompt_version:prompt.version,agent_hash:digest(agent),prompt_hash:digest([prompt.template,hostProtocol(role)]),tools_hash:digest(tools),resources_hash:digest([resources,skills]),
   model_hash:digest(resolved.profiles),model:resolved.resolution};
 }

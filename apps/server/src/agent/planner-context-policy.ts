@@ -1,16 +1,5 @@
-/** A working-set target, not a provider context-window override or a request limit.
- * Native pi still selects safe cuts, pairs tools and persists compaction records. */
-export function plannerContextPolicy(contextWindow:number,configured?:string|null) {
-  const requested=configured==null||configured===''?48_000:Number(configured);
-  if(!Number.isSafeInteger(requested)||requested<0||requested>1_000_000||requested>0&&requested<8192)
-    throw new Error('planner_context_budget_tokens 必须为 8192–1000000 的整数；0 恢复 pi 容量压缩');
-  if(requested===0||contextWindow<=0)return {version:'planner-context-v2',mode:'capacity' as const};
-  // Leave capacity headroom even on small models. Never enlarge their window.
-  const threshold=Math.max(1,Math.min(requested,contextWindow-Math.min(16_384,Math.floor(contextWindow/4))));
-  const keepRecentTokens=Math.max(1,Math.min(12_000,Math.floor(threshold/4)));
-  return {version:'planner-context-v2',mode:'working_set' as const,thresholdTokens:threshold,
-    summaryMaxTokens:2048,compactionSettings:{reserveTokens:contextWindow-threshold,keepRecentTokens}};
-}
+import {roleContextPolicy} from './context-policy.js';
+export const plannerContextPolicy=(contextWindow:number,configured?:string|null)=>roleContextPolicy('planner',contextWindow,configured);
 
 type Row=Record<string,unknown>;
 const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
