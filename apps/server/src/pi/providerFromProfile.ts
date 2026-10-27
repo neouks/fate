@@ -59,7 +59,10 @@ function configuredStreams(module:unknown,profile:ProfileLike,api:string){
           for(const key of ['max_tokens','max_completion_tokens','max_output_tokens',profile.maxTokensField??''])delete unlimited[key];
           return unlimited;
         }
-        const field=profile.maxTokensField?.trim()||(api==='anthropic-messages'?'max_tokens':api==='openai-responses'?'max_output_tokens':'max_completion_tokens');
+        // Preserve pi's protocol compatibility detection (e.g. DeepSeek uses
+        // max_tokens). A configured field remains an explicit user override.
+        const nativeField=['max_tokens','max_completion_tokens','max_output_tokens'].find(key=>Object.hasOwn(next,key));
+        const field=profile.maxTokensField?.trim()||nativeField||(api==='anthropic-messages'?'max_tokens':api==='openai-responses'?'max_output_tokens':'max_completion_tokens');
         const result={...next as Record<string,unknown>};
         for(const key of ['max_tokens','max_completion_tokens','max_output_tokens'])delete result[key];
         result[field]=explicitLimit?(profile.maxTokens>0?Math.min(profile.maxTokens,requested):requested):profile.maxTokens;
