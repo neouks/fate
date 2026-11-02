@@ -1,0 +1,122 @@
+{
+  "commit": "691648bb",
+  "version": "series-691648bb-production",
+  "status": "published",
+  "published_at": "2026-11-02T12:35:38.870Z",
+  "backend_pid": 10906,
+  "frontend_pid": 10912,
+  "health": {
+    "status": "ok",
+    "version": "series-691648bb-production",
+    "runtime": "node/25.1.0",
+    "uptime_seconds": 5
+  },
+  "runtime_metrics": {
+    "database": {
+      "queries": 286,
+      "query_errors": 0,
+      "pools": {
+        "primary": {
+          "total": 2,
+          "idle": 2,
+          "waiting": 0
+        },
+        "control": {
+          "total": 0,
+          "idle": 0,
+          "waiting": 0
+        },
+        "planner_lock": {
+          "total": 0,
+          "idle": 0,
+          "waiting": 0
+        }
+      }
+    },
+    "scheduler": {
+      "tasks": 0,
+      "worker_executions": 0,
+      "planners": 0,
+      "planner_queue": 0,
+      "claim_dispatchers": 0,
+      "worker_lock_contentions": 0
+    },
+    "streams": {
+      "sources": 0,
+      "clients": 0,
+      "cache_bytes": 0,
+      "buffered_bytes": 0,
+      "blocked_clients": 0
+    },
+    "memory": {
+      "rss": 210976768,
+      "heapTotal": 128663552,
+      "heapUsed": 57776576,
+      "external": 4119877,
+      "arrayBuffers": 259567
+    },
+    "event_loop_ms": {
+      "p50": 21.053439,
+      "p95": 21.102591,
+      "p99": 21.676031,
+      "max": 21.807103
+    }
+  },
+  "requests_before": {
+    "count": "12188",
+    "max_id": "12188"
+  },
+  "requests_after": {
+    "count": "12188",
+    "max_id": "12188"
+  },
+  "after_tasks": [
+    {
+      "id": "4849",
+      "status": "running",
+      "paused": true,
+      "queued": false
+    },
+    {
+      "id": "4852",
+      "status": "running",
+      "paused": true,
+      "queued": false
+    },
+    {
+      "id": "4858",
+      "status": "running",
+      "paused": true,
+      "queued": false
+    },
+    {
+      "id": "4859",
+      "status": "running",
+      "paused": true,
+      "queued": false
+    },
+    {
+      "id": "4860",
+      "status": "running",
+      "paused": true,
+      "queued": false
+    }
+  ],
+  "frontend_build_id": "bijUzVVTjAu-J6lTQZf13",
+  "followup": {
+    "paused_task_ids": [
+      4849,
+      4852,
+      4858,
+      4859,
+      4860
+    ],
+    "pause_pending": false,
+    "model_requests": 12188,
+    "active_workers": 0,
+    "active_planners": 0,
+    "query_errors": 0,
+    "browser_login": "passed",
+    "browser_console_errors": 0
+  }
+}
