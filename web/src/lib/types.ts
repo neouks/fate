@@ -485,9 +485,17 @@ export interface TaskGoal {
   ts: string;
 }
 
-// 约束管理卡片用的操作约束(allow=允许 / deny=禁止)。
+// 约束分类仅作展示，实际边界以正文及原文条件为准。
 export type ConstraintKind = "allow" | "deny";
+export interface TaskConstraintSource {
+  version?: number;
+  field?: "goal" | "description" | "user_message";
+  quote?: string;
+  context_quote?: string;
+  source_hash?: string;
+}
 export interface TaskConstraint {
+  source?: TaskConstraintSource;
   id: string;
   kind: ConstraintKind;
   text: string;
