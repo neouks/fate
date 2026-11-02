@@ -18,6 +18,7 @@ afterAll(async()=>{await db.close();const admin=new pg.Client({connectionString:
 const description='LOCAL_BACKGROUND_SECRET 架构分析、接口梳理、漏洞挖掘并提交额外报告。\n\n禁止写入生产数据；仅本地合成资料。';
 async function fixture(goal='资产测试覆盖度100%'){
  const task=await db.tasks().createTaskWithOptions(description,goal,{seedFirstIntent:true,initializeGoals:true});await db.query("UPDATE tasks SET status='running' WHERE id=$1",[task.id]);
+ await db.query("UPDATE goals_bootstrap SET policy='goal-field-isolation-v1' WHERE task_id=$1",[task.id]);
  const faux=fauxProvider({provider:`goals-${task.id}`});const modelRuntime=await ModelRuntime.create({refreshOnCreate:false});await modelRuntime.registerNativeProvider(faux.provider);
  const activities:any[]=[];const input={db,taskID:task.id,expID:task.exploration_id,model:{modelRuntime,model:faux.getModel() as never},dataDir:dir,description,onActivity:(a:unknown)=>activities.push(a),maxTurns:5};
  return {task,faux,input,activities,ctx:runContext(db,task.id,task.exploration_id,'goals')};
@@ -90,7 +91,7 @@ it('custom prompt remains selected, stage preview restricts capabilities and exa
  await db.query('UPDATE agents SET current_prompt_id=$2 WHERE id=$1',[agent.id,old]);await migrateIsolatedGoalsPrompt(db);expect(await db.platform().currentPrompt(agent.id)).toBe(PREVIOUS_GOALS_DEFAULTS[0]);
  const custom='自定义标记 {{Goal}}；背景变量={{Description}} {{.EngagementDescription}}。';await db.platform().savePrompt(agent.id,custom,'custom','test');await db.platform().setSetting(GOALS_MIGRATION_KEY,'');await migrateIsolatedGoalsPrompt(db);expect(await db.platform().currentPrompt(agent.id)).toBe(custom);
  const f=await fixture();let body='';f.faux.setResponses([fauxAssistantMessage('无新约束'),c=>{body=JSON.stringify(c);return fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:f.task.goal,source_quote:f.task.goal}]})]);}]);await runGoalsDecompose(f.input);expect(body).toContain('自定义标记');expect(body).not.toContain('LOCAL_BACKGROUND_SECRET');
- const preview=await previewRoleTools(db,'goals');expect(preview.stages?.map(s=>s.resident.sort())).toEqual([['register_user_target','set_constraints'],['set_goals']]);expect(preview.deferred).toEqual([]);
+ const preview=await previewRoleTools(db,'goals');expect(preview.stages?.map(s=>s.resident.sort())).toEqual([['register_user_target','set_constraints','set_goals']]);expect(preview.deferred).toEqual([]);
  await db.platform().savePrompt(agent.id,GOALS_PROMPT,'restore','test');
 });
 it('initialization completes before a seeded Worker can obtain its model',async()=>{

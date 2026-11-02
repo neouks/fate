@@ -90,8 +90,8 @@ it.each(ACTIVE_ROLES)('%s actual entrypoint matches preview and required tools e
  const base={db,taskID:f.task.id,expID:f.task.exploration_id,goal:f.task.goal,model:f.model,dataDir:dir,hooks:{},onActivity:(a:unknown)=>activities.push(a)};
  let conversationID:number|undefined;
  if(role==='goals'){
-  await db.query('INSERT INTO goals_bootstrap(task_id,goal,description) VALUES($1,$2,$3)',[f.task.id,f.task.goal,f.task.description]);
-  f.faux.setResponses([fauxAssistantMessage('约束阶段完成'),fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:f.task.goal,source_quote:f.task.goal}]})])]);
+  await db.query("INSERT INTO goals_bootstrap(task_id,goal,description,policy) VALUES($1,$2,$3,'series-single-session-v1')",[f.task.id,f.task.goal,f.task.description]);
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:f.task.goal,source_quote:f.task.goal}]})])]);
   expect(await runGoalsDecompose({...base,description:'LOCAL synthetic fixture'})).toMatchObject({stopReason:'completed'});
   expect((await f.s.listByKind('goal')).length).toBe(1);
  }else if(role==='worker'){

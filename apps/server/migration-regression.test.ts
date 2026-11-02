@@ -102,7 +102,7 @@ describe('migration invariants',()=>{
   const starting=e.run(t.id,{decompose:{description:'LOCAL bootstrap fixture'}});await until(async()=>entered);
   await db.tasks().applyTaskPause(t.id);const paused=await e.pause(t.id);expect(['paused','waiting_for_executor']).toContain(paused.status);await starting;await until(async()=>(await db.query('SELECT status FROM runtime_task_commands WHERE id=$1',[paused.command_id])).rows[0]?.status==='acknowledged');
   expect((await s.listByKind('goal',20))).toHaveLength(0);
-  faux.setResponses([fauxAssistantMessage('约束阶段完成'),fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:'resumed bootstrap marker',source_quote:'resumed bootstrap marker'}]})])]);
+  faux.setResponses([fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:'resumed bootstrap marker',source_quote:'resumed bootstrap marker'}]})])]);
   await e.admitTask(t.id);
   expect((await s.listByKind('goal',20)).map(n=>n.payload.text)).toContain('resumed bootstrap marker');
   const status=await db.tasks().getTask(t.id);expect(status).toMatchObject({paused:false,queued:false,queue_mode:''});
@@ -329,7 +329,7 @@ describe('migration invariants',()=>{
  it('R19 goal decomposition must receive the explicit task goal',async()=>{
   const {t,source,faux}=await fixture(true);await db.query("UPDATE tasks SET goal='explicit-acceptance-marker' WHERE id=$1",[t.id]);
   await db.query("UPDATE goals_bootstrap SET goal='explicit-acceptance-marker' WHERE task_id=$1",[t.id]);
-  let contextText='';faux.setResponses([fauxAssistantMessage('约束阶段完成'),(context)=>{contextText=JSON.stringify(context);return fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:'explicit-acceptance-marker',source_quote:'explicit-acceptance-marker'}]})]);},fauxAssistantMessage('saved')]);
+  let contextText='';faux.setResponses([(context)=>{contextText=JSON.stringify(context);return fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:'explicit-acceptance-marker',source_quote:'explicit-acceptance-marker'}]})]);},fauxAssistantMessage('saved')]);
   await runGoalsDecompose({db,taskID:t.id,expID:t.exploration_id,model:source,dataDir:dir,description:'background only'});
   expect(contextText).toContain('explicit-acceptance-marker');
  });

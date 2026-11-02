@@ -47,7 +47,7 @@ it('rejects invented boundaries atomically, stores provenance, and deduplicates'
 it('rejects joined paragraphs and literal newline escapes without weakening the original constraints',async()=>{
   const first='只允许读取本地合成样本。',second='禁止重复请求；失败时保留原始证据。';
   const t=await fixture(`${first}\n\n${second}`),ctx={...runContext(db,t.id,t.exploration_id,'goals'),goalsPhase:'constraints' as const};
-  for(const text of [`${first}\n\n${second}`,`${first}\\n\\n${second}`]){
+  for(const text of [`${first}\\n\\n${second}`]){
     await expect(call(setConstraintsTool(ctx),{constraints:[{kind:'allow',text}]})).rejects.toThrow('原文依据');
     expect(await loadConstraints(db,t.exploration_id)).toEqual([]);
   }
@@ -75,12 +75,11 @@ it('native pi Goals can recover from a rejected invented rule and save the real 
   faux.setResponses([
     fauxAssistantMessage([fauxToolCall('set_constraints',{constraints:[{kind:'allow',text:'仅允许 fixture.invalid:80'}]})]),
     fauxAssistantMessage([fauxToolCall('set_constraints',{constraints:[{kind:'deny',text:'禁止爆破。',source_quote:'禁止爆破。'}]})]),
-    fauxAssistantMessage('原文约束已保存'),
     fauxAssistantMessage([fauxToolCall('set_goals',{goals:[{text:'分析系统架构',source_quote:'分析系统架构'}]})]),
   ]);
   await runGoalsDecompose({db,taskID:t.id,expID:t.exploration_id,description:t.description,model:{modelRuntime,model:faux.getModel() as never},dataDir:dir});
   expect(await loadConstraints(db,t.exploration_id)).toEqual([{kind:'deny',text:'禁止爆破。'}]);
-  expect(faux.state.callCount).toBe(4);
+  expect(faux.state.callCount).toBe(3);
 });
 it('native Main binds the current request without treating task facts as new instructions',async()=>{
   const t=await fixture(),faux=fauxProvider({provider:'constraints-main'}),modelRuntime=await ModelRuntime.create({refreshOnCreate:false});

@@ -2,7 +2,7 @@ import {PLANNER_TITLE_PROTOCOL} from './planner-title.js';
 import {plannerContextPolicy} from './planner-context-policy.js';
 import {roleContextPolicy} from './context-policy.js';
 import {beginPlannerDisplayRound,finishPlannerDisplayRound} from '../db/planner-rounds.js';
-import {goalsBootstrap,activeBootstrap,saveBootstrapGoals,type GoalsPhase} from '../db/goals-bootstrap.js';
+import {goalsBootstrap,activeBootstrap,saveBootstrapGoals,noteGoalsToolResult,SERIES_GOALS_POLICY,type GoalsPhase} from '../db/goals-bootstrap.js';
 import {GOALS_STAGE_TOOLS,GOALS_STAGE_PROTOCOL,goalsStageVariables} from './goals-policy.js';
 import {legacyReadCandidates} from '../tools/legacy-reads.js';
 import {assertActiveRole} from '../agent/retired-roles.js';
@@ -600,7 +600,9 @@ export interface GoalsRunInput {
 
 /** goals：任务创建时的一次性目标分解；内存会话，仅缺少目标提交时提醒保存。 */
 export async function runGoalsDecompose(input: GoalsRunInput): Promise<WorkerRunResult> {
-  if(await goalsBootstrap(input.db,input.taskID))return runIsolatedGoals(input);
+  const bootstrap=await goalsBootstrap(input.db,input.taskID);
+  if(bootstrap?.policy===SERIES_GOALS_POLICY)return runCombinedGoals(input);
+  if(bootstrap)return runIsolatedGoals(input);
   return runLegacyGoalsDecompose(input);
 }
 async function runLegacyGoalsDecompose(input: GoalsRunInput): Promise<WorkerRunResult> {
@@ -705,4 +707,68 @@ async function runIsolatedGoals(input:GoalsRunInput):Promise<WorkerRunResult>{
   input.onActivity?.({kind:'host_status',text:'已回退为原始目标单目标；未使用任务描述。'}, {worker:'goals'});
  }
  return completed();
+}
+
+/** SERIES semantics on a single native pi session; legacy bootstrap policies stay isolated. */
+async function runCombinedGoals(input:GoalsRunInput):Promise<WorkerRunResult>{
+ const {db,taskID,expID,model,dataDir}=input;
+ const counter=withUsageCounter(input.onActivity??(()=>{}));
+ const done=():WorkerRunResult=>({aborted:false,stopReason:'completed',lastAssistantText:undefined,usage:counter.usage()});
+ const state=(await goalsBootstrap(db,taskID))!;
+ if(state.phase==='completed')return done();
+ const ctx=runContext(db,taskID,expID,'goals',{hooks:input.hooks??{},signal:input.signal,goalsPhase:'combined'});
+ await db.transaction(tx=>activeBootstrap(ctx,tx));
+ const requireWriter=async()=>{
+  await agentRunConfig(db,'goals');
+  const tools=await applyToolBindings(db,'goals',goalsTools(ctx));
+  if(!tools.some(t=>t.name==='set_goals'))throw new Error('Goals 的 set_goals 已禁用，初始化暂停');
+  return tools.filter(t=>(GOALS_STAGE_TOOLS.combined as readonly string[]).includes(t.name));
+ };
+ const tools=await requireWriter(),config=await agentRunConfig(db,'goals');
+ const cwd=path.resolve(dataDir,'tasks',String(taskID),'goals','combined');mkdirSync(cwd,{recursive:true});
+ const file=path.join(cwd,'session.jsonl');
+ const protocol=GOALS_STAGE_PROTOCOL.combined;
+ const prematureGoalCalls=new Set<string>();
+ input.onActivity?.({kind:'host_status',phase:'combined',text:'目标初始化：同一会话提取约束、登记资产，再保存目标'}, {worker:'goals'});
+ const runner=await createTrackedRunner(db,taskID,'goals',{
+  turnID:input.turnID,...model,cwd,agentDir:path.join(dataDir,'pi-agent'),goalsPhase:'combined',
+  systemPrompt:await systemRolePrompt(db,'goals',goalsStageVariables(state.goal,state.description,'combined'),false,hostProtocol('goals')+'\n'+protocol),
+  customTools:tools,toolAllowlist:tools.map(t=>t.name),signal:input.signal,resumeSessionPath:file,
+  extensionFactories:[pi=>{
+   pi.on('message_end',async event=>{
+    if(event.message.role==='toolResult'&&(GOALS_STAGE_TOOLS.combined as readonly string[]).includes(event.message.toolName)){
+     await noteGoalsToolResult(ctx,event.message.toolName,event.message.isError?'工具保存未成功，请核对工具返回后纠正':undefined);
+     return;
+    }
+    if(event.message.role!=='assistant')return;
+    const calls=event.message.content.filter(c=>c.type==='toolCall');
+    for(const call of calls.slice(0,-1))if(call.name==='set_goals')prematureGoalCalls.add(call.id);
+   });}],
+  ...agentBudgets(config,{maxTurns:input.maxTurns??8,maxDurationMs:120_000}),
+  stopWhen:async()=>(await goalsBootstrap(db,taskID))?.phase==='completed',
+  onRequestSize:async()=>{await db.transaction(tx=>activeBootstrap(ctx,tx));await requireWriter();},
+  boundaryContext:async()=>{const current=await goalsBootstrap(db,taskID);return '【初始化持久状态；已成功保存的不重复写入】\n'+JSON.stringify({policy:state.policy,pending_errors:current?.pending_errors,constraints:await loadConstraints(db,expID)});},
+  loadDomainState:async()=>({policy:state.policy,goal:state.goal,description:state.description}),
+  guard:async event=>{
+   await db.transaction(tx=>activeBootstrap(ctx,tx));
+   if(event.toolName==='set_goals'&&prematureGoalCalls.has(event.toolCallId)){
+    const reason='set_goals 必须是本轮最后一次工具提交；先完成约束和资产保存，再提交目标。';
+    await noteGoalsToolResult(ctx,'set_goals',reason);return {block:true,reason};
+   }
+   return undefined;
+  },
+  onActivity:a=>counter.wrapped(a,{worker:'goals'}),
+ });
+ try{
+  const result=await runner.prompt(`【目标栏原文；最终验收结果唯一来源】\n${state.goal}\n\n【任务描述；背景、约束及资产】\n${state.description}\n\n${protocol}`);
+  input.signal?.throwIfAborted();await db.transaction(tx=>activeBootstrap(ctx,tx));
+  if((await goalsBootstrap(db,taskID))?.phase==='completed')return {...result,usage:counter.usage()};
+  if(result.aborted||result.stopReason==='aborted')throw new Error('Goals 初始化已中断，保持暂停');
+  await requireWriter();
+  const current=(await goalsBootstrap(db,taskID))!;
+  if(Object.keys(current.pending_errors??{}).length)throw new Error('Goals 保存错误未解决，初始化暂停：'+Object.keys(current.pending_errors).join(','));
+  await saveBootstrapGoals(ctx,[{text:state.goal,source_quote:state.goal}],true);
+  input.onActivity?.({kind:'host_status',text:'目标拆解无产出；以目标栏原文保存为单一目标。'}, {worker:'goals'});
+  return done();
+ }finally{await runner.dispose();}
 }

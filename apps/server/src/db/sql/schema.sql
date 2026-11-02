@@ -1911,6 +1911,9 @@ CREATE TABLE IF NOT EXISTS goals_bootstrap (
  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Keep old policy defaults for historical/manual enrollment; new API creation opts in explicitly.
+ALTER TABLE goals_bootstrap ADD COLUMN IF NOT EXISTS pending_errors JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 -- Planning capacity is independent of Worker execution capacity.
 CREATE TABLE IF NOT EXISTS engine_planner_slots (
  task_id BIGINT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,

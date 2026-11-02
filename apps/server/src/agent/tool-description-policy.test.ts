@@ -24,7 +24,7 @@ it.each(ACTIVE_ROLES)('%s only advertises its supported history references after
 it('recognizes the exact ARTEX constraint default and keeps edited text',async()=>{
   const db=fakeDB({set_constraints:ARTEX_CONSTRAINT_DESCRIPTION});
   const tools=await applyToolBindings(db,'goals',[setConstraintsTool(runContext(db,1,1,'goals'))]);
-  expect(tools[0]!.description).toContain('单换行仍属同段');
+  expect(tools[0]!.description).toContain('逐条整理后的自包含要求');
   expect(tools[0]!.description).not.toContain('顶层 text/type');
   expect((tools[0]!.parameters as any).properties.constraints.items.required).toEqual(['kind','text']);
   const custom=ARTEX_CONSTRAINT_DESCRIPTION+' 自定义保留要求';
