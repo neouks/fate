@@ -1,3 +1,4 @@
+import {ConstraintBoundary} from './constraint-boundary.js';
 import {PLANNER_TITLE_PROTOCOL} from './planner-title.js';
 import {plannerContextPolicy} from './planner-context-policy.js';
 import {roleContextPolicy} from './context-policy.js';
@@ -242,6 +243,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     intentID: intent.id,
     hooks: input.hooks,
   });
+  const constraints=new ConstraintBoundary(db,expID,text=>input.onActivity?.({kind:'host_status',phase:'constraints',text},{worker:workerName,intentID:intent.id}));
   const tools = await applyToolBindings(db, "worker", workerTools(ctx));
   const disabledBuiltin = await disabledBuiltinTools(db);
   const rc = await agentRunConfig(db, "worker");
@@ -282,7 +284,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     compactionSettings:contextPolicy.compactionSettings,
     summaryMaxTokens:contextPolicy.summaryMaxTokens,
     reserveSettlementTurns: 2,
-    boundaryContext: async()=>constraintBlock(await loadConstraints(db,expID))+'\n'+await contextNeedBoundary(ctx),
+    boundaryContext: async()=>await constraints.context()+'\n'+await contextNeedBoundary(ctx),
     compactionInstructions:CONTEXT_RETENTION_RULES,
     loadDomainState:async()=>({context_needs:await contextNeedBoundary(ctx)}),
     intentID:intent.id,
@@ -309,6 +311,7 @@ export async function runWorkerIntent(input: WorkerRunInput): Promise<WorkerRunR
     maxWrapupTurns: rc.wrapupMaxTurns || 2,
     settlementTools: WORKER_SETTLEMENT_TOOLS,
     guard: async (g) => {
+      const constraintDecision=await constraints.guard(g.toolName);if(constraintDecision)return constraintDecision;
       const current = await db.exploration(expID).getNode(intent.id);
       if (!current || current.state !== 'running' || current.owner!==workerName || current.payload.cancelled_by_user) return {block:true,reason:'当前意图已停止或归属已改变，禁止继续执行'};
       if (current.payload.execution_result) return {block:true,reason:'结果已提交，请结束当前会话'};
@@ -401,6 +404,8 @@ async function runPlannerSession(input:PlannerRoundInput):Promise<PlannerRoundRe
   const { db, taskID, expID, goal, model, dataDir, todos } = input;
   const planningRoundID=input.planningRoundID??randomUUID();
   const ctx: ToolRunContext = runContext(db, taskID, expID, "planner", { todos, hooks: input.hooks,planningRoundID });
+  const constraints=new ConstraintBoundary(db,expID,text=>input.onActivity?.({kind:'host_status',phase:'constraints',text},{worker:'planner'}));
+  const executionGuard=roleExecutionGuard(ctx,input.extraGuard);
   const tools = await applyToolBindings(db, "planner", plannerTools(ctx).filter((t) => !input.terminalOnly || !["add_intent", "add_task_scope", "steer_work", "kill_work"].includes(t.name)));
   const disabled = await disabledBuiltinTools(db, "planner");
   const prc = await agentRunConfig(db, "planner");
@@ -431,14 +436,14 @@ async function runPlannerSession(input:PlannerRoundInput):Promise<PlannerRoundRe
     cwd: workDir,
     extensionFactories:input.terminalOnly?[]:execution.extensions,
     projectMessages:messages=>projectPlannerReceipts(messages,sessionEntries()),
-    guard:roleExecutionGuard(ctx,input.extraGuard),
+    guard:async g=>(await constraints.guard(g.toolName))??await executionGuard(g),
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
     boundaryContext:async()=>{
       await input.hooks.assertOwnership?.(db);
       const task=await db.tasks().getTask(taskID);
       if(!task||task.exploration_id!==expID)throw new Error('Planner 任务已删除或归属变化');
       const state=plannerCurrentState(await buildGraphOverview(ctx),todos.get(expID));
-      return constraintBlock(await loadConstraints(db,expID))+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.status,paused:task.paused,...state,grounding:await plannerGrounding(ctx,sessionEntries())})+'\n'+await contextNeedBoundary(ctx);
+      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.status,paused:task.paused,...state,grounding:await plannerGrounding(ctx,sessionEntries())})+'\n'+await contextNeedBoundary(ctx);
     },
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,

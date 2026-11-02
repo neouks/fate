@@ -10,6 +10,8 @@ import {runGoalsDecompose} from './roles.js';
 import {goalsBootstrap,SERIES_GOALS_POLICY} from '../db/goals-bootstrap.js';
 import {setConstraintsTool,setGoalsTool} from '../tools/goals.js';
 import {runContext} from '../tools/context.js';
+import {ConstraintBoundary} from './constraint-boundary.js';
+import {AgentRunner} from '../pi/runner.js';
 import {migrateSeriesGoals,PREVIOUS_ISOLATED_PROMPT,SERIES_GOALS_MIGRATION} from './goals-series-migration.js';
 import {GOALS_PROMPT} from './prompts.js';
 const dir=mkdtempSync(path.join(tmpdir(),'fate-goals-series-')),name=`fate_goals_series_${process.pid}`;
@@ -90,4 +92,10 @@ it('single-session SIGKILL recovery preserves writes and never replays completed
   const calls=f.faux.state.callCount;await runGoalsDecompose({...f.input,description});expect(f.faux.state.callCount).toBe(calls);
   expect(await db.exploration(f.task.exploration_id).listByKind('goal')).toHaveLength(1);
  }finally{if(child.exitCode===null)child.kill('SIGKILL');}
+});
+it('constraint changes fence generated native batches while allowing observation writeback',async()=>{
+ const f=await fixture(),boundary=new ConstraintBoundary(db,f.task.exploration_id);let effects=0,writebacks=0;
+ f.faux.setResponses([async()=>{await db.query("INSERT INTO task_constraints(exploration_id,kind,text,origin) VALUES($1,'deny','不得执行 probe','user')",[f.task.exploration_id]);return fauxAssistantMessage([fauxToolCall('probe',{}),fauxToolCall('record_fact',{})]);},c=>{expect(JSON.stringify(c)).toContain('不得执行 probe');return fauxAssistantMessage('约束冲突，停止当前探测');}]);
+ const runner=await AgentRunner.create({cwd:dir,agentDir:dir,modelRuntime:f.input.model.modelRuntime,model:f.input.model.model,systemPrompt:'local synthetic test',inMemory:true,toolAllowlist:['probe','record_fact'],customTools:['probe','record_fact'].map(name=>({name,label:name,description:name,parameters:{type:'object',properties:{}} as never,async execute(){if(name==='probe')effects++;else writebacks++;return {content:[{type:'text' as const,text:'ok'}],details:undefined};}})),boundaryContext:()=>boundary.context(),guard:g=>boundary.guard(g.toolName)});
+ try{await runner.prompt('local');expect(effects).toBe(0);expect(writebacks).toBe(1);expect(f.faux.state.callCount).toBe(2);expect(await boundary.guard('add_intent')).toBeUndefined();await db.query('DELETE FROM task_constraints WHERE exploration_id=$1',[f.task.exploration_id]);for(const tool of ['add_intent','dispatch_intents','bash','http_request','mcp__sample','custom_probe'])expect(await boundary.guard(tool)).toMatchObject({block:true});expect(await boundary.guard('record_fact')).toBeUndefined();}finally{await runner.dispose();}
 });
