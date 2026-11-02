@@ -570,8 +570,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       {/* 最新约束在模型请求边界刷新，旧版本生成的新目标操作在执行前拒绝。 */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldAlertIcon className="size-4 text-amber-500" /> 操作约束
+          <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+            <span className="flex shrink-0 items-center gap-2"><ShieldAlertIcon className="size-4 text-amber-500" /> 操作约束</span>
             <span className="text-muted-foreground text-xs font-normal">
               （框定 planner/worker 的探索边界，共 {constraints.length} 条；改动将在下一次模型请求中读取；旧版本的新操作会被拒绝）
             </span>
@@ -653,16 +653,16 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                     </Button>
                   </div>
                 ) : (
-                  <div key={c.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                    <Badge variant="outline">{c.kind === "allow" ? "允许／限定" : "限制／注意事项"}</Badge>
-                    <div className="min-w-0 flex-1 break-words">
+                  <div key={c.id} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm sm:flex">
+                    <Badge className="w-fit" variant="outline">{c.kind === "allow" ? "允许／限定" : "限制／注意事项"}</Badge>
+                    <div className="col-span-3 row-start-2 min-w-0 flex-1 break-words">
                       <p className="whitespace-pre-wrap">{c.text}</p>
                       <ConstraintSource source={c.source} />
                     </div>
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
+                      className="col-start-2 row-start-1 h-6 shrink-0 px-1.5"
                       disabled={conBusy}
                       onClick={() => startEditConstraint(c)}
                     >
@@ -671,7 +671,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
+                      className="col-start-3 row-start-1 h-6 shrink-0 px-1.5"
                       disabled={conBusy}
                       onClick={() => void removeConstraint(c)}
                     >
