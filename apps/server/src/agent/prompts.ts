@@ -2,7 +2,7 @@ import {CONSTRAINT_PROTOCOL,GOALS_CONSTRAINT_RULES,renderConstraints} from './co
 /** Versioned role defaults. pi owns the model/tool loop; the host owns domain invariants. */
 import {rebaseToolOutputAccess} from '../evidence/tool-outputs.js';
 import { createHash } from 'node:crypto';
-import {WORKER_WRITEBACK_GUIDANCE,migrateWorkerWritebackPrompt} from './worker-writeback-prompt.js';
+import {retireWorkerTablePrompt} from './worker-output-prompt.js';
 import type { Database } from '../db/index.js';
 import { LEGACY_PROMPT_HASHES } from './prompt-legacy.js';
 import {migrateDirectWorkerToolDescriptions, migrateRetiredApprovalToolDescriptions} from './tool-descriptions.js';
@@ -26,7 +26,7 @@ export const PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规�
 export const WORKER_PROMPT = `你是 Worker，在当前意图给定的资产范围、探索方向和约束内自主选择路径、方法和验证步骤，然后停止。意图不是逐接口执行脚本；受阻时如实说明原因，不转向无关方向。
 边发现边写回，不必等到结束：新资产用 insert_assets 登记；新的探索结论用 record_fact 直接写入探索图；亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。同一结论的相关观察合并保存，不按每次请求、接口或参数生成事实；独立结论分别写回。asset_ids 只列本结论实际涉及的资产，漏洞只列实际受影响资产，不继承整个意图范围。scope 用简短文字说明实际测试范围、未测部分和适用限制；observation_type 区分实测、推断、负面结果和未知。未测不能当作已否定，背景资产不能当作已验证目标。不编造证据。
 按需 context_search/context_get 读取上下文；来源任务只读。发现的新资产可直接继续探索，中间文件写当前工作目录，不向其他 Agent 发消息。
-结束前补齐已识别但未写回的结果。${WORKER_WRITEBACK_GUIDANCE}无新增事实可以直接总结，不为结束而制造记录。`;
+结束前补齐已识别但未写回的结果。summary 用一句通俗结论；细节与测试影响放 detail/evidence。最后简述结论、已保存的记录 ID、未完成原因及测试影响。无新增事实可以直接总结，不为结束而制造记录。`;
 
 export const MAIN_PROMPT = `你是 Main，按用户请求使用已绑定的本地、领域及外部工具，不自主连续规划。
 按需查询态势与证据。新工作用 add_intent，已有意图用 dispatch_intents；下发后宿主生成真实回执并结束当前轮，Worker 结果回传原会话。运行中的 Worker 可用 steer_work 纠偏。目标和约束分别用 set_goals/set_constraints 保存，不增加用户未要求的目标。
@@ -50,7 +50,7 @@ export function builtinPrompt(role: string): string | null { return ROLE_PROMPTS
 
 /** One host-owned completion rule, also applied when the operator supplies a custom role prompt. */
 export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
-  worker: '只执行当前这一条意图；每次动作前先检查最新操作约束。约束优先于意图和纠偏，冲突动作不执行。可调整方法，不接续其他方向；完成或受阻后写回并退出，不因总目标未达成而继续。按方向自主探索，按结论合并写回，不要求逐请求记录。显式 asset_ids 是实际关联；缺省不继承意图资产。scope 说明已测、未测及限制；缺失范围保留为未知，不自动计覆盖。执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。'+WORKER_WRITEBACK_GUIDANCE,
+  worker: '只执行当前这一条意图；每次动作前先检查最新操作约束。约束优先于意图和纠偏，冲突动作不执行。可调整方法，不接续其他方向；完成或受阻后写回并退出，不因总目标未达成而继续。按方向自主探索，按结论合并写回，不要求逐请求记录。显式 asset_ids 是实际关联；缺省不继承意图资产。scope 说明已测、未测及限制；缺失范围保留为未知，不自动计覆盖。执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。',
   planner: '用方向和资产范围派单，执行细节交给 Worker；contract 可只补边界。局部重叠返回 related_intent_ids 提示，精确重复仍复用原意图。覆盖数字只表示有范围测试记录，未覆盖数字不能代替历史检索。意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
   goals: '服从宿主初始化策略：新任务在同一会话先提约束和资产，再保存目标；旧任务遵守指定阶段边界。目标栏定义最终验收结果，描述不扩写目标。',
   reporter: '报告完成后用 update_finding_report 按读取的 evidence_version 保存；文字回复不等于保存成功。',
@@ -86,7 +86,6 @@ export async function rolePrompt(db: Database, role: string, builtin: string, va
   return renderPrompt(resolved.template, vars);
 }
 export function composeRolePrompt(body: string, protocol: string): string {
-  if(body.includes(WORKER_WRITEBACK_GUIDANCE))protocol=protocol.replace(WORKER_WRITEBACK_GUIDANCE,'');
   return `<role>\n${body}\n</role>` + (protocol ? `\n<host_protocol>\n${protocol}\n</host_protocol>` : '');
 }
 export async function systemRolePrompt(db: Database, role: string, vars: Record<string, string> = {}, terminalOnly = false, protocolOverride?: string): Promise<string> {
@@ -139,10 +138,7 @@ export async function migrateBuiltinPrompts(db: Database): Promise<void> {
     await migrateDirectWorkerToolDescriptions(tx);
     await tx.platform().setSetting('pi_worker_direct_write_v1','done');
   });
-  await migrateWorkerWritebackPrompt(db,WORKER_PROMPT,[
-    '74269b5a0cf8a2d399d8329e8dc39d3b8327dcc2085d9f35e98e9f7405180c79',
-    'ce544d8182fee909e6d7dc6731b4d7293f5382b435cb545b0d72fd3f8ef0a909',
-  ]);
+  await retireWorkerTablePrompt(db,WORKER_PROMPT);
 }
 
 const OLD_WORKER_WRAPUP = "预算将尽，停止新探测。现在用 record_fact/report_finding 汇总已有的最终观察，取得节点 ID 后立即 complete_intent 引用并发布；已有暂存稿可直接引用或修订。不能完成的条件用 partial/blocked 和剩余条件说明，没有事实就如实提交 blocked；不要等待验收全部完成才写回，也不要只写检查点或文字总结。";
