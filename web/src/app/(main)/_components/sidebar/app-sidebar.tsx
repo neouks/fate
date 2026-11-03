@@ -62,7 +62,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <React.Suspense><RecentTasks/></React.Suspense>
         {/* <NavSecondary items={data.navSecondary} className="mt-auto" /> */}
       </SidebarContent>
-      <SidebarFooter className="flex-row items-center gap-2 border-t group-data-[collapsible=icon]:flex-col"><ThemeSwitcher/><LayoutControls/></SidebarFooter>
+      <SidebarFooter className="shrink-0 flex-row items-center gap-2 border-t p-3 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:p-1"><ThemeSwitcher/><LayoutControls/></SidebarFooter>
     </Sidebar>
   );
 }

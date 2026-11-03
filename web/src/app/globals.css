@@ -364,6 +364,7 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .app-sidebar-brand:focus-visible { outline: 2px solid var(--sidebar-ring); outline-offset: 4px; }
 .app-sidebar-brand img { width: 24px; height: 24px; flex-shrink: 0; }
 .app-sidebar-brand span { font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -.04em; }
+.app-sidebar-settings .lucide { width: 20px; height: 20px; }
 .app-sidebar-toggle { width: 28px; height: 28px; flex-shrink: 0; color: var(--sidebar-foreground); }
 .app-sidebar-content { padding: 8px; gap: 0; }
 .app-sidebar-content [data-slot="sidebar-group"] { padding: 0; }

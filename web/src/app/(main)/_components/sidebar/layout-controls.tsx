@@ -255,8 +255,9 @@ export function LayoutControls() {
   const { setOpenMobile } = useSidebar();
   return (
     <Button
-      variant="ghost"
       size="icon"
+      className="app-sidebar-settings ml-auto group-data-[collapsible=icon]:ml-0"
+      title="系统设置"
       aria-label="系统设置"
       onClick={() => {
         setOpenMobile(false);
