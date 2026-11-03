@@ -1,7 +1,6 @@
 "use client";
 import {SettingsPanelAlertDialog as AlertDialog} from "@/components/system-settings/panel-scope";
 import {SettingsPanelSheet as Sheet} from "@/components/system-settings/panel-scope";
-import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 import { toast } from "sonner";
@@ -704,10 +703,6 @@ export default function SkillsPage() {
   return (
     <div data-content-padding="false" className="flex flex-1 flex-col overflow-hidden">
       <div className="flex items-center gap-3 border-b px-4 py-2.5 lg:px-6">
-        <div className="flex flex-col gap-0.5">
-          <PageHeading title={<>Skill</>}/>
-          <p className="text-muted-foreground text-xs">技能库 · agentskills.io 规范 · 按 Agent 授权可见</p>
-        </div>
         {/* 缺口清单：agent 点名调用、但库里没有的 skill —— 直接是该补什么的依据。 */}
         {missing.length > 0 && (
           <Popover>

@@ -1,6 +1,5 @@
 "use client";
 import {useSettingsPanelActive} from "@/components/system-settings/panel-scope";
-import { PageHeading } from "@/components/workspace";
 
 import { entryAwareFetch } from "@/lib/http-auth";
 import * as React from "react";
@@ -149,10 +148,6 @@ export default function LogsPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-3">
-      <div>
-        <PageHeading title={<>系统日志</>}/>
-        <p className="text-muted-foreground text-sm">后端实时日志流(planner / worker / 数据库 / 流量 …)</p>
-      </div>
       {streamError && <p role="status" className="text-sm text-destructive">日志流连接失败，请检查后端日志接口；已有记录仍保留。</p>}
       <div className="flex flex-1 flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">

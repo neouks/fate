@@ -1,7 +1,6 @@
 "use client";
 import {SettingsPanelAlertDialog as AlertDialog} from "@/components/system-settings/panel-scope";
 import {SettingsPanelDialog as Dialog, SettingsPanelSheet as Sheet} from "@/components/system-settings/panel-scope";
-import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 import { toast } from "sonner";
@@ -225,12 +224,6 @@ export default function AgentsPage({initialAgentKey}:{initialAgentKey?:string} =
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <PageHeading title={<>Agent</>}/>
-          <p className="text-muted-foreground text-sm">
-            内置 Agent 的提示词/配置，以及自定义会话 Agent 的创建与管理
-          </p>
-        </div>
         <CreateAgentDialog
           onCreated={(key) => {
             reload();

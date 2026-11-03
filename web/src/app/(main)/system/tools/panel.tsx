@@ -1,6 +1,5 @@
 "use client";
 import {SettingsPanelSheet as Sheet} from "@/components/system-settings/panel-scope";
-import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 import { toast } from "sonner";
@@ -419,12 +418,6 @@ export default function ToolsPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <PageHeading title={<>工具</>}/>
-          <p className="text-muted-foreground text-sm">
-            平台内置工具的描述/绑定，以及自定义工具(shell/command/script/http)
-          </p>
-        </div>
         <div className="relative w-64">
           <SearchIcon className="text-muted-foreground absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2" />
           <Input

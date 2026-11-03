@@ -1,6 +1,5 @@
 "use client";
 import {useSettingsPanelActive, SettingsPanelSheet as Sheet} from "@/components/system-settings/panel-scope";
-import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 
@@ -865,12 +864,6 @@ export default function LLMPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <PageHeading title={<>LLM</>}/>
-          <p className="text-muted-foreground text-sm">
-            全 Agent 共享的格式 / 模型 / 限速配置。连接测试也计入用量；删除配置或清除调用明细后，脱敏累计计量仍保留。
-          </p>
-        </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => setPoolOpen(true)}>
             <ZapIcon /> 轮询配置

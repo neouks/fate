@@ -1,6 +1,5 @@
 "use client";
 import {SettingsPanelDialog as Dialog, SettingsPanelSheet as Sheet} from "@/components/system-settings/panel-scope";
-import { PageHeading } from "@/components/workspace";
 
 import * as React from "react";
 
@@ -532,10 +531,6 @@ export default function MCPPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <PageHeading title={<>MCP</>}/>
-          <p className="text-muted-foreground text-sm">外部 MCP 工具服务器 · 按 Agent 授权可见</p>
-        </div>
         <Button
           variant="outline"
           onClick={() => {

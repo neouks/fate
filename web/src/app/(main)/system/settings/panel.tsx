@@ -1,5 +1,4 @@
 "use client";
-import { PageHeading } from "@/components/workspace";
 
 import { ContextBudgetCard } from "./_components/context-budget-card";
 import * as React from "react";
@@ -298,10 +297,6 @@ export default function SystemSettingsPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
-      <div>
-        <PageHeading title={<>系统配置</>}/>
-        <p className="text-muted-foreground text-sm">全局运行时开关</p>
-      </div>
 
       {/* 多列而非 grid：网络搜索卡片比其余高数倍，且高度随所选后端变化（brave/tavily
           的 key 输入是条件渲染）。grid 会按最高的一张撑满整行、在旁边留下大片空白，
