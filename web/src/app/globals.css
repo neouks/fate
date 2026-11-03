@@ -351,9 +351,30 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .task-composer [data-slot="input-group-addon"] { padding: 2px 0; }
 @media (max-width:639px) { .task-main-conversation [data-slot="message-scroller-content"] { padding: 20px 16px; gap: 24px; } .task-composer { padding: 8px 10px 12px; } .task-composer textarea { min-height: 76px; font-size: 16px; } }
 .task-findings { min-height: 100%; }
-[data-slot="sidebar-content"] [data-slot="sidebar-menu-button"], [data-slot="sidebar"] > [data-slot="sidebar-menu"] [data-slot="sidebar-menu-button"] { min-height: 40px; font-size: 14px; }
-[data-slot="sidebar-menu-button"] > .lucide { width: 18px; height: 18px; stroke-width: 1.6; }
-[data-slot="sidebar-header"] { min-height: 56px; justify-content: center; }
+/* Sidebar reference rhythm: 30px rows, 14/20px text, 16px line icons.
+   Scoped to the app navigation; settings and other Sidebar consumers are unaffected. */
+.app-sidebar-header { height: 48px; min-height: 48px; flex-direction: row; align-items: center; gap: 8px; padding: 8px 16px; }
+.app-sidebar-brand { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; border-radius: 6px; }
+.app-sidebar-brand:focus-visible { outline: 2px solid var(--sidebar-ring); outline-offset: 4px; }
+.app-sidebar-brand img { width: 24px; height: 24px; flex-shrink: 0; }
+.app-sidebar-brand span { font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -.04em; }
+.app-sidebar-toggle { width: 28px; height: 28px; flex-shrink: 0; color: var(--sidebar-foreground); }
+.app-sidebar-content { padding: 8px; gap: 0; }
+.app-sidebar-content [data-slot="sidebar-group"] { padding: 0; }
+.app-sidebar-content [data-slot="sidebar-menu"] { gap: 0; }
+.app-sidebar-content [data-sidebar="menu-button"],
+.app-sidebar-content [data-sidebar="menu-sub-button"] { height: 30px; min-height: 30px; padding: 5px 8px; gap: 8px; border-radius: 6px; font-size: 14px; line-height: 20px; font-weight: 400; letter-spacing: 0; }
+.app-sidebar-content [data-sidebar="menu-button"] > .lucide,
+.app-sidebar-content [data-sidebar="menu-sub-button"] > .lucide { width: 16px; height: 16px; stroke-width: 1.5; }
+.app-sidebar-content [data-slot="sidebar-group-label"] { height: 32px; padding: 0 8px; font-size: 14px; line-height: 20px; font-weight: 400; color: var(--muted-foreground); }
+.app-sidebar-content .app-sidebar-recents { margin-top: 16px; }
+.app-sidebar-recents [data-slot="sidebar-group-action"] { top: 6px; right: 8px; color: var(--muted-foreground); }
+.app-sidebar-recents [data-slot="sidebar-menu"] { margin-top: 4px; }
+[data-collapsible="icon"] .app-sidebar-header { padding: 8px 12px; }
+[data-collapsible="icon"] .app-sidebar-brand { flex: none; }
+[data-collapsible="icon"] .app-sidebar-brand span,
+[data-collapsible="icon"] .app-sidebar-toggle { display: none; }
+
 
 /* Neo settings: keep custom theme tokens and existing interaction contracts. */
 .settings-dialog[data-slot="dialog-content"] { width: min(960px,calc(100vw - 48px)); max-width: min(960px,calc(100vw - 48px)); height: min(760px,calc(100dvh - 64px)); max-height: calc(100dvh - 32px); padding: 0; overflow: hidden; border-radius: 20px; gap: 0; }

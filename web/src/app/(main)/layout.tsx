@@ -64,7 +64,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
       defaultOpen={defaultOpen}
       style={
         {
-          "--sidebar-width": "256px",
+          "--sidebar-width": "264px",
         } as React.CSSProperties
       }
     >
