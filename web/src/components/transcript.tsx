@@ -12,9 +12,7 @@ import {
   MessageSquare,
   PaperclipIcon,
   ShieldAlertIcon,
-  Terminal,
   UserIcon,
-  Wrench,
   XIcon,
 } from "lucide-react";
 import {plannerRoundView,isPlannerBoundary} from '@/lib/planner-round';
@@ -39,6 +37,17 @@ import { Attachment, AttachmentContent, AttachmentDescription, AttachmentMedia, 
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { MessageScrollerItem, useMessageScroller } from "@/components/ui/message-scroller";
 import type { Activity } from "@/lib/types";
+
+// Shared dot-matrix mark for reasoning and tool activity; motion reflects live work only.
+const ExecutionLiveContext = React.createContext(false);
+function ProcessGlyph({active=false}:{active?:boolean}) {
+  return <svg viewBox="0 0 24 24" className="process-glyph" data-active={active} aria-hidden="true">
+    {Array.from({length:25},(_,i)=><circle key={i} cx={3+(i%5)*4.5} cy={3+Math.floor(i/5)*4.5} r="1.4" fill="currentColor" opacity={[16,20,16,12,10,18,28,24,14,10,22,36,50,24,12,25,55,85,40,16,35,85,100,50,22][i]/100} style={{animationDelay:`${i*45}ms`}}/>)}
+  </svg>;
+}
+function WorkingIndicator(){
+  return <div className="execution-working" role="status"><span className="execution-working-dots" aria-hidden="true"><i/><i/><i/></span><span>正在处理你的任务…</span></div>;
+}
 
 // ---- per-agent lane color (planner + work#1/#2/#3 …) ---------------------------
 const workerColors = ["bg-sky-600", "bg-violet-600", "bg-teal-600", "bg-pink-600", "bg-orange-600"];
@@ -165,7 +174,7 @@ function ActivityTime({ ts }: { ts: string }) {
 // command out of the raw input JSON ({"command":…,"description":…}) so the UI shows
 // the command itself instead of JSON; other tools fall back to the raw text.
 function toolInputText(tool: string, raw: string): string {
-  if (tool !== "Bash") return raw;
+  if (tool.toLowerCase() !== "bash") return raw;
   // full input (expanded detail): parse and pull the command out.
   try {
     const o = JSON.parse(raw);
@@ -215,22 +224,23 @@ function ToolBlock({
   // arrives after we expanded mid-run (command only), this key changes and the
   // effect below re-fetches — so the output shows up instead of being cached out.
   const loadedKey = React.useRef<string | null>(null);
-  const [parts, setParts] = React.useState<{ seq: number; text: string }[]>([]);
+  const [parts, setParts] = React.useState<{ seq: number; label: string; text: string }[]>([]);
   const { use, result } = group;
   const toolName = use?.tool || result?.tool || "工具";
-  const ToolIcon = toolName === "Bash" ? Terminal : Wrench;
-  const running = !result;
+  const isTerminal = toolName.toLowerCase() === "bash" || toolName.startsWith("shell_");
+  const panelId = React.useId();
+  const running = React.useContext(ExecutionLiveContext) && !result;
   const ok = !!result && !result.is_error;
   const statusTone = running
     ? "text-muted-foreground"
-    : ok
+    : !result ? "text-muted-foreground" : ok
       ? "text-emerald-600 dark:text-emerald-400"
       : "text-red-600 dark:text-red-400";
   const rawCmd =
     use && use.summary.startsWith(toolName) ? use.summary.slice(toolName.length).trimStart() : (use?.summary ?? "");
   const cmd = toolInputText(toolName, rawCmd);
   // status only — the full result lives behind the expand (【输出】), not previewed inline
-  const statusText = running ? "执行中…" : ok ? "✓" : "✕ 失败";
+  const statusText = running ? "执行中…" : !result ? "结果未记录" : ok ? "✓" : "✕ 失败";
 
   // key over the seqs we'd load; changes when the result (or command) arrives.
   const detailKey = `${use?.seq ?? ""}:${result?.seq ?? ""}:${retry}`;
@@ -255,7 +265,8 @@ function ToolBlock({
         setParts(
           segs.map((x, i) => ({
             seq: x.seq,
-            text: `【${x.label}】\n${x.label === "命令" && focusLabel !== "搜索结果" ? toolInputText(toolName, parts[i]) : parts[i]}`,
+            label: x.label,
+            text: x.label === "命令" && focusLabel !== "搜索结果" ? toolInputText(toolName, parts[i]) : parts[i],
           })),
         );
         loadedKey.current = detailKey;
@@ -311,39 +322,27 @@ function ToolBlock({
       ref={root}
       data-source-call={focused || undefined}
       data-activity-id={use?.seq ?? result?.seq}
-      className={cn("text-xs", focused && "rounded-md border border-primary bg-accent/30 p-2")}
+      className={cn("execution-tool", focused && "rounded-md border border-primary bg-accent/30 p-2")}
     >
       {focused && <Badge variant="outline">{focusLabel}</Badge>}
-      <button type="button" onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
+      <button type="button" onClick={toggle} aria-expanded={open} aria-controls={panelId} className="execution-process-trigger">
         <span className="mt-0.5 text-muted-foreground">
           {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
-        <ToolIcon className={"mt-0.5 size-3.5 shrink-0 " + (running ? "text-sky-600 dark:text-sky-400" : statusTone)} />
+        <ProcessGlyph active={running}/>
         {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
-        <span className="shrink-0 font-medium text-sky-600 dark:text-sky-400">{toolName}</span>
-        {cmd && <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{cmd}</span>}
+        <span className="shrink-0">{isTerminal ? "终端" : toolName}</span>
+        {cmd && <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{isTerminal ? "$ " : ""}{cmd}</span>}
         <span className={"ml-auto shrink-0 font-medium " + statusTone}>{statusText}</span>
       </button>
       {open && (
-        <pre
-          data-search-body
-          className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed"
-        >
-          {loadError ? (
-            <Button size="sm" variant="outline" onClick={() => setRetry((n) => n + 1)}>
-              加载失败，重试
-            </Button>
-          ) : detail ? (
-            parts.map((part) => (
-              <span key={part.seq} data-search-activity={part.seq}>
-                {part.text}
-                {"\n\n"}
-              </span>
-            ))
-          ) : (
-            "加载中…"
-          )}
-        </pre>
+        <div id={panelId} data-search-body className="execution-tool-detail">
+          {loadError ? <Button size="sm" variant="outline" onClick={()=>setRetry(n=>n+1)}>加载失败，重试</Button>
+            : detail ? <div className="execution-terminal-surface">{parts.map(part=><section key={part.seq} data-search-activity={part.seq} className="execution-terminal-part">
+              <div className="execution-terminal-label"><span>{part.label}</span><Button variant="ghost" size="icon-sm" aria-label={`复制${part.label}`} onClick={()=>{void navigator.clipboard.writeText(part.text).then(()=>toast.success('已复制')).catch(()=>toast.error('复制失败'));}}><CopyIcon/></Button></div>
+              <pre>{isTerminal&&part.seq===use?.seq?'$ ':''}{part.text}</pre>
+            </section>)}</div> : <span className="text-muted-foreground">加载中…</span>}
+        </div>
       )}
     </div>
   );
@@ -361,6 +360,7 @@ function MessageBlock({
   showWorker?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
+  const executing = React.useContext(ExecutionLiveContext);
   const [detail, setDetail] = React.useState<string | null>(null);
   // like ToolBlock: keyed by the group's step seqs so streamed steps arriving
   // after an early expand re-fetch instead of being cached out.
@@ -384,7 +384,7 @@ function MessageBlock({
       ),
     ).then((parts) => {
       if (!live) return;
-      setDetail(group.steps.map((s, i) => `【${kindLabel(s.kind)}】\n${parts[i]}`).join("\n\n"));
+      setDetail(group.steps.map((s, i) => hasThinking && !speak.length ? parts[i] : `【${kindLabel(s.kind)}】\n${parts[i]}`).join("\n\n"));
       loadedKey.current = detailKey;
     });
     return () => {
@@ -392,29 +392,15 @@ function MessageBlock({
     };
   }, [open, detailKey, group.steps, getDetail]);
 
-  function toggle() {
-    setOpen((o) => !o);
-  }
-
-  return (
-    <div className="text-xs">
-      <button type="button" onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
-        <span className="mt-0.5 text-muted-foreground">
-          {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        </span>
-        <Icon className={"mt-0.5 size-3.5 shrink-0 " + tone} />
-        {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
-        <span className={"min-w-0 flex-1 truncate " + tone}>
-          {hasThinking ? (group.steps.some(s=>s.streaming)?"正在分析…":"思考过程") : body}
-        </span>
-      </button>
-      {open && (
-        <pre className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
-          {detail ?? "加载中…"}
-        </pre>
-      )}
-    </div>
-  );
+  return <Collapsible open={open} onOpenChange={setOpen} className="execution-thought">
+    <CollapsibleTrigger className="execution-process-trigger">
+      <ChevronRight className={cn('execution-chevron',open&&'rotate-90')}/>
+      {hasThinking?<ProcessGlyph active={executing&&group.steps.some(s=>s.streaming)}/>:<Icon className={tone}/>}
+      {showWorker&&<span className={chip(group.worker)}>{group.worker}</span>}
+      <span className={cn('min-w-0 truncate',!hasThinking&&tone)}>{hasThinking?'思考过程':body}</span>
+    </CollapsibleTrigger>
+    <CollapsibleContent className="execution-thought-detail"><div data-search-body className="whitespace-pre-wrap [overflow-wrap:anywhere]">{detail??'加载中…'}</div></CollapsibleContent>
+  </Collapsible>;
 }
 
 // UserRow renders a right-aligned chat bubble: either a human turn (the message you
@@ -713,9 +699,8 @@ function ExecutionTurn({turn,summary,latest,...props}:ExecutionProps&{turn:Retur
   const streaming=turn.steps.some(s=>s.streaming);
   const live=!ended&&(streaming||(props.live&&latest)||status==='running');
   const interrupted=turn.steps.some(s=>s.interrupted)||status==='interrupted';
-  const pending=turn.steps.some(t=>t.kind==='tool_use'&&!turn.steps.some(s=>s.kind==='tool_result'&&s.tool_use_id===t.tool_use_id));
   const failed=terminal?.is_error||status==='failed'||status==='blocked';
-  const label=status==='awaiting_confirmation'?'等待宿主确认':!ended&&props.pendingStatus&&latest?'等待停止确认':failed?'失败':status==='stopped'||status==='paused'?'已停止':status==='exhausted'?'预算耗尽':interrupted?'执行已中断':ended?'已完成':live?(pending?'执行工具中':streaming?'正在生成':'等待模型响应'):'历史记录';
+  const label=status==='awaiting_confirmation'?'等待宿主确认':!ended&&props.pendingStatus&&latest?'等待停止确认':failed?'失败':status==='stopped'||status==='paused'?'已停止':status==='exhausted'?'预算耗尽':interrupted?'执行已中断':ended?'已完成':live?'运行中':'历史记录';
   const [now,setNow]=React.useState(Date.now);
   React.useEffect(()=>{if(!live)return;const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[live]);
   const elapsed=durationLabel(summary?.started_at??null,summary?.finished_at??terminal?.ts??null,now);
@@ -744,25 +729,27 @@ function ExecutionTurn({turn,summary,latest,...props}:ExecutionProps&{turn:Retur
   const steering=processSteps.filter(isSteering);
   const errorText=summary?.error??(failed?terminal?.detail||terminal?.summary:undefined);
   const failedTools=summary?.failed_tool_calls??new Set(processSteps.filter(s=>s.kind==='tool_result'&&s.is_error).map(s=>s.tool_use_id??s.seq)).size;
-  const statusClass=cn('execution-status text-sm',failed||status==='exhausted'?'text-destructive':status==='completed'||status==='done'?'text-[var(--status-success)]':'text-muted-foreground',live&&'shimmer');
+  const statusClass=cn('execution-status',failed||status==='exhausted'?'text-destructive':live?'text-[var(--status-warning)]':status==='completed'||status==='done'?'text-[var(--status-success)]':'text-muted-foreground');
+  const groupedProcess=hasProcess&&!processSteps.every(s=>s.kind==='thinking');
   async function copy(){try{const entries=final?[final]:processSteps.filter(s=>['text','assistant','result'].includes(s.kind));const bodies=await Promise.all(entries.map(s=>s.detail??(s.seq>0?getDetail(s.seq):Promise.resolve(s.summary))));await navigator.clipboard.writeText(bodies.join('\n\n'));toast.success('已复制');}catch{toast.error('复制失败');}}
   if(turn.steps.every(isSteering))return <ActivitySteps {...stepProps} activity={turn.steps}/>;
   if(turn.user)return <UserRow step={last} intent={last.kind==='intent'} getDetail={getDetail}/>;
   if(last.metadata?.worker_feedback||last.worker==='system')return <Message align="start"><MessageContent><Bubble variant="muted"><BubbleContent><ActivitySteps {...stepProps} activity={turn.steps}/></BubbleContent></Bubble></MessageContent></Message>;
-  return <Message data-turn-id={turn.key} data-run-status={label} align="start"><MessageContent>
+  return <ExecutionLiveContext.Provider value={live}><Message className="neo-execution-turn" data-turn-id={turn.key} data-run-status={label} align="start"><MessageContent>
     {planning&&<PlannerRoundMarker round={planning} focusActivity={focus} onLocated={props.onLocated}/> }
-    <Bubble variant="ghost" className="w-full max-w-full"><BubbleContent className="flex w-full min-w-0 flex-col gap-4 py-2">
-      <div className="flex flex-wrap items-center gap-2"><span role="status" className={statusClass}><span className="execution-status-dot" aria-hidden="true"/>{label}</span><span aria-hidden="true" className="text-muted-foreground">/</span><span className="text-sm text-muted-foreground tabular-nums">{elapsed}</span><TurnDetails summary={summary} label={label} elapsed={elapsed} conversationId={props.conversationId}/></div>
-      {hasProcess?<Collapsible open={open} onOpenChange={open=>{setManualOpen({open,focus:props.focusActivity});setSteeringFocus(undefined);}}>
-        <CollapsibleTrigger asChild><Button variant="ghost" className="h-auto w-full justify-start whitespace-normal px-0 py-2 text-left"><ChevronRight className={cn('transition-transform',open&&'rotate-90')}/><span>{live?'执行中':ended?(failed?'执行失败':['completed','done'].includes(status??'')?'执行完成':'执行记录'):'历史过程'}</span><span className="font-normal text-muted-foreground">{summary?.steps==null?'步骤未记录':`${summary.steps} 步`} · {summary?.tool_calls==null?'调用数未记录':`${summary.tool_calls} 次工具调用`}{failedTools>0?` · ${failedTools} 次失败`:''}</span></Button></CollapsibleTrigger>
+    <Bubble variant="ghost" className="w-full max-w-full"><BubbleContent className="execution-body flex w-full min-w-0 flex-col">
+      <div className="execution-status-bar"><span role="status" className={statusClass}><span className="execution-status-dot" aria-hidden="true"/>{label}</span><span aria-hidden="true" className="text-muted-foreground">/</span><span className="text-muted-foreground tabular-nums">{elapsed}</span><TurnDetails summary={summary} label={label} elapsed={elapsed} conversationId={props.conversationId}/></div>
+      {live&&!streaming&&<WorkingIndicator/>}
+      {groupedProcess?<Collapsible open={open} onOpenChange={open=>{setManualOpen({open,focus:props.focusActivity});setSteeringFocus(undefined);}}>
+        <CollapsibleTrigger asChild><Button variant="ghost" className="execution-group-trigger h-auto w-full justify-start whitespace-normal px-0 py-2 text-left"><ChevronRight className={cn('transition-transform',open&&'rotate-90')}/><span>{live?'执行中':ended?(failed?'执行失败':['completed','done'].includes(status??'')?'执行完成':'执行记录'):'历史过程'}</span><span className="font-normal text-muted-foreground">{summary?.steps==null?'步骤未记录':`${summary.steps} 步`} · {summary?.tool_calls==null?'调用数未记录':`${summary.tool_calls} 次工具调用`}{failedTools>0?` · ${failedTools} 次失败`:''}</span></Button></CollapsibleTrigger>
         {!open&&steering.length>0&&<Button variant="outline" size="sm" onClick={()=>{const seq=steering[0].seq;steeringJump.current=seq;setManualOpen({open:true,focus:seq});setSteeringFocus(seq);onSteeringExpanded(seq,true);}}><Flag/>有 {steering.length} 条纠偏</Button>}
-        <CollapsibleContent className="min-w-0 border-l pl-3 sm:pl-5"><ActivitySteps {...stepProps} activity={processSteps}/></CollapsibleContent>
+        <CollapsibleContent className="execution-process-content min-w-0"><ActivitySteps {...stepProps} activity={processSteps}/></CollapsibleContent>
       </Collapsible>:processSteps.length>0?<ActivitySteps {...stepProps} activity={processSteps}/>:null}
       {errorText&&!final&&<Alert variant={failed||status==='exhausted'?'destructive':'default'}><AlertDescription>{errorText}</AlertDescription></Alert>}
       {final&&<div data-final-answer="true"><ActivitySteps {...stepProps} activity={[final]}/></div>}
     </BubbleContent></Bubble>
-    <MessageFooter className="gap-3"><Button variant="ghost" size="icon-sm" onClick={()=>void copy()} disabled={!final&&!processSteps.some(s=>["text","assistant","result"].includes(s.kind)&&!!(s.detail||s.summary))} aria-label="复制答复"><CopyIcon/></Button><ActivityTime ts={terminal?.ts??last.ts}/>{last.inherited&&<Badge variant="outline">来源任务 · 只读</Badge>}</MessageFooter>
-  </MessageContent></Message>;
+    {(ended||!!final)&&<MessageFooter className="gap-3"><Button variant="ghost" size="icon-sm" onClick={()=>void copy()} disabled={!final&&!processSteps.some(s=>["text","assistant","result"].includes(s.kind)&&!!(s.detail||s.summary))} aria-label="复制答复"><CopyIcon/></Button><ActivityTime ts={terminal?.ts??last.ts}/>{last.inherited&&<Badge variant="outline">来源任务 · 只读</Badge>}</MessageFooter>}
+  </MessageContent></Message></ExecutionLiveContext.Provider>;
 }
 // Native scroller owns the jump and disables follow-to-bottom for this explicit
 // navigation. The negative margin locates the control within its enclosing turn.
