@@ -225,6 +225,16 @@ function ToolBlock({
   // effect below re-fetches — so the output shows up instead of being cached out.
   const loadedKey = React.useRef<string | null>(null);
   const [parts, setParts] = React.useState<{ seq: number; label: string; text: string }[]>([]);
+  const [copiedSeq,setCopiedSeq] = React.useState<number>();
+  React.useEffect(()=>{
+    if(copiedSeq===undefined)return;
+    const timer=setTimeout(()=>setCopiedSeq(undefined),1800);
+    return()=>clearTimeout(timer);
+  },[copiedSeq]);
+  async function copyPart(part:{seq:number;text:string}) {
+    try {await navigator.clipboard.writeText(part.text);setCopiedSeq(part.seq);toast.success('已复制');}
+    catch {toast.error('复制失败');}
+  }
   const { use, result } = group;
   const toolName = use?.tool || result?.tool || "工具";
   const isTerminal = toolName.toLowerCase() === "bash" || toolName.startsWith("shell_");
@@ -322,10 +332,11 @@ function ToolBlock({
       ref={root}
       data-source-call={focused || undefined}
       data-activity-id={use?.seq ?? result?.seq}
+      data-terminal={isTerminal}
       className={cn("execution-tool", focused && "rounded-md border border-primary bg-accent/30 p-2")}
     >
       {focused && <Badge variant="outline">{focusLabel}</Badge>}
-      <button type="button" onClick={toggle} aria-expanded={open} aria-controls={panelId} className="execution-process-trigger">
+      <button type="button" onClick={toggle} aria-expanded={open} aria-controls={panelId} aria-busy={running} title={toolName} className="execution-process-trigger">
         <span className="mt-0.5 text-muted-foreground">
           {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
@@ -338,9 +349,14 @@ function ToolBlock({
       {open && (
         <div id={panelId} data-search-body className="execution-tool-detail">
           {loadError ? <Button size="sm" variant="outline" onClick={()=>setRetry(n=>n+1)}>加载失败，重试</Button>
-            : detail ? <div className="execution-terminal-surface">{parts.map(part=><section key={part.seq} data-search-activity={part.seq} className="execution-terminal-part">
-              <div className="execution-terminal-label"><span>{part.label}</span><Button variant="ghost" size="icon-sm" aria-label={`复制${part.label}`} onClick={()=>{void navigator.clipboard.writeText(part.text).then(()=>toast.success('已复制')).catch(()=>toast.error('复制失败'));}}><CopyIcon/></Button></div>
-              <pre>{isTerminal&&part.seq===use?.seq?'$ ':''}{part.text}</pre>
+            : detail ? <div className="execution-terminal-surface" data-terminal={isTerminal}>{parts.map(part=><section key={part.seq} data-search-activity={part.seq} className="execution-terminal-part" aria-label={part.label}>
+              {isTerminal?<>
+                <Button variant="outline" size="icon-sm" className="execution-terminal-copy" aria-label={`复制${part.label}`} onClick={()=>void copyPart(part)}>{copiedSeq===part.seq?<CheckIcon/>:<CopyIcon/>}</Button>
+                <div className="execution-terminal-code">{part.seq===use?.seq&&<span className="execution-terminal-prompt" aria-hidden="true">$</span>}<pre>{part.text}</pre></div>
+              </>:<>
+                <div className="execution-terminal-label"><span>{part.label}</span><Button variant="ghost" size="icon-sm" aria-label={`复制${part.label}`} onClick={()=>void copyPart(part)}>{copiedSeq===part.seq?<CheckIcon/>:<CopyIcon/>}</Button></div>
+                <pre>{part.text}</pre>
+              </>}
             </section>)}</div> : <span className="text-muted-foreground">加载中…</span>}
         </div>
       )}
