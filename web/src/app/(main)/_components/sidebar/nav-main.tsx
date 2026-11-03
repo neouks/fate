@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { ChevronRight, MailIcon, PlusCircleIcon } from "lucide-react";
-import { api } from "@/lib/api";
+import { openSystemSettings } from "@/lib/system-settings";
 
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -140,7 +140,24 @@ export function NavMain({ items }: NavMainProps) {
 }
 
 function NavItem({ item, isItemActive, isSubItemActive, isSubmenuOpen }: NavItemProps) {
-  const { state, isMobile } = useSidebar();
+  const { state, isMobile, setOpenMobile } = useSidebar();
+  if (item.id === "system") {
+    const Icon = item.icon;
+    return (
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          tooltip="系统设置"
+          onClick={() => {
+            setOpenMobile(false);
+            openSystemSettings();
+          }}
+        >
+          {Icon && <Icon />}
+          <span>系统设置</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  }
   const isCollapsedDesktop = state === "collapsed" && !isMobile;
 
   if (!hasSubItems(item)) {

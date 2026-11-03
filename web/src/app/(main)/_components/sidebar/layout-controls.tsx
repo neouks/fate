@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { SettingsDialog, SettingsPanel } from "@/components/settings-dialog";
-import { PaletteIcon } from "lucide-react";
+import { openSystemSettings } from "@/lib/system-settings";
 import { Settings } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -252,25 +251,9 @@ export function AppearancePreferences() {
 }
 
 export function LayoutControls() {
-  const [open, setOpen] = React.useState(false);
   return (
-    <>
-      <Button variant="ghost" size="icon" aria-label="外观设置" onClick={() => setOpen(true)}>
-        <Settings />
-      </Button>
-      <SettingsDialog
-        open={open}
-        onOpenChange={setOpen}
-        title="个人设置"
-        description="偏好设置即时保存，仅影响你的界面。"
-        sections={[{ key: "appearance", label: "外观与布局", icon: PaletteIcon }]}
-        section="appearance"
-        onSectionChange={() => {}}
-      >
-        <SettingsPanel value="appearance">
-          <AppearancePreferences />
-        </SettingsPanel>
-      </SettingsDialog>
-    </>
+    <Button variant="ghost" size="icon" aria-label="系统设置" onClick={() => openSystemSettings("appearance")}>
+      <Settings />
+    </Button>
   );
 }

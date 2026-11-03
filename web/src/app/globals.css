@@ -471,3 +471,15 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .network-detail-footer { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--border); padding: 0 12px; color: var(--muted-foreground); font-size: 11px; }
 @container task-workspace (min-width: 640px) and (max-width: 679px) { .network-workspace { grid-template-columns: 200px minmax(0,1fr); } }
 @container task-workspace (max-width:639px) { .network-workspace { grid-template-columns: minmax(0,1fr); grid-template-rows: auto minmax(0,1fr); } .network-tree { max-height: 130px; border-right: 0; border-bottom: 1px solid var(--border); } .network-tree-title { display: none; } .network-payloads { grid-template-columns: minmax(0,1fr); } .network-payload { overflow: visible; } .network-payload + .network-payload { border-left: 0; border-top: 1px solid var(--border); } .network-payload > header { position: static; } .network-pagination { padding: 4px; } }
+
+/* Full system configuration lives in the shared modal, without page-sized grids. */
+.system-settings-dialog .settings-body { container: system-settings-body / inline-size; }
+.system-settings-panel { min-width: 0; }
+.system-settings-panel h1 { display: none; }
+.system-settings-panel [data-slot="table-container"] { overflow-x: auto; }
+.system-settings-panel [class~="lg:columns-2"] { columns: 1; }
+.system-settings-panel [class~="xl:grid-cols-3"],
+.system-settings-panel [class~="lg:grid-cols-3"] { grid-template-columns: repeat(2,minmax(0,1fr)); }
+@container system-settings-body (max-width: 560px) {
+  .system-settings-panel [class*="grid-cols-"] { grid-template-columns: minmax(0,1fr); }
+}

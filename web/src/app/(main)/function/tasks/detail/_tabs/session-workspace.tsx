@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Maximize2, Minimize2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
@@ -101,6 +102,7 @@ export function SessionWorkspace({
   onBack: () => void;
   showDetail: boolean;
 }) {
+  const settingsOpen = useSearchParams().get("settings") === "true";
   const [wide, setWide] = React.useState(false),
     [expanded, setExpanded] = React.useState(false);
   React.useEffect(() => {
@@ -154,9 +156,11 @@ export function SessionWorkspace({
           </>
         )}
       </ResizablePanelGroup>
-      <Sheet open={open && (!wide || expanded)} onOpenChange={onOpenChange}>
+      <Sheet open={open && !settingsOpen && (!wide || expanded)} onOpenChange={onOpenChange}>
         <SheetContent
-          className={expanded ? "w-full p-0 data-[side=right]:sm:max-w-5xl" : "w-full p-0 data-[side=right]:sm:max-w-xl"}
+          className={
+            expanded ? "w-full p-0 data-[side=right]:sm:max-w-5xl" : "w-full p-0 data-[side=right]:sm:max-w-xl"
+          }
           showCloseButton={false}
         >
           <SheetHeader className="sr-only">
