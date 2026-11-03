@@ -5,6 +5,7 @@ import { openSystemSettings } from "@/lib/system-settings";
 import { Settings } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -251,8 +252,17 @@ export function AppearancePreferences() {
 }
 
 export function LayoutControls() {
+  const { setOpenMobile } = useSidebar();
   return (
-    <Button variant="ghost" size="icon" aria-label="系统设置" onClick={() => openSystemSettings("appearance")}>
+    <Button
+      variant="ghost"
+      size="icon"
+      aria-label="系统设置"
+      onClick={() => {
+        setOpenMobile(false);
+        openSystemSettings();
+      }}
+    >
       <Settings />
     </Button>
   );
