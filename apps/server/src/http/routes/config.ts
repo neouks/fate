@@ -11,7 +11,7 @@ import {runtimeConfiguration} from '../../engine/runtime-config.js';
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { testProfileConnection, type ProfileLike } from "../../pi/providerFromProfile.js";
+import { describeModelError, profileFetch, testProfileConnection, type ProfileLike } from "../../pi/providerFromProfile.js";
 import type { Agent, LLMProfile } from "../../db/platform.js";
 import { ActiveLLMProfileDeleteError, LLMProfileNotFoundError } from "../../db/platform.js";
 
@@ -88,17 +88,17 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       const rows = await app.db.query(`SELECT * FROM llm_profiles WHERE id=$1`, [profileID]);
       const r = rows.rows[0] as Record<string, unknown> | undefined;
       if (r) {
-        const bodyModel = typeof b["model"] === "string" && b["model"] !== "" ? b["model"] : "";
-        const bodyKey = typeof b["api_key"] === "string" && b["api_key"] !== "" ? b["api_key"] : "";
-        const bodyBase = typeof b["base_url"] === "string" && b["base_url"] !== "" ? b["base_url"] : "";
+        const bodyModel = typeof b["model"] === "string" ? b["model"].trim() : "";
+        const bodyKey = typeof b["api_key"] === "string" ? b["api_key"].trim() : "";
+        const bodyBase = typeof b["base_url"] === "string" ? b["base_url"].trim() : "";
         profile = {
           id: Number(r["id"]), name: String(r["name"] ?? ""),
           model: bodyModel || String(r["model"] ?? ""),
           baseURL: bodyBase || String(r["base_url"] ?? ""),
-          apiKey: bodyKey || String(r["api_key"] ?? ""),
-          contextWindowK: Number(r["context_window_k"] ?? 0), maxTokens: Number(r["max_tokens"] ?? 0),
+          apiKey: bodyKey || String(r["api_key"] ?? "").trim(),
+          contextWindowK: Number(b["context_window_k"] ?? r["context_window_k"] ?? 0), maxTokens: Number(b["max_tokens"] ?? r["max_tokens"] ?? 0),
           thinkingType: String(b["thinking_type"] ?? r["thinking_type"] ?? ""),
-          format: String(b["format"] ?? r["format"] ?? "openai"),
+          format: String(b["format"] ?? b["provider"] ?? r["format"] ?? "openai").trim(),
           reasoningEffort: String(b["reasoning_effort"] ?? r["reasoning_effort"] ?? ""),
           proxy: String(b["proxy"] ?? r["proxy"] ?? ""),
           streaming: (b["streaming"] ?? r["streaming"]) !== false,
@@ -106,15 +106,15 @@ export function registerConfigRoutes(app: FastifyInstance): void {
           sessionHeaderKey: String(b["session_header_key"] ?? r["session_header_key"] ?? ""),
           sessionHeaderValue: 'connectivity-probe',
         };
-      }
+      } else return { ok: false, error: "模型配置不存在，请重新打开配置页面" };
     }
     if (!profile) {
       profile = {
         id: 0, name: String(b["name"] ?? "probe"),
-        model: String(b["model"] ?? ""), baseURL: String(b["base_url"] ?? ""), apiKey: String(b["api_key"] ?? ""),
+        model: String(b["model"] ?? "").trim(), baseURL: String(b["base_url"] ?? "").trim(), apiKey: String(b["api_key"] ?? "").trim(),
         contextWindowK: Number(b["context_window_k"] ?? 0), maxTokens: Number(b["max_tokens"] ?? 0),
         thinkingType: String(b["thinking_type"] ?? ""),
-        format: String(b["format"] ?? "openai"),
+        format: String(b["format"] ?? b["provider"] ?? "openai").trim(),
         reasoningEffort: String(b["reasoning_effort"] ?? ""),
         proxy: String(b["proxy"] ?? ""), streaming: b["streaming"] !== false,
         maxTokensField: String(b["max_tokens_field"] ?? ""),
@@ -132,31 +132,46 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     return result;
   });
 
-  // POST /api/llm/models — OpenAI 兼容模型目录拉取（api.fetchLLMModels）。
-  // base_url 直接拼 /models（api.deepseek.com 风格），404 再回落 /v1/models；
+  // POST /api/llm/models — 使用表单实际协议、密钥和代理拉取目录。
+  // OpenAI 根路径直接拼 /models，404 再回落 /v1/models；Anthropic 使用 /v1/models。
   // profile_id 可代替 base_url+api_key（编辑已存配置时 Key 框留空）。
   // 失败也回 200 {ok:false, models:[], error}——前端据此渲染空态并 toast。
   app.post("/api/llm/models", async (req) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     let baseURL = typeof b["base_url"] === "string" ? b["base_url"].trim() : "";
     let apiKey = typeof b["api_key"] === "string" ? b["api_key"].trim() : "";
+    let format = String(b["format"] ?? b["provider"] ?? "").trim();
+    let proxy = typeof b["proxy"] === "string" ? b["proxy"].trim() : undefined;
     const profileID = Number(b["profile_id"] ?? b["id"]) || 0;
     if (profileID > 0) {
-      const rows = await app.db.query(`SELECT base_url, api_key FROM llm_profiles WHERE id=$1`, [profileID]);
+      const rows = await app.db.query(`SELECT base_url, api_key, format, proxy FROM llm_profiles WHERE id=$1`, [profileID]);
       const r = rows.rows[0] as Record<string, unknown> | undefined;
       if (r) {
-        if (baseURL === "") baseURL = String(r["base_url"] ?? "");
-        if (apiKey === "") apiKey = String(r["api_key"] ?? "");
-      }
+        if (baseURL === "") baseURL = String(r["base_url"] ?? "").trim();
+        if (apiKey === "") apiKey = String(r["api_key"] ?? "").trim();
+        if (format === "") format = String(r["format"] ?? "openai");
+        proxy ??= String(r["proxy"] ?? "").trim();
+      } else return { ok: false, models: [], error: "模型配置不存在，请重新打开配置页面" };
     }
+    format ||= "openai";
+    if (!["openai", "anthropic", "openai-responses"].includes(format)) return { ok: false, models: [], error: `不支持的 LLM 协议：${format}` };
     if (baseURL === "") return { ok: false, models: [], error: "缺少 base_url" };
     const root = baseURL.replace(/\/+$/, "");
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (apiKey !== "") headers["Authorization"] = `Bearer ${apiKey}`;
+    if (format === "anthropic") {
+      headers["anthropic-version"] = "2023-06-01";
+      if (apiKey !== "") headers["x-api-key"] = apiKey;
+    } else if (apiKey !== "") headers["Authorization"] = `Bearer ${apiKey}`;
     const attempt = async (url: string): Promise<string[]> => {
-      const res = await fetch(url, { headers, signal: AbortSignal.timeout(20_000) });
+      const res = await profileFetch(proxy)(url, { headers, signal: AbortSignal.timeout(20_000) });
       if (!res.ok) {
-        const err = new Error(`HTTP ${String(res.status)} ${url}`);
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const body = JSON.parse(raw) as { error?: { message?: string } | string; message?: string };
+          detail = (typeof body.error === "string" ? body.error : body.error?.message) ?? body.message ?? raw;
+        } catch { /* Some upstreams return plain text or an HTML error page. */ }
+        const err = new Error(`HTTP ${String(res.status)}${detail ? `：${detail}` : ''}`);
         (err as Error & { status?: number }).status = res.status;
         throw err;
       }
@@ -165,6 +180,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
         models?: Array<{ id?: string; model?: string } | string>;
       };
       const list = body.data ?? body.models ?? [];
+      if (!Array.isArray(list)) throw new Error("模型服务返回的目录格式无效：data/models 应为数组");
       const ids = list
         .map((m) => (typeof m === "string" ? m : String(m?.id ?? m?.model ?? "")))
         .filter((id) => id !== "");
@@ -173,16 +189,16 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     try {
       let models: string[];
       try {
-        models = await attempt(`${root}/models`);
+        models = await attempt(`${root}${format === "anthropic" && !root.endsWith('/v1') ? '/v1' : ''}/models`);
       } catch (err) {
         // 根路径未暴露 models（OpenAI 惯例挂 /v1）：404/405 时再试一次。
         const status = (err as { status?: number }).status;
-        if (status !== 404 && status !== 405) throw err;
+        if ((status !== 404 && status !== 405) || format === "anthropic" || root.endsWith('/v1')) throw err;
         models = await attempt(`${root}/v1/models`);
       }
       return { ok: true, models };
     } catch (err) {
-      return { ok: false, models: [], error: err instanceof Error ? err.message : String(err) };
+      return { ok: false, models: [], error: describeModelError(err, apiKey) };
     }
   });
 

@@ -688,6 +688,8 @@ export class PlatformStore {
 
   /** 插入（无 id）或更新。更新时 apiKey 留空=保留现有 key。 */
   async saveProfile(p: LLMProfileInput): Promise<number> {
+    // Pasted whitespace must behave identically in save, catalogue and PI calls.
+    p = { ...p, apiKey: p.apiKey?.trim(), baseURL: p.baseURL?.trim(), proxy: p.proxy?.trim() };
     const id=await this.saveProfileBase(p);
     if(p.supportsImages!==undefined)await this.db.query("UPDATE llm_profiles SET supports_images=$2 WHERE id=$1",[id,p.supportsImages]);
     return id;
