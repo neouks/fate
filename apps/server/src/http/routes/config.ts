@@ -1,3 +1,4 @@
+import {configuredRuntimeResources,resourcePolicy,invalidateRuntimeResources,validateRuntimeResources} from '../../engine/runtime-resources.js';
 import {catalogTools} from '../../agent/tool-catalog.js';
 import {roleContextPolicy,CONTEXT_DEFAULTS} from '../../agent/context-policy.js';
 import {toolIdentity} from '../../agent/tool-registry.js';
@@ -194,15 +195,17 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       platform().workers(),
       platform().getSetting("active_task"),
     ]);
-    return { workers,
+    return { workers,runtime_resource_policy:await configuredRuntimeResources(app.db),
       planner_context_budget_tokens:Number((await platform().getSetting('planner_context_budget_tokens'))??CONTEXT_DEFAULTS.planner),
       worker_context_budget_tokens:Number((await platform().getSetting('worker_context_budget_tokens'))??CONTEXT_DEFAULTS.worker),
-      pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission",planner_context_budget_tokens:'next planner session',worker_context_budget_tokens:'next worker session'}, active_task: activeTask ?? "" };
+      pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{runtime_resource_policy:'queued and next admission; existing executions are not preempted',workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission",planner_context_budget_tokens:'next planner session',worker_context_budget_tokens:'next worker session'}, active_task: activeTask ?? "" };
   });
 
   const setSettings = async (req: { body?: unknown }, reply: { code(c: number): { send(v: unknown): unknown } }): Promise<unknown> => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const out: Record<string, unknown> = {};
+    let resources:ReturnType<typeof resourcePolicy>|undefined;
+    if(b.runtime_resource_policy!==undefined){try{resources=resourcePolicy(b.runtime_resource_policy);validateRuntimeResources(app.db,resources);}catch(error){return reply.code(400).send({error:(error as Error).message});}}
     for(const [key,allowed] of Object.entries({pi_context_policy:['domain','native'],pi_mcp_loading:['deferred','direct']})){
       if(b[key]!==undefined&&!allowed.includes(String(b[key])))return reply.code(400).send({error:`无效 ${key}`});
     }
@@ -214,11 +217,13 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     }
     // Both role settings are validated before either is changed.
     await app.db.transaction(async tx=>{
+      if(resources){await tx.platform().setSetting('runtime_resource_policy',JSON.stringify(resources));out.runtime_resource_policy=resources;}
       for(const {key} of contextKeys)if(b[key]!==undefined){
         await tx.platform().setSetting(key,String(b[key]));
         out[key]=b[key];out.applies='next_session';
       }
     });
+    if(resources)await invalidateRuntimeResources(app.db);
     for(const key of ['pi_context_policy','pi_mcp_loading'])if(b[key]!==undefined){await platform().setSetting(key,String(b[key]));out[key]=b[key];out.applies='next_session';}
     if(b["task_concurrency_enabled"]!==undefined)await platform().setSetting("task_concurrency_enabled",String(b["task_concurrency_enabled"]===true));
     if(b["task_concurrency_limit"]!==undefined){const n=Number(b["task_concurrency_limit"]);if(!Number.isInteger(n)||n<1)return reply.code(400).send({error:"task_concurrency_limit 必须为正整数"});await platform().setSetting("task_concurrency_limit",String(n));}

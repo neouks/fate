@@ -7,7 +7,7 @@ const SAFE_LOCAL = new Set(['tool_search','context_search','context_get','asset_
 export class ConstraintBoundary {
  private observed?:string;
  private announced?:string;
- constructor(private db:Database,private expID:number,private audit:(text:string)=>void=()=>{}){}
+ constructor(private db:Database,private expID:number,private audit:(text:string)=>unknown=()=>{}){}
  private async snapshot(){
   const rows=(await this.db.query<{id:string;kind:string;text:string;source?:{context_quote?:string;quote?:string}}>(`SELECT id::text,kind,text,source FROM task_constraints WHERE exploration_id=$1 ORDER BY id`,[this.expID])).rows;
   return {rows,version:constraintSourceHash(JSON.stringify(rows))};
@@ -15,7 +15,7 @@ export class ConstraintBoundary {
  async context(){
   const current=await this.snapshot();
   this.observed=current.version;
-  if(this.announced!==current.version){this.announced=current.version;this.audit(`本次模型上下文采用操作约束版本 ${current.version}`);}
+  if(this.announced!==current.version){this.announced=current.version;await this.audit(`本次模型上下文采用操作约束版本 ${current.version}`);}
   return `【操作约束版本 ${current.version}】`+renderConstraints(current.rows);
  }
  async guard(toolName:string){

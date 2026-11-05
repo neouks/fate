@@ -330,6 +330,10 @@ export interface CoverageGraphEdge {
 }
 
 export interface CoverageGraphData {
+  revision: string; page: number; page_size: number; focus: string | null; seed_keys: string[];
+  total: number; total_assets: number; connector_count: number; tested: number;
+  counts: {type: string; total: number; tested: number}[]; coverage_enabled: boolean;
+  next_page: number | null; complete: boolean;
   nodes: CoverageGraphNode[];
   edges: CoverageGraphEdge[];
 }
@@ -431,7 +435,12 @@ export type HintState = "active" | "consumed";
 export type ExploreRel = "spawns" | "derived_from" | "yields" | "proves" | "covers";
 
 export interface TaskNode {
+  summary?: string;
+  summary_truncated?: boolean;
+  payload_preview?: boolean;
+  version?: string;
   executor_active?: boolean;
+  resume_pending?: boolean;
   id: string;
   type: ExploreKind;
   payload?: string;
@@ -445,6 +454,7 @@ export interface TaskNode {
 
 // 播报板列表仅返回精简摘要；edges/refs 保留兼容字段，详情由展开后的分页接口读取。
 export interface ExplorationNodePage {
+  revision?: string;
   items: TaskNode[];
   total: number;
   page: number;
@@ -466,6 +476,7 @@ export interface ExplorationNodeDetail {
 }
 
 export interface ExplorationNodeQuery {
+  revision?: string;
   countOnly?: boolean;
   page?: number;
   size?: number;
@@ -692,6 +703,12 @@ export interface Activity {
   is_error?: boolean;
   summary: string;
   detail?: string;
+  detail_total_chars?: number;
+  detail_truncated?: boolean;
+  detail_version?: string;
+  detail_start?: number;
+  summary_truncated?: boolean;
+  metadata_truncated?: boolean;
   metadata?: {
     role?: string;
     planner_round?: {number:number;title:string|null};

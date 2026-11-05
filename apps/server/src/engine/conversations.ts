@@ -1,10 +1,12 @@
-import {streamChanges} from './stream-changes.js';
+import {acquireRuntimeResources,type RuntimeResourceLease} from './runtime-resources.js';
+import type {ActivityJournal} from './activity-outbox.js';
 import {assetGetTool} from '../tools/assets.js';
 import {mergedAssetSearchTool} from '../tools/asset-search-compat.js';
 import {legacyReadCandidates} from '../tools/legacy-reads.js';
 import {conversationDomainTools} from '../tools/conversations.js';
 import {assertActiveRole} from '../agent/retired-roles.js';
 import {randomUUID} from 'node:crypto';
+import {prepareAgentRunSession,type NativeRunSession} from '../agent/native-run-session.js';
 import {LiveStreamWriter,runnerActivityMetadata} from './live-stream.js';
 import {createTrackedRunner} from './runtime-config.js';
 import {EventEmitter} from 'node:events';
@@ -113,18 +115,25 @@ export class ConversationService {
  }
  private async run(id:number,controller:AbortController){
   const lease=await acquireSessionLease(this.db,`conversation:${id}`,controller);
-  let runner:AgentRunner|undefined,runID=0,tail=Promise.resolve();
+  let runner:AgentRunner|undefined,activeSession:NativeRunSession|undefined,runID=0,tail=Promise.resolve();
   let writer:LiveStreamWriter|undefined;let turnID="";
+  let journal:ActivityJournal|undefined;
+  let resourceLease:RuntimeResourceLease|undefined;
   const persist=(a:RunnerActivity)=>{
    this.bus.emit(`conversation:${id}`,a);
    writer?.push(a);
    if(['assistant_delta','queue_update'].includes(a.kind))return;
    const kind=a.kind==='host_status'||a.kind==='run_metadata'||a.kind==='settled'?'status':a.kind==='tool_start'?'tool_use':a.kind==='tool_end'?'tool_result':a.kind==='usage'?'usage':a.kind==='assistant_message_end'&&a.isThinking?'thinking':'assistant';
    const detail=a.kind==='tool_start'?JSON.stringify(a.args):'text' in a?a.text??'':'';
-   tail=tail.then(async()=>{const saved=await this.db.query(`INSERT INTO conversation_activities(conversation_id,worker,kind,tool,tool_use_id,summary,detail,is_error,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,metadata)
-    SELECT $1,'assistant',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$14::jsonb WHERE EXISTS(SELECT 1 FROM runtime_session_leases WHERE key=$12 AND token=$13 AND expires_at>clock_timestamp())`,[id,kind,'toolName' in a?a.toolName:null,'toolCallId' in a?a.toolCallId:null,detail.slice(0,1000),detail,'isError' in a?a.isError:false,a.kind==='usage'?a.input:0,a.kind==='usage'?a.output:0,a.kind==='usage'?a.cacheRead:0,a.kind==='usage'?a.cacheWrite:0,`conversation:${id}`,lease.token,JSON.stringify({turn_id:turnID,...runnerActivityMetadata(a)})]);
-    if(saved.rowCount)streamChanges.emit('change','conversation',id);
-    if(saved.rowCount&&a.kind==='assistant_message_end'&&a.streamID)await writer?.committed(a.streamID,a.isThinking?'thinking':'text');});
+   const stream=a.kind==='assistant_message_end'?a.streamID:undefined,channel=a.kind==='assistant_message_end'&&a.isThinking?'thinking':'text';
+   if(!journal)throw new Error('Conversation activity run has not been claimed');
+   const pending=journal.append({worker:'assistant',kind,tool:'toolName' in a?a.toolName:undefined,tool_use_id:'toolCallId' in a?a.toolCallId:undefined,
+    summary:detail.slice(0,1000),detail,is_error:'isError' in a?a.isError:false,input_tokens:a.kind==='usage'?a.input:0,
+    output_tokens:a.kind==='usage'?a.output:0,cache_read_tokens:a.kind==='usage'?a.cacheRead:0,cache_write_tokens:a.kind==='usage'?a.cacheWrite:0,
+    metadata:{turn_id:turnID,...runnerActivityMetadata(a)}},stream?()=>writer?.deferFinal(stream,channel):undefined)
+    .then(async()=>{if(stream)await writer?.committed(stream,channel);});
+   tail=pending.catch(()=>{});
+   return pending;
   };
   try{
    const claimed: (Record<string, unknown> & {run:Record<string, unknown>}) | undefined = await this.db.transaction(async tx=>{
@@ -140,12 +149,18 @@ export class ConversationService {
    });
    if(!claimed)return;runID=Number(claimed.run.id);
    turnID=String(claimed.run.turn_id||`conversation:${runID}`);
+   journal=this.engine.activityOutbox.writer({scope:'conversation',scopeID:id,runID,token:lease.token,turnID});
    writer=new LiveStreamWriter(this.db,'conversation',id,{worker:'assistant',turn_id:turnID});
    const role=String(claimed.agent_key),taskID=Number(claimed.task_id)||0,task=taskID?await this.db.tasks().getTask(taskID):null;
+   resourceLease=await acquireRuntimeResources(this.db,{taskID,role,conversationID:id},controller.signal,
+    ()=>persist({kind:'host_status',phase:'resource_wait',text:'正在等待执行资源；尚未加载模型会话或连接 MCP'}));
+   controller.signal.throwIfAborted();
    const config=await agentRunConfig(this.db,role);
    const model=await this.resolve(taskID,role,{conversationID:id,profileID:Number(claimed.llm_profile_id)||undefined});
    const cwd=path.join(this.dataDir,'conversations',String(id));await mkdir(cwd,{recursive:true});
+   activeSession=await prepareAgentRunSession(this.db,{taskID,expID:task?.exploration_id??0,role,conversationID:id},path.join(cwd,'session.jsonl'),controller.signal);
    const ctx=runContext(this.db,taskID,task?.exploration_id??0,role as AgentRole,{conversationID:id,hooks:{assertOwnership:lease.assert}});
+   ctx.agentSessionState=activeSession.snapshot;
    const tools:import('@earendil-works/pi-coding-agent').ToolDefinition[]=[contextGetTool(ctx),readAttachmentTool(ctx),toolOutputTool(ctx)];
    if(task)tools.push(contextSearchTool(ctx),mergedAssetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
    const pendingReports=new Set<number>();
@@ -166,26 +181,37 @@ export class ConversationService {
    if(attachment.images.length&&!model.model.input.includes('image'))throw new Error('模型未启用图片输入');
    const prompt=await systemRolePrompt(this.db,role);
    const taskContext=task?`\n\n【当前绑定任务】\n任务 #${taskID}：${task.description}\n用户目标：${task.goal}`:'';
-   runner=await createTrackedRunner(this.db,taskID,role,{turnID,...model,...resources,cwd,agentDir:path.join(this.dataDir,'pi-agent'),resumeSessionPath:path.join(cwd,'session.jsonl'),signal:controller.signal,
+   runner=await createTrackedRunner(this.db,taskID,role,{resourceLease,turnID,...model,...resources,cwd,agentDir:path.join(this.dataDir,'pi-agent'),resumeSessionPath:activeSession.file,signal:controller.signal,
+    nativeActivity:{source:{scope:'conversation',scopeID:id,runID,token:lease.token,turnID},worker:'assistant',turn_id:turnID},flushNativeSession:activeSession.flush,
+    canonicalSessionPath:activeSession.canonical,onSessionCompacted:async manager=>{await activeSession!.compact(manager);},archiveDiagnostics:activeSession.diagnostics,
     stopWhen:role==='reporter'?async()=>reportSaved&&pendingReports.size===0:undefined,
     loadDomainState:async()=>({conversation_id:id,...(role==='reporter'?{pending_report_ids:[...pendingReports],read_tool:'get_finding',save_tool:'update_finding_report'}:{})}),
     ...agentBudgets(config,{maxTurns:30,maxDurationMs:1200_000}),maxWrapupTurns:config.wrapupMaxTurns||2,
     wrapup:()=>role==='reporter'&&pendingReports.size?{prompt:config.wrapupPrompt||hostProtocol('reporter')}:undefined,
     systemPrompt:prompt+taskContext+(task?constraintBlock(await loadConstraints(this.db,task.exploration_id)):''),customTools:bound,legacyTools:task?legacyReadCandidates(ctx):[],
     toolAllowlist:[...bound.map(t=>t.name),...(['auto','reporter','pentest'].includes(role)?['read',...(role==='pentest'&&task?['bash','write','edit']:[])].filter(n=>!disabled.has(n)):[]),...((role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
-    guard:async g=>{await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return;},onActivity:persist},id);
+    guard:async g=>{await activeSession!.flush();await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return;},onActivity:persist},id);
    await this.db.query('UPDATE conversations SET session_file=$2 WHERE id=$1',[id,runner.sessionFile??path.join(cwd,'session.jsonl')]);
    const triggerEvents=claimed.run.trigger_id?(await this.db.query('SELECT event_key,kind,task_id,payload FROM agent_trigger_events WHERE event_key=ANY($1::text[]) ORDER BY id',[claimed.run.event_keys??[]])).rows:null;
    const message=triggerEvents?JSON.stringify(triggerEvents.map(event=>({source:'blackboard',kind:event.kind,task_id:event.task_id,event_key:event.event_key,
      ...Object.fromEntries(Object.entries(event.payload as Record<string,unknown>??{}).filter(([key,value])=>/(?:_id|_version)$/.test(key)&&(typeof value==='string'||typeof value==='number')))}))):String(claimed.run.message);
    const result=await runner.prompt(message+(attachment.text?'\n\n'+attachment.text:''),attachment.images);
    await tail;if(!result.aborted&&pendingReports.size)throw new Error('报告未按证据版本保存');
+   await runner.acknowledgeNativeActivities();
    await this.db.query("UPDATE conversation_runs SET status=$3,finished_at=now() WHERE id=$1 AND token=$2",[runID,lease.token,result.aborted?'stopped':'completed']);
   }catch(error){if(runID)await this.db.query('UPDATE conversation_runs SET status=$3,error=$4,finished_at=now() WHERE id=$1 AND token=$2',[runID,lease.token,controller.signal.aborted?'stopped':'failed',String(error).slice(0,2000)]);}
-  finally{await runner?.dispose();await tail.catch(()=>{});
-   if(runID)await this.db.query(`INSERT INTO conversation_activities(conversation_id,worker,kind,summary,metadata)
-    SELECT $1,'assistant','result',COALESCE(NULLIF(error,''),'回复结束'),jsonb_build_object('turn_id',$2::text,'event_type','lifecycle','status',status)
-    FROM conversation_runs WHERE id=$3 AND token=$4 AND status IN ('completed','stopped','failed')`,[id,turnID,runID,lease.token]);
-   await writer?.close().catch(()=>{});await lease.release();this.bus.emit(`conversation:${id}`,{kind:'settled'});}
+  finally{
+   let cleanupError:unknown;
+   try{await runner?.dispose();}catch(error){cleanupError=error;}
+   try{await activeSession?.close();}catch(error){cleanupError??=error;}
+   await tail.catch(()=>{});
+   await journal?.close().catch(()=>{});
+   try{
+    if(cleanupError&&runID)await this.db.query('UPDATE conversation_runs SET status=$3,error=$4,finished_at=now() WHERE id=$1 AND token=$2',[runID,lease.token,controller.signal.aborted?'stopped':'failed',String(cleanupError).slice(0,2000)]);
+    if(runID)await this.db.query(`INSERT INTO conversation_activities(conversation_id,worker,kind,summary,metadata)
+     SELECT $1,'assistant','result',COALESCE(NULLIF(error,''),'回复结束'),jsonb_build_object('turn_id',$2::text,'event_type','lifecycle','status',status)
+     FROM conversation_runs WHERE id=$3 AND token=$4 AND status IN ('completed','stopped','failed')`,[id,turnID,runID,lease.token]);
+   }finally{try{await writer?.close().catch(()=>{});}finally{resourceLease?.release();await lease.release();this.bus.emit(`conversation:${id}`,{kind:'settled'});}}
+  }
  }
 }

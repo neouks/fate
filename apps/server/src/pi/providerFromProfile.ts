@@ -84,6 +84,11 @@ export function buildModelSource(profile: ProfileLike): Promise<ModelSource> {
   if (profile.format && !["openai", "anthropic", "openai-responses"].includes(profile.format)) throw new Error(`不支持的 LLM 协议：${profile.format}`);
   const effort = profile.reasoningEffort || profile.thinkingType || "off";
   const thinkingLevel = (["off", "minimal", "low", "medium", "high", "xhigh"].includes(effort) ? effort : effort === "disabled" ? "off" : "medium") as ModelSource["thinkingLevel"];
+  // Capability and the selected level are different. Current DeepSeek hybrid
+  // models default to thinking on; PI emits thinking.type=disabled only when
+  // the model advertises the capability. Never silently turn an explicit off
+  // configuration into server-default reasoning (including summary calls).
+  const deepSeekHybrid=api==='openai-completions'&&/^deepseek-(?:flash|v4(?:\.1)?-(?:flash|pro))$/i.test(profile.model);
   const providerId = `series-p${profile.id}`;
   const contextWindow = profile.contextWindowK > 0 ? profile.contextWindowK * 1000 : 128_000;
   const model = {
@@ -97,7 +102,7 @@ export function buildModelSource(profile: ProfileLike): Promise<ModelSource> {
     contextWindow,
     maxTokens: profile.maxTokens > 0 ? profile.maxTokens : 8192,
     // 思考档位：profile.thinking_type 非空即启用（pi 统一档位映射到 provider 原生参数）。
-    reasoning: thinkingLevel !== "off",
+    reasoning: deepSeekHybrid || thinkingLevel !== "off",
   } as Record<string, unknown>;
   const provider = createProvider({
     id: providerId,
