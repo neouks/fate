@@ -140,8 +140,8 @@ export interface AgentRunnerOptions {
   mainSegment?:number;
   compactionSettings?: {reserveTokens?:number;keepRecentTokens?:number};
   contextPolicy?: ReturnType<typeof import('../agent/context-policy.js').roleContextPolicy>;
-  /** Independent of compaction reserve/headroom, which can be very large. */
-  summaryMaxTokens?:number;
+  /** Soft summary length target; never a provider output limit. */
+  summaryTargetTokens?:number;
   /** Adds role-specific retention requirements to native SDK compaction. */
   compactionInstructions?: string;
   /** Platform storage at the awaited native compaction boundary. Never another model loop. */
