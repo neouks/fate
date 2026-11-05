@@ -546,3 +546,19 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 @keyframes process-dot { from { opacity: .25; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .process-glyph circle, .execution-working-dots i { animation: none !important; } }
 @media (max-width: 640px) { .execution-body { gap: 18px; } .execution-process-trigger { gap: 8px; font-size: var(--text-base); } .execution-tool-detail { padding-left: 14px; } }
+
+/* Shared prose: clear hierarchy without enlarging the application typography. */
+.transcript-markdown { line-height: 1.8; overflow-wrap: anywhere; }
+.transcript-markdown strong { font-weight: 650; color: var(--foreground); }
+.transcript-markdown li { padding-left: .2rem; margin-block: .4rem; }
+.transcript-markdown li::marker { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.transcript-markdown li > p + p { margin-top: .5rem; }
+.transcript-markdown :not(pre) > code { border: 1px solid var(--border); border-radius: 5px; background: var(--muted); padding: .1em .35em; font-family: var(--font-mono),monospace; font-size: .93em; box-decoration-break: clone; }
+.markdown-code-block { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); }
+.markdown-code-heading { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; border-bottom: 1px solid var(--border); color: var(--muted-foreground); font-size: var(--text-xs); }
+.markdown-code-block pre { margin: 0; max-height: 480px; overflow: auto; padding: 14px; font-family: var(--font-mono),monospace; font-size: var(--text-sm); line-height: 1.7; white-space: pre; }
+.markdown-code-block code { border: 0; padding: 0; background: transparent; }
+.markdown-code-block .hljs-keyword, .markdown-code-block .hljs-selector-tag { color: var(--chart-1); font-weight: 600; }
+.markdown-code-block .hljs-string, .markdown-code-block .hljs-attr { color: var(--chart-2); }
+.markdown-code-block .hljs-number, .markdown-code-block .hljs-literal, .markdown-code-block .hljs-title { color: var(--chart-3); }
+.markdown-code-block .hljs-comment { color: var(--muted-foreground); font-style: italic; }
