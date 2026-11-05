@@ -563,19 +563,19 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .markdown-code-block .hljs-number, .markdown-code-block .hljs-literal, .markdown-code-block .hljs-title { color: var(--chart-3); }
 .markdown-code-block .hljs-comment { color: var(--muted-foreground); font-style: italic; }
 
-/* Task launcher: focused drafting surface with optional settings. */
+/* Task launcher: description and always-visible goal confirmation. */
 .task-launcher { min-height: 100%; padding: clamp(32px,8vh,88px) 24px 48px; background: color-mix(in oklch,var(--muted) 48%,var(--background)); }
-.task-launcher-inner { width: 100%; max-width: 800px; margin-inline: auto; display: flex; flex-direction: column; gap: 18px; }
-.task-launcher header { text-align: center; margin-bottom: 12px; }
+.task-launcher-inner { width: 100%; max-width: 960px; margin-inline: auto; display: flex; flex-direction: column; gap: 32px; }
+.task-launcher header { text-align: center; margin-bottom: 4px; }
 .task-launcher h1 { font-size: 28px; font-weight: 600; line-height: 1.4; letter-spacing: -.025em; }
-.task-launcher header p { margin-top: 12px; color: var(--muted-foreground); font-size: var(--text-sm); }
-.task-launcher-card { min-width: 0; border: 1px solid color-mix(in oklch,var(--foreground) 25%,var(--border)); border-radius: 24px; background: var(--card); box-shadow: 0 12px 36px color-mix(in oklch,var(--foreground) 7%,transparent); overflow: hidden; }
-.task-launcher-field { padding: 22px 24px 14px; gap: 10px; }
-.task-launcher-field [data-slot=field-label] { font-size: var(--text-sm); color: var(--muted-foreground); }
-.task-launcher-field textarea { min-height: 130px; max-height: 320px; resize: vertical; border: 0; border-radius: 4px; padding: 4px 0; box-shadow: none; background: transparent; font-size: var(--text-base); line-height: 1.8; }
+.task-launcher header p { margin-top: 12px; color: var(--muted-foreground); font-size: var(--text-base); }
+.task-launcher-form, .task-launcher-fields { min-width: 0; display: flex; flex-direction: column; gap: 28px; }
+.task-launcher-card { min-width: 0; border: 1px solid var(--border); border-radius: 24px; background: var(--card); box-shadow: 0 12px 36px color-mix(in oklch,var(--foreground) 5%,transparent); overflow: hidden; }
+.task-launcher-field { padding: 22px 24px 14px; }
+.task-launcher-field textarea { min-height: 150px; max-height: 360px; resize: vertical; border: 0; border-radius: 4px; padding: 4px 0; box-shadow: none; background: transparent; font-size: var(--text-base); line-height: 1.8; }
 .task-launcher-field textarea:focus-visible { box-shadow: none; outline: 2px solid var(--ring); outline-offset: 4px; }
-.task-launcher-goal { border-top: 1px solid var(--border); padding-top: 16px; }
-.task-launcher-goal textarea { min-height: 76px; }
-.task-launcher-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 6px 20px 16px; }
-@media (max-width:640px) { .task-launcher { padding: 32px 16px; } .task-launcher h1 { font-size: 22px; } .task-launcher-field { padding-inline: 18px; } .task-launcher-toolbar { padding-inline: 14px; } }
-.task-launcher-toolbar > button { width: 40px; height: 40px; border-radius: 999px; }
+.task-launcher-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 16px 14px; color: var(--muted-foreground); }
+.task-launcher-toolbar span { font-size: var(--text-sm); margin-left: 4px; }
+.task-launcher-confirmation { --card-spacing: 24px; }
+.task-launcher-confirmation textarea { min-height: 110px; max-height: 360px; resize: vertical; line-height: 1.8; }
+@media (max-width:640px) { .task-launcher { padding: 32px 16px; } .task-launcher h1 { font-size: 22px; } .task-launcher-field { padding-inline: 18px; } .task-launcher-toolbar { padding-inline: 12px; } .task-launcher-confirmation { --card-spacing: 18px; } .task-launcher-inner, .task-launcher-fields { gap: 24px; } }

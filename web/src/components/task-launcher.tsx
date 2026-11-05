@@ -1,10 +1,11 @@
 "use client";
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpIcon, PaperclipIcon, SlidersHorizontalIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
+import { PaperclipIcon, SlidersHorizontalIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { Task, TaskCategory, Company, LLMProfile, ChatAttachment } from "@/lib/types";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -260,7 +261,14 @@ function CategoryPicker({
           placeholder={selectedIDs.length ? "" : "搜索分类，或输入新名称后回车创建"}
           onKeyDown={(e) => {
             // 完全无匹配时回车 = 创建；有匹配项时保留 base-ui 的「回车选中高亮项」。
-            if (e.key === "Enter" && matchCount === 0 && trimmed) {
+            if (
+              e.key === "Enter" &&
+              !e.ctrlKey &&
+              !e.metaKey &&
+              !e.nativeEvent.isComposing &&
+              matchCount === 0 &&
+              trimmed
+            ) {
               e.preventDefault();
               void createAndSelect();
             }
@@ -388,13 +396,17 @@ export function TaskLauncher() {
     [uploadError, setUploadError] = React.useState("");
   const busy = React.useRef(false),
     optionsRequest = React.useRef(0),
-    settingTarget = React.useRef("name");
+    settingTarget = React.useRef("source-tasks"),
+    categoryRequest = React.useRef(0);
   React.useEffect(
     () => () => {
       optionsRequest.current++;
+      categoryRequest.current++;
     },
     [],
   );
+  const [categoryError, setCategoryError] = React.useState("");
+  const [loadingCategories, setLoadingCategories] = React.useState(false);
   const [name, setName] = React.useState("");
   const [categoryID, setCategoryID] = React.useState<number | undefined>(undefined);
   const [description, setDescription] = React.useState("");
@@ -418,19 +430,33 @@ export function TaskLauncher() {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const sheetContentRef = React.useRef<HTMLDivElement>(null);
 
+  const loadCategories = React.useCallback(async () => {
+    const version = ++categoryRequest.current;
+    setLoadingCategories(true);
+    setCategoryError("");
+    try {
+      const result = await api.taskCategories();
+      if (version === categoryRequest.current) setCategories(result);
+    } catch {
+      if (version === categoryRequest.current) setCategoryError("分类读取失败，已有选择已保留。");
+    } finally {
+      if (version === categoryRequest.current) setLoadingCategories(false);
+    }
+  }, []);
+  React.useEffect(() => {
+    void loadCategories();
+  }, [loadCategories]);
+
   const loadOptions = React.useCallback(async () => {
     const version = ++optionsRequest.current;
     setLoadingOptions(true);
     setOptionsError("");
-    const results = await Promise.allSettled([api.taskCategories(), api.companies(), api.llmProfiles()]);
+    const results = await Promise.allSettled([api.companies(), api.llmProfiles()]);
     if (version !== optionsRequest.current) return;
-    const [c, co, l] = results;
-    if (c.status === "fulfilled") setCategories(c.value);
+    const [co, l] = results;
     if (co.status === "fulfilled") setCompanies(co.value);
     if (l.status === "fulfilled") setProfiles(l.value);
-    const failed = results
-      .map((r, i) => (r.status === "rejected" ? ["分类", "企业", "模型配置"][i] : ""))
-      .filter(Boolean);
+    const failed = results.map((r, i) => (r.status === "rejected" ? ["企业", "模型配置"][i] : "")).filter(Boolean);
     setOptionsError(failed.length ? `${failed.join("、")}读取失败，请重试；已有选择已保留。` : "");
     setLoadingOptions(false);
   }, []);
@@ -503,8 +529,6 @@ export function TaskLauncher() {
   }
 
   const summaries = [
-    ...(name.trim() ? [`名称：${name.trim()}`] : []),
-    ...(categoryID ? [`分类：${categories.find((c) => c.id === categoryID)?.name ?? "#" + categoryID}`] : []),
     ...(sourceTaskIDs.length ? [`关联任务 ${sourceTaskIDs.length}`] : []),
     ...(companyIDs.length ? [`企业范围 ${companyIDs.length}`] : []),
     ...(llmProfileIDs.length ? [`模型配置 ${llmProfileIDs.length}`] : []),
@@ -517,137 +541,191 @@ export function TaskLauncher() {
     <main className="task-launcher">
       <div className="task-launcher-inner">
         <header>
-          <h1>接下来，要探索什么？</h1>
-          <p>描述测试对象与目标，开始一次新的探索。</p>
+          <h1>开始一项新的安全任务</h1>
+          <p>描述测试对象与背景，接下来确认目标和执行配置。</p>
         </header>
         <form
-          className="task-launcher-card"
+          className="task-launcher-form"
           onSubmit={(e) => {
             e.preventDefault();
             void createTask();
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
+            if (e.defaultPrevented || e.nativeEvent.isComposing) return;
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
               void createTask();
-            }
+            } else if (e.key === "Enter" && e.target instanceof HTMLInputElement) e.preventDefault();
           }}
         >
-          <FieldGroup className="gap-0">
-            <Field className="task-launcher-field">
-              <FieldLabel htmlFor="description">测试对象、背景与约束</FieldLabel>
-              <Textarea
-                id="description"
-                required
-                value={description}
-                disabled={creating}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="例如：检查 example.com 的登录与权限控制，仅测试指定站点……"
-              />
-            </Field>
-            <Field className="task-launcher-field task-launcher-goal">
-              <FieldLabel htmlFor="goal">期望达成的目标</FieldLabel>
-              <Textarea
-                id="goal"
-                required
-                value={goal}
-                disabled={creating}
-                onChange={(e) => setGoal(e.target.value)}
-                placeholder="例如：确认是否存在可复现的高风险权限问题，并保存证据与修复建议。"
-              />
-            </Field>
-          </FieldGroup>
-          <div className="task-launcher-toolbar">
-            <div className="flex items-center gap-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                title="任务设置"
-                aria-label="任务设置"
-                disabled={creating}
-                onClick={() => setOpen(true)}
-              >
-                <SlidersHorizontalIcon />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                title="上传附件"
-                aria-label="上传附件"
-                disabled={creating || uploading}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                {uploading ? <Spinner /> : <PaperclipIcon />}
-              </Button>
+          <fieldset disabled={creating} className="task-launcher-fields">
+            <div className="task-launcher-card">
+              <FieldGroup>
+                <Field className="task-launcher-field">
+                  <FieldLabel htmlFor="description" className="sr-only">
+                    测试对象、背景与约束
+                  </FieldLabel>
+                  <Textarea
+                    id="description"
+                    required
+                    value={description}
+                    disabled={creating}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="描述你希望完成的任务…"
+                  />
+                </Field>
+              </FieldGroup>
+              <div className="task-launcher-toolbar">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  title="上传附件"
+                  aria-label="上传附件"
+                  disabled={creating || uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {uploading ? <Spinner /> : <PaperclipIcon />}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  title="任务设置"
+                  aria-label="任务设置"
+                  disabled={creating}
+                  onClick={() => {
+                    settingTarget.current = "source-tasks";
+                    setOpen(true);
+                  }}
+                >
+                  <SlidersHorizontalIcon />
+                </Button>
+                <span>支持上传测试资料</span>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(e) => void pickFiles(e.target.files)}
+                />
+              </div>
             </div>
-            <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => void pickFiles(e.target.files)} />
-            <Button
-              type="submit"
-              size="icon"
-              className="rounded-full"
-              title="创建任务（⌘ / Ctrl + Enter）"
-              aria-label="创建任务"
-              disabled={!description.trim() || !goal.trim() || uploading || creating}
-            >
-              {creating ? <Spinner /> : <ArrowUpIcon />}
-            </Button>
-          </div>
-        </form>
-        {submitError && (
-          <p role="alert" className="text-sm text-destructive">
-            {submitError}
-          </p>
-        )}
-        {uploadError && (
-          <p role="alert" className="text-sm text-destructive">
-            {uploadError}（{uploadNames.join("、")}），请重新选择文件上传。
-          </p>
-        )}
-        {uploading && (
-          <p role="status" className="text-sm text-muted-foreground">
-            正在上传：{uploadNames.join("、")}…
-          </p>
-        )}
-        {attachments.length > 0 && (
-          <ul aria-label="已上传附件" className="flex flex-wrap gap-2">
-            {attachments.map((a, i) => (
-              <li key={`${a.path}:${i}`} className="max-w-full break-all rounded-md border px-2 py-1 text-xs">
-                {a.name} · {fmtBytes(a.size)}
-              </li>
-            ))}
-          </ul>
-        )}
-        {summaries.length > 0 && (
-          <div aria-label="已选任务配置" className="flex flex-wrap gap-2">
-            {summaries.map((s) => (
-              <Button
-                key={s}
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-auto max-w-full whitespace-normal break-all"
-                onClick={() => {
-                  settingTarget.current = s.startsWith("名称")
-                    ? "name"
-                    : s.startsWith("分类")
-                      ? "task-category"
-                      : s.startsWith("关联")
+            {uploadError && (
+              <p role="alert" className="text-sm text-destructive">
+                {uploadError}（{uploadNames.join("、")}），请重新选择文件上传。
+              </p>
+            )}
+            {uploading && (
+              <p role="status" className="text-sm text-muted-foreground">
+                正在上传：{uploadNames.join("、")}…
+              </p>
+            )}
+            {attachments.length > 0 && (
+              <ul aria-label="已上传附件" className="flex flex-wrap gap-2">
+                {attachments.map((a, i) => (
+                  <li key={`${a.path}:${i}`} className="max-w-full break-all rounded-md border px-2 py-1 text-xs">
+                    {a.name} · {fmtBytes(a.size)}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {summaries.length > 0 && (
+              <div aria-label="已选任务配置" className="flex flex-wrap gap-2">
+                {summaries.map((s) => (
+                  <Button
+                    key={s}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-auto max-w-full whitespace-normal break-all"
+                    onClick={() => {
+                      settingTarget.current = s.startsWith("关联")
                         ? "source-tasks"
                         : s.startsWith("企业")
                           ? "task-companies"
                           : s.startsWith("模型")
                             ? "llm-profiles"
                             : "advanced-settings";
-                  setOpen(true);
-                }}
-              >
-                {s}
-              </Button>
-            ))}
-          </div>
-        )}
+                      setOpen(true);
+                    }}
+                  >
+                    {s}
+                  </Button>
+                ))}
+              </div>
+            )}
+
+            <Card className="task-launcher-confirmation">
+              <CardHeader>
+                <CardTitle>
+                  <h2>确认任务目标</h2>
+                </CardTitle>
+                <CardDescription>确认后创建任务；高级选项沿用当前系统默认值。</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="name">名称（可选）</FieldLabel>
+                    <Input
+                      id="name"
+                      value={name}
+                      disabled={creating}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="给任务起个便于识别的名字，例如：Acme 官网渗透"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="task-category">任务分类</FieldLabel>
+                    <CategoryPicker
+                      categories={categories}
+                      value={categoryID}
+                      onValueChange={setCategoryID}
+                      onCategoryCreated={() => void loadCategories()}
+                    />
+                    {loadingCategories && (
+                      <p role="status" className="text-sm text-muted-foreground">
+                        正在读取分类…
+                      </p>
+                    )}
+                    {categoryError && (
+                      <p role="alert" className="text-sm text-destructive">
+                        {categoryError}
+                        <Button type="button" size="sm" variant="ghost" onClick={() => void loadCategories()}>
+                          重试
+                        </Button>
+                      </p>
+                    )}
+                    <FieldDescription>可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。</FieldDescription>
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="goal">目标（必填）</FieldLabel>
+                    <Textarea
+                      id="goal"
+                      required
+                      value={goal}
+                      disabled={creating}
+                      onChange={(e) => setGoal(e.target.value)}
+                      placeholder="描述期望达成的目标，例如：确认是否存在可复现的高风险权限问题，并保存证据与修复建议。"
+                    />
+                  </Field>
+                </FieldGroup>
+              </CardContent>
+              <CardFooter className="flex-wrap justify-between gap-3">
+                <span className="text-sm text-muted-foreground">Ctrl / ⌘ + Enter 创建任务</span>
+                <Button type="submit" disabled={!description.trim() || !goal.trim() || uploading || creating}>
+                  {creating && <Spinner data-icon="inline-start" />}
+                  {creating ? "正在创建…" : "创建任务"}
+                </Button>
+              </CardFooter>
+            </Card>
+            {submitError && (
+              <p role="alert" className="text-sm text-destructive">
+                {submitError}
+              </p>
+            )}
+          </fieldset>
+        </form>
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
             onOpenAutoFocus={(e) => {
@@ -675,26 +753,6 @@ export function TaskLauncher() {
                 </p>
               )}
               <FieldGroup>
-                <div className="grid gap-2">
-                  <Label htmlFor="name">名称（可选）</Label>
-                  <Input
-                    id="name"
-                    placeholder="给任务起个便于识别的名字，例如：Acme 官网渗透"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                  />
-                </div>
-                <Field>
-                  <FieldLabel htmlFor="task-category">任务分类</FieldLabel>
-                  <CategoryPicker
-                    categories={categories}
-                    value={categoryID}
-                    onValueChange={setCategoryID}
-                    onCategoryCreated={() => void loadOptions()}
-                    portalContainer={sheetContentRef}
-                  />
-                  <FieldDescription>可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。</FieldDescription>
-                </Field>
                 <Field>
                   <FieldLabel htmlFor="source-tasks">关联任务</FieldLabel>
                   <SourceTaskPicker
