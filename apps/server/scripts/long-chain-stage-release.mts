@@ -37,8 +37,14 @@ export async function copyIndependentTree(sourceRoot:string,destination:string,m
   const dependency=await realpath(original);
   assert(inside(source,dependency),`External dependency is not packaged: ${path.relative(source,original)}`);
   const dependencyMapping=resolved.find(m=>inside(m.from,dependency));
-  assert(dependencyMapping,`Dependency outside copied artifacts: ${path.relative(source,dependency)}`);
-  const relocated=path.join(dependencyMapping.to,path.relative(dependencyMapping.from,dependency));
+  // Workspace links target the package directory, while releases copy its
+  // manifest and compiled output separately. An explicitly copied manifest
+  // identifies that package's release root without copying source or data.
+  const packageMapping=resolved.find(m=>m.from===path.join(dependency,'package.json'));
+  assert(dependencyMapping||packageMapping,`Dependency outside copied artifacts: ${path.relative(source,dependency)}`);
+  const relocated=dependencyMapping
+   ?path.join(dependencyMapping.to,path.relative(dependencyMapping.from,dependency))
+   :path.dirname(packageMapping!.to);
   await unlink(file);await symlink(path.relative(path.dirname(file),relocated),file);links++;
  }
  const treeHash=createHash('sha256');let files=0,bytes=0;
