@@ -348,10 +348,10 @@ html {
 body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 :root { --composer-radius: 28px; --workspace-canvas: color-mix(in oklch, var(--muted) 42%, var(--card)); }
 .task-workspace { background: var(--workspace-canvas); container: task-workspace / inline-size; }
-.task-header-tabs [data-slot="tabs-list"] { width: clamp(300px,calc(100cqw - 360px),440px); max-width: 100%; min-width: 0; height: 44px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); gap: 2px; }
-.task-header-tabs [data-slot="tabs-trigger"] { height: 34px; padding: 6px 12px; border-radius: 6px; font-size: var(--text-sm); line-height: 22px; font-weight: 500; letter-spacing: .025em; }
+.task-header-tabs [data-slot="tabs-list"] { width: clamp(300px,calc(100cqw - 360px),440px); max-width: 100%; min-width: 0; height: 36px; padding: 2px; border: 0; border-radius: 4px; background: color-mix(in oklch,var(--muted) 55%,transparent); gap: 2px; }
+.task-header-tabs [data-slot="tabs-trigger"] { height: 30px; padding: 3px 12px; border-radius: 3px; font-size: var(--text-sm); line-height: 20px; font-weight: 500; letter-spacing: .025em; }
 @container task-workspace (max-width: 679px) { .task-header-tabs [data-slot="tabs-trigger"] { padding-inline: 8px; } }
-.task-header-tabs [data-slot="tabs-trigger"][data-state="active"] { background: var(--card); box-shadow: 0 1px 3px color-mix(in oklch,var(--foreground) 6%,transparent); color: var(--foreground); }
+.task-header-tabs [data-slot="tabs-trigger"][data-state="active"] { background: var(--card); border-color: transparent; box-shadow: none; color: var(--foreground); }
 .task-header .lucide { width: 16px; height: 16px; stroke-width: 1.65; }
 .task-header-tabs [data-slot="tabs-trigger"] > span { margin-left: 0; padding: 0 4px; border-radius: 999px; font-size: var(--text-xs); line-height: 18px; font-weight: 400; }
 .task-main-conversation { background: var(--workspace-canvas); }
