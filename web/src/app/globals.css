@@ -516,7 +516,7 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .process-glyph[data-active=true] circle { animation: process-dot 1.4s ease-in-out infinite alternate; }
 .execution-thought-detail { margin-left: 8px; border-left: 1px solid var(--border); padding: 12px 0 12px 24px; color: var(--muted-foreground); font-size: var(--text-base); line-height: 1.8; }
 .execution-process-content { padding-left: 8px; }
-.execution-group-trigger { font-size: var(--text-base); gap: 10px; }
+.execution-group-trigger { font-size: var(--text-sm); gap: 8px; }
 .execution-tool .execution-process-trigger { color: var(--foreground); }
 .execution-tool .execution-process-trigger > span:last-child { font-size: var(--text-xs); }
 .execution-tool-detail { margin: 2px 0 12px 8px; padding-left: 24px; border-left: 1px solid var(--border); }
