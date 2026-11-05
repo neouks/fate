@@ -1,4 +1,5 @@
 import {usageOutboxMetrics} from '../pi/usage-outbox.js';
+import {registerFindingReproductionRoutes} from './routes/finding-reproduction.js';
 import {monitorEventLoopDelay} from 'node:perf_hooks';
 import {assertActiveRole} from '../agent/retired-roles.js';
 import {registerTurnRoutes} from './routes/turns.js';
@@ -152,6 +153,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.addHook('preHandler',async req=>{const key=(req.params as {key?:string})?.key;if(req.url.startsWith('/api/agents/')&&key)assertActiveRole(key);});
   registerConfigRoutes(app);
   registerEvidenceRoutes(app);
+  registerFindingReproductionRoutes(app);
   registerRetestRoutes(app);
   registerConversationRoutes(app);
   registerAttachmentRoutes(app);

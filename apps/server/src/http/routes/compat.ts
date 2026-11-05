@@ -77,6 +77,7 @@ function mapFinding(row: Record<string, unknown>, task?: Record<string, unknown>
     evidence: String(row["evidence"] ?? ""),
     ts: row["created_at"] instanceof Date ? (row["created_at"] as Date).toISOString() : String(row["created_at"] ?? ""),
     traffic_count: Number(row["traffic_count"] ?? 0),
+    image_count: Number(row["image_count"] ?? 0),
     evidence_version: Number(row["evidence_version"] ?? 0),
     report_evidence_version: Number(row["report_evidence_version"] ?? 0),
     report_stale: Number(row["evidence_version"] ?? 0) > Number(row["report_evidence_version"] ?? 0),
@@ -344,7 +345,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     if(q.vulnclass && q.vulnclass!=='all'){params.push(q.vulnclass);where+=` AND f.vulnclass=$${params.length}`;}
     const total = await db().query<{ n: string }>(`SELECT count(*) AS n FROM ${READABLE_FINDINGS} f${where}`, params);
     const rows = await db().query(
-      `SELECT f.*,(SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id) AS traffic_count FROM ${READABLE_FINDINGS} f${where} ORDER BY f.created_at ${q.direction==='asc'?'ASC':'DESC'},f.id ${q.direction==='asc'?'ASC':'DESC'} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      `SELECT f.*,(SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id) AS traffic_count,(SELECT count(*) FROM finding_step_images im WHERE im.finding_id=f.id) AS image_count FROM ${READABLE_FINDINGS} f${where} ORDER BY f.created_at ${q.direction==='asc'?'ASC':'DESC'},f.id ${q.direction==='asc'?'ASC':'DESC'} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, (page - 1) * limit],
     );
     const taskCache = new Map<number, Record<string, unknown>>();
@@ -444,6 +445,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const context=Number((req.query as Record<string,string>).context_task);
     if(context && context!==tid){const related=await db().query('SELECT 1 FROM task_relations WHERE task_id=$1 AND source_task_id=$2',[context,tid]);if(!related.rowCount)throw Object.assign(new Error('漏洞不属于任务及直接来源任务'),{statusCode:403});out.inherited=true;out.source_task_id=String(tid);}
     out["report"] = String(row["report"] ?? "");
+    out["reproduction"]=row.reproduction??null;out["report_sections"]=row.report_sections??null;out["report_revision"]=Number(row.report_revision??0);
     const assetIDs = Array.isArray(row["asset_ids"]) ? (row["asset_ids"] as number[]) : [];
     if (assetIDs.length > 0) {
       const assets = await db().assets().getByIDs(assetIDs);

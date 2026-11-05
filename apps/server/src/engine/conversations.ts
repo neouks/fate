@@ -47,15 +47,15 @@ export class ConversationService {
   ) AS running FROM conversations c LEFT JOIN agents a ON a.key=c.agent_key ORDER BY c.pinned_at DESC NULLS LAST,c.updated_at DESC,c.id DESC LIMIT 500`);
   return rows.rows;
  }
- async create(key:string,title='',profile?:number|null,taskID?:number){
+ async create(key:string,title='',profile?:number|null,taskID?:number,writeDB:Database=this.db){
   assertActiveRole(key);
-  const agent=await this.db.platform().getAgentByKey(key);
+  const agent=await writeDB.platform().getAgentByKey(key);
   if(!agent||!agent.enabled||ORCHESTRATORS.has(key))throw Object.assign(new Error('该角色不能创建独立对话'),{statusCode:400});
   const cleanTitle=title.trim()||'新对话';
   if(Array.from(cleanTitle).length>120)throw Object.assign(new Error('标题最多 120 个字符'),{statusCode:400});
-  if(profile!==undefined&&profile!==null){const row=await this.db.query('SELECT id FROM llm_profiles WHERE id=$1',[profile]);if(!row.rowCount)throw Object.assign(new Error('指定的 LLM 配置不存在'),{statusCode:400});}
-  if(taskID&&!await this.db.tasks().getTask(taskID))throw Object.assign(new Error('task not found'),{statusCode:404});
-  return (await this.db.query('INSERT INTO conversations(agent_key,title,llm_profile_id,task_id) VALUES($1,$2,$3,$4) RETURNING *',[key,cleanTitle,profile??null,taskID??null])).rows[0]!;
+  if(profile!==undefined&&profile!==null){const row=await writeDB.query('SELECT id FROM llm_profiles WHERE id=$1',[profile]);if(!row.rowCount)throw Object.assign(new Error('指定的 LLM 配置不存在'),{statusCode:400});}
+  if(taskID&&!await writeDB.tasks().getTask(taskID))throw Object.assign(new Error('task not found'),{statusCode:404});
+  return (await writeDB.query('INSERT INTO conversations(agent_key,title,llm_profile_id,task_id) VALUES($1,$2,$3,$4) RETURNING *',[key,cleanTitle,profile??null,taskID??null])).rows[0]!;
  }
  async update(id:number,patch:{title?:string;pinned?:boolean}){
   await this.assertWritable(id);
@@ -78,9 +78,9 @@ export class ConversationService {
   const r=await this.db.query('DELETE FROM conversations WHERE id=$1 RETURNING id',[id]);
   if(!r.rowCount)throw Object.assign(new Error('conversation not found'),{statusCode:404});return {deleted:Number(r.rows[0]!.id)};
  }
- async enqueue(id:number,message:string,attachments:unknown=[],requestID:string=randomUUID()){
+ async enqueue(id:number,message:string,attachments:unknown=[],requestID:string=randomUUID(),writeDB:Database=this.db){
   if((!message.trim()&&(!Array.isArray(attachments)||attachments.length===0))||message.length>100000)throw Object.assign(new Error('消息为空或过长'),{statusCode:400});
-  const row=await this.db.transaction(async tx=>{
+  const row=await writeDB.transaction(async tx=>{
    const conv=(await tx.query('SELECT * FROM conversations WHERE id=$1 FOR UPDATE',[id])).rows[0];
    if(!conv)throw Object.assign(new Error('conversation not found'),{statusCode:404});
    assertActiveRole(String(conv.agent_key));
@@ -94,7 +94,7 @@ export class ConversationService {
    if(!first)await tx.query('UPDATE conversations SET updated_at=now() WHERE id=$1',[id]);
    return (await tx.query('INSERT INTO conversation_runs(conversation_id,message,attachments,turn_id) VALUES($1,$2,$3::jsonb,$4) RETURNING id',[id,message,JSON.stringify(attachments),requestID])).rows[0]!;
   });
-  void this.pump().catch(()=>{});return {status:'queued',run_id:Number(row.id)};
+  if(!writeDB.transactionClient)void this.pump().catch(()=>{});return {status:'queued',run_id:Number(row.id)};
  }
  async stop(id:number){
   await this.db.query("UPDATE conversation_runs SET status='stopped',finished_at=now() WHERE conversation_id=$1 AND status='queued'",[id]);
@@ -169,7 +169,7 @@ export class ConversationService {
     const expected=await this.db.query(`SELECT f.id FROM agent_trigger_events e JOIN findings f ON f.id=(e.payload->>'finding_id')::bigint
       WHERE e.event_key=ANY($1::text[]) AND e.kind='finding' AND ($2::bigint=0 OR f.task_id=$2) AND finding_readable(f.id)
       AND (COALESCE(f.report,'')='' OR f.report_evidence_version IS DISTINCT FROM f.evidence_version)`,[claimed.run.event_keys,taskID]);
-    for(const row of expected.rows)pendingReports.add(Number(row.id));
+    for(const row of expected.rows){pendingReports.add(Number(row.id));await this.db.query('INSERT INTO finding_report_jobs(finding_id,conversation_id,run_id,evidence_version,report_revision) SELECT id,$2,$3,evidence_version,report_revision FROM findings WHERE id=$1 ON CONFLICT DO NOTHING',[row.id,id,claimed.run.id]);}
    }
    let reportSaved=false;
    tools.push(...conversationDomainTools(ctx,this.engine,{profileID:Number(claimed.llm_profile_id)||0,pendingReports,onSaved:()=>{reportSaved=true;}}));
@@ -189,7 +189,7 @@ export class ConversationService {
     ...agentBudgets(config,{maxTurns:30,maxDurationMs:1200_000}),maxWrapupTurns:config.wrapupMaxTurns||2,
     wrapup:()=>role==='reporter'&&pendingReports.size?{prompt:config.wrapupPrompt||hostProtocol('reporter')}:undefined,
     systemPrompt:prompt+taskContext+(task?constraintBlock(await loadConstraints(this.db,task.exploration_id)):''),customTools:bound,legacyTools:task?legacyReadCandidates(ctx):[],
-    toolAllowlist:[...bound.map(t=>t.name),...(['auto','reporter','pentest'].includes(role)?['read',...(role==='pentest'&&task?['bash','write','edit']:[])].filter(n=>!disabled.has(n)):[]),...((role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
+    toolAllowlist:[...bound.map(t=>t.name),...(['auto','reporter','pentest'].includes(role)?['read',...(role==='pentest'&&task?['bash','write','edit']:[])].filter(n=>!disabled.has(n)):[]),...(role!=='reporter'&&(role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
     guard:async g=>{await activeSession!.flush();await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return;},onActivity:persist},id);
    await this.db.query('UPDATE conversations SET session_file=$2 WHERE id=$1',[id,runner.sessionFile??path.join(cwd,'session.jsonl')]);
    const triggerEvents=claimed.run.trigger_id?(await this.db.query('SELECT event_key,kind,task_id,payload FROM agent_trigger_events WHERE event_key=ANY($1::text[]) ORDER BY id',[claimed.run.event_keys??[]])).rows:null;
