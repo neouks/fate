@@ -1481,7 +1481,9 @@ export function SessionsTab({
   const mainBusy=sending||(mainChatRunning??recentLive(mainKey));
   React.useEffect(()=>{if(isMain)setViewedMainSeg(active.seg??currentSeg);},[isMain,active.seg,currentSeg]);
   React.useEffect(()=>{loadSession(mainKey);},[mainKey,loadSession]);
-  React.useEffect(()=>{if(focused)onProcessOpenChange(!isMain);},[focused,isMain,onProcessOpenChange]);
+  React.useEffect(()=>{
+    if(focused)onProcessOpenChange(!isMain&&(active.role!=="worker"||window.matchMedia("(min-width:1280px)").matches));
+  },[focused,isMain,active.role,onProcessOpenChange]);
   // 折叠态（手机端）标题栏要替代整张列表：显示当前会话名 + 其它会话的未读合计，
   // 否则收起后既不知道自己在看哪个会话，也看不到别处有新消息。
   const activeDisplayTitle = (active.role === "worker" ? sessionMeta.get(active.id)?.title : "") || active.title;
@@ -1962,8 +1964,9 @@ export function SessionsTab({
                           unread={store[keyForSession(s)]?.unread}
                           onClick={() => {
                             if (focused || invalidFocus) clearFocus();
+                            setRelatedSession(null);
                             setActiveId(s.id);
-                            onProcessOpenChange(true);
+                            onProcessOpenChange(s.role !== "worker" || window.matchMedia("(min-width:1280px)").matches);
                           }}
                           controlling={controllingIntent !== null}
                           selected={selectedWorkers.has(s.intent_id ?? "")}
@@ -2234,9 +2237,11 @@ export function SessionsTab({
 
   );
   const mainItems=withLiveStreams(mainState?.items??[],streaming.filter(stream=>sessionKeyOf({...stream,seq:-1,kind:stream.channel,summary:stream.text})===mainKey));
+  const workerInMain=active.role==='worker'&&!relatedSession;
   return <TooltipProvider delayDuration={300}>
-    <SessionWorkspace open={processOpen} onOpenChange={onProcessOpenChange} showDetail={!isMain||!!relatedSession} onBack={()=>{setRelatedSession(null);clearFocus();setActiveId(mainSessionId(mainSeg));}}
-      list={agentList} detail={relatedSession?<RelatedSessionDetail key={relatedSession.id} row={relatedSession}/>:isMain?null:processDetail} main={<MainConversation key={mainKey} taskId={taskId} items={mainItems} live={!!mainBusy} stopping={stopping} loading={mainState?.loading} error={mainState?.error} hasMore={mainState?.hasMore}
+    <SessionWorkspace open={processOpen} onOpenChange={onProcessOpenChange} showDetail={(!isMain&&!workerInMain)||!!relatedSession} onBack={()=>{setRelatedSession(null);clearFocus();setActiveId(mainSessionId(mainSeg));}}
+      primaryDetail={workerInMain?processDetail:undefined} primaryDetailKey={workerInMain?`${taskId}:${activeKey}`:undefined}
+      list={agentList} detail={relatedSession?<RelatedSessionDetail key={relatedSession.id} row={relatedSession}/>:isMain||workerInMain?null:processDetail} main={<MainConversation key={mainKey} taskId={taskId} items={mainItems} live={!!mainBusy} stopping={stopping} loading={mainState?.loading} error={mainState?.error} hasMore={mainState?.hasMore}
         onEarlier={()=>loadEarlier(mainKey,()=>null)} onRetry={()=>loadSession(mainKey)} composer={composer}
         heading={<><span>主 Agent · {mainSeg===currentSeg?'当前会话':`历史会话 ${mainSeg}`}</span><span className="text-xs">{sseLive?'实时连接':'正在重连，已保留内容'}</span></>}
         focused={isMain&&(focused||invalidFocus)?processDetail:undefined}/>} />

@@ -6,6 +6,8 @@ import {
   InfoIcon,
   CopyIcon,
   CheckIcon,
+  CircleHelpIcon,
+  CircleStopIcon,
   ChevronDown,
   ChevronRight,
   CrosshairIcon,
@@ -208,18 +210,33 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
   const located=React.useCallback(()=>{if(focused)requestAnimationFrame(()=>{if(root.current)onLocated?.(root.current);});},[focused,onLocated]);
   const {use,result}=group,toolName=use?.tool||result?.tool||"工具";
   const isTerminal=toolName.toLowerCase()==="bash"||toolName.startsWith("shell_");
-  const running=React.useContext(ExecutionLiveContext)&&!result,ok=!!result&&!result.is_error;
+  const live=React.useContext(ExecutionLiveContext);
+  const outcomeText=result?.detail&&!result.detail_truncated?result.detail:result&&!result.summary_truncated?result.summary:undefined;
+  // PI's existing activity API records these cancellation outcomes as error
+  // text. Recognize only its exact markers, never a phrase in truncated output.
+  const cancelledOutput=!!result?.is_error&&!!outcomeText&&(
+    ['Operation aborted','Command aborted','Tool execution aborted','aborted'].includes(outcomeText.trim())
+    || toolName.toLowerCase()==='bash'&&/\n\nCommand aborted$/.test(outcomeText.trim())
+  );
+  // Only this call's persisted outcome can mark it complete. A settled parent
+  // turn cannot supply a missing result (e.g. incomplete historical pages).
+  const stopped=cancelledOutput||!!(result?.interrupted||use?.interrupted)
+    || ['aborted','cancelled','canceled','stopped','interrupted'].includes(result?.metadata?.status??use?.metadata?.status??'');
+  const running=live&&!result&&!stopped;
+  const state=stopped?'stopped':result?(result.is_error?'failed':'completed'):running?'running':'unknown';
   const raw=use&&use.summary.startsWith(toolName)?use.summary.slice(toolName.length).trimStart():use?.summary??'';
-  const cmd=toolInputText(toolName,raw),status=running?'执行中…':!result?'结果未记录':ok?'✓':'✕ 失败';
+  const cmd=toolInputText(toolName,raw),status={running:'执行中…',unknown:'结果未记录',completed:'已完成',failed:'失败',stopped:'已停止'}[state];
+  const statusClass=state==='completed'?'text-[var(--status-success)]':state==='failed'?'text-destructive':'text-muted-foreground';
+  const StatusIcon=state==='completed'?CheckIcon:state==='failed'?XIcon:state==='stopped'?CircleStopIcon:CircleHelpIcon;
   const parts=[...(use?[{step:use,label:'命令'}]:[]),...(result?[{step:result,label:result.is_error?'输出 ✕':'输出 ✓'}]:[])];
-  return <div ref={root} data-source-call={focused||undefined} data-activity-id={use?.seq??result?.seq} data-terminal={isTerminal} className={cn('execution-tool',focused&&'rounded-md border border-primary bg-accent/30 p-2')}>
+  return <div ref={root} data-source-call={focused||undefined} data-activity-id={use?.seq??result?.seq} data-terminal={isTerminal} data-tool-status={state} className={cn('execution-tool',focused&&'rounded-md border border-primary bg-accent/30 p-2')}>
     {focused&&<Badge variant="outline">{focusLabel}</Badge>}
     <button type="button" onClick={()=>setOpen(v=>!v)} aria-expanded={open} aria-controls={panelId} aria-busy={running} title={toolName} className="execution-process-trigger">
       <span className="mt-0.5 text-muted-foreground">{open?<ChevronDown className="size-3"/>:<ChevronRight className="size-3"/>}</span>
-      <ProcessGlyph active={running}/>{showWorker&&<span className={chip(group.worker)}>{group.worker}</span>}
+      {running?<ProcessGlyph active/>:<StatusIcon aria-hidden="true" className={cn('execution-tool-status-icon',statusClass)}/>}{showWorker&&<span className={chip(group.worker)}>{group.worker}</span>}
       <span className="shrink-0">{isTerminal?'终端':toolName}</span>
       {cmd&&<span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{isTerminal?'$ ':''}{cmd}</span>}
-      <span className={cn('ml-auto shrink-0 font-medium',result?.is_error?'text-destructive':'text-muted-foreground')}>{status}</span>
+      <span className={cn('ml-auto shrink-0 font-medium',statusClass)}>{status}</span>
     </button>
     {open&&<div id={panelId} data-search-body className="execution-tool-detail"><div className="execution-terminal-surface" data-terminal={isTerminal}>
       {parts.map(({step,label})=><section key={step.seq} data-search-activity={step.seq} className="execution-terminal-part" aria-label={label}>
