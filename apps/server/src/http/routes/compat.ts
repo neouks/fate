@@ -14,7 +14,7 @@ import {readGraphPage,readGraphNodePage,readBroadcastPage,readLegacyNodePage} fr
 
 import type { FastifyInstance } from "fastify";
 import { RelDerivedFrom, RelYields } from "../../db/exploration.js";
-import { makeFindingsAssetTreeHandler, makeFindingsExportHandler } from "./findings-extra.js";
+import { makeFindingsAssetTreeHandler, makeFindingsExportHandler, taskFindingsWhere } from "./findings-extra.js";
 
 interface CtxNode {
   id: string;
@@ -312,37 +312,53 @@ export function registerCompatRoutes(app: FastifyInstance): void {
 
   app.get("/api/exploration/findings", async (req) => {
     const q = req.query as Record<string, string>;
-    if(q.legacy_node){
-      const tid=Number(q.context_task??q.task),owner=await taskRow(tid);
-      if(!owner)throw Object.assign(new Error('任务不存在'),{statusCode:404});
-      const resolved=await resolveGraphNode(db(),tid,Number(owner.exploration_id),Number(q.legacy_node));
-      if(resolved.node.kind!=='finding')throw Object.assign(new Error('不是发现节点'),{statusCode:404});
-      const row=(await db().query(`SELECT * FROM ${READABLE_FINDINGS} f WHERE node_id=$1`,[resolved.node.id])).rows[0];
-      if(!row)throw Object.assign(new Error('发现不存在'),{statusCode:404});
-      return {...mapFinding(row,await taskRow(resolved.taskID)),report:row.report,...(resolved.inherited?{inherited:true,source_task_id:String(resolved.taskID)}:{})};
+    if (q.legacy_node) {
+      const nodeID = Number(q.legacy_node);
+      if (!/^\d+$/.test(q.legacy_node) || !Number.isSafeInteger(nodeID) || nodeID < 1) {
+        throw Object.assign(new Error("发现节点编号无效"), { statusCode: 400 });
+      }
+      const context = q.context_task ?? q.task ?? "";
+      const { where, params } = await taskFindingsWhere(db(), {}, context);
+      const row = (await db().query(
+        `SELECT * FROM ${READABLE_FINDINGS} f${where} AND f.node_id=$${params.length + 1}`,
+        [...params, nodeID],
+      )).rows[0];
+      if (!row) throw Object.assign(new Error("发现不存在或不属于当前任务及直接来源任务"), { statusCode: 404 });
+      const owner = Number(row.task_id);
+      return {
+        ...mapFinding(row, await taskRow(owner)), report: row.report,
+        ...(owner !== Number(context) ? { inherited: true, source_task_id: String(owner) } : {}),
+      };
     }
     const page = Math.max(q2n(q["page"], 1), 1);
     const limit = Math.min(Math.max(q2n(q["limit"], 20), 1), 100);
-    const params: unknown[] = [];
+    let params: unknown[] = [];
     let where = ` WHERE true`;
     const contextTask = q["context_task"] ?? q["task"] ?? q["task_id"];
-    if (contextTask && Number(contextTask) > 0) {
-      params.push(Number(contextTask));
-      where += ` AND (f.task_id=$${params.length} OR f.task_id IN (SELECT source_task_id FROM task_relations WHERE task_id=$${params.length}))`;
+    if (q.context_task !== undefined) {
+      ({ where, params } = await taskFindingsWhere(db(), q, q.context_task));
+    } else {
+      if (contextTask && Number(contextTask) > 0) {
+        params.push(Number(contextTask));
+        where += ` AND (f.task_id=$${params.length} OR f.task_id IN (SELECT source_task_id FROM task_relations WHERE task_id=$${params.length}))`;
+      }
+      if (q["severity"] && q["severity"] !== "all") {
+        params.push(q["severity"].split(","));
+        where += ` AND f.severity=ANY($${params.length}::text[])`;
+      }
+      if (q["status"] && q["status"] !== "all") {
+        params.push(q["status"].split(","));
+        where += ` AND f.status=ANY($${params.length}::text[])`;
+      }
+      if (q["q"]) {
+        params.push(`%${q["q"]}%`);
+        where += ` AND (f.summary ILIKE $${params.length} OR f.name ILIKE $${params.length} OR f.vulnclass ILIKE $${params.length})`;
+      }
+      if (q.vulnclass && q.vulnclass !== "all") {
+        params.push(q.vulnclass);
+        where += ` AND f.vulnclass=$${params.length}`;
+      }
     }
-    if (q["severity"] && q["severity"] !== "all") {
-      params.push(q["severity"].split(","));
-      where += ` AND f.severity=ANY($${params.length}::text[])`;
-    }
-    if (q["status"] && q["status"] !== "all") {
-      params.push(q["status"].split(","));
-      where += ` AND f.status=ANY($${params.length}::text[])`;
-    }
-    if (q["q"]) {
-      params.push(`%${q["q"]}%`);
-      where += ` AND (f.summary ILIKE $${params.length} OR f.name ILIKE $${params.length} OR f.vulnclass ILIKE $${params.length})`;
-    }
-    if(q.vulnclass && q.vulnclass!=='all'){params.push(q.vulnclass);where+=` AND f.vulnclass=$${params.length}`;}
     const total = await db().query<{ n: string }>(`SELECT count(*) AS n FROM ${READABLE_FINDINGS} f${where}`, params);
     const rows = await db().query(
       `SELECT f.*,(SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id) AS traffic_count,(SELECT count(*) FROM finding_step_images im WHERE im.finding_id=f.id) AS image_count FROM ${READABLE_FINDINGS} f${where} ORDER BY f.created_at ${q.direction==='asc'?'ASC':'DESC'},f.id ${q.direction==='asc'?'ASC':'DESC'} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
@@ -430,6 +446,9 @@ export function registerCompatRoutes(app: FastifyInstance): void {
 
   async function findingByAnyId(idStr: string, record=false): Promise<Record<string, unknown>> {
     const id = Number(idStr);
+    if (!/^\d+$/.test(idStr) || !Number.isSafeInteger(id) || id < 1) {
+      throw Object.assign(new Error("漏洞编号无效"), { statusCode: 400 });
+    }
     let res = await db().query(record?`SELECT * FROM findings WHERE id=$1`:`SELECT * FROM findings WHERE node_id=$1`, [id]);
     if (res.rows.length === 0 && !record) res = await db().query(`SELECT * FROM findings WHERE id=$1`, [id]);
     const row = res.rows[0];
@@ -442,8 +461,14 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const row = await findingByAnyIDGuard(p["id"]!,(req.query as Record<string,string>).id_kind==='record');
     const tid = Number(row["task_id"] ?? 0);
     const out = mapFinding(row, tid > 0 ? await taskRow(tid) : undefined);
-    const context=Number((req.query as Record<string,string>).context_task);
-    if(context && context!==tid){const related=await db().query('SELECT 1 FROM task_relations WHERE task_id=$1 AND source_task_id=$2',[context,tid]);if(!related.rowCount)throw Object.assign(new Error('漏洞不属于任务及直接来源任务'),{statusCode:403});out.inherited=true;out.source_task_id=String(tid);}
+    const context = (req.query as Record<string, string>).context_task;
+    if (context !== undefined) {
+      const scope = await taskFindingsWhere(db(), {}, context);
+      const allowed = await db().query(`SELECT 1 FROM findings f${scope.where} AND f.id=$${scope.params.length + 1}`,
+        [...scope.params, Number(row.id)]);
+      if (!allowed.rowCount) throw Object.assign(new Error("漏洞不属于任务及直接来源任务"), { statusCode: 403 });
+      if (Number(context) !== tid) { out.inherited = true; out.source_task_id = String(tid); }
+    }
     out["report"] = String(row["report"] ?? "");
     out["reproduction"]=row.reproduction??null;out["report_sections"]=row.report_sections??null;out["report_revision"]=Number(row.report_revision??0);
     const assetIDs = Array.isArray(row["asset_ids"]) ? (row["asset_ids"] as number[]) : [];
@@ -466,16 +491,24 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     return row;
   }
 
+  function assertFindingWritableInContext(row: Record<string, unknown>, context: string | undefined) {
+    if (context !== undefined && (!/^\d+$/.test(context) || Number(context) !== Number(row.task_id))) {
+      throw Object.assign(new Error("只能修改当前任务的漏洞"), { statusCode: 403 });
+    }
+  }
+
   app.patch("/api/exploration/findings/:id", async (req) => {
     const p = req.params as Record<string, string>;
     const b = (req.body ?? {}) as Record<string, unknown>;
     const row = await findingByAnyIDGuard(p["id"]!,(req.query as Record<string,string>).id_kind==='record');
+    assertFindingWritableInContext(row, (req.query as Record<string, string>).context_task);
     const sets: string[] = [];
     const params: unknown[] = [];
     for (const [k, col] of [
       ["status", "status"],
       ["severity", "severity"],
       ["name", "name"],
+      ["vulnclass", "vulnclass"],
       ["summary", "summary"],
       ["report", "report"],
     ] as const) {
@@ -494,6 +527,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
   app.delete("/api/exploration/findings/:id", async (req) => {
     const p = req.params as Record<string, string>;
     const row = await findingByAnyIDGuard(p["id"]!,(req.query as Record<string,string>).id_kind==='record');
+    assertFindingWritableInContext(row, (req.query as Record<string, string>).context_task);
     await db().query(`DELETE FROM findings WHERE id=$1`, [Number(row["id"])]);
     if (row["node_id"]) await db().query(`DELETE FROM exploration_nodes WHERE id=$1`, [Number(row["node_id"])]);
     return { deleted: true, id: Number(row["id"]) };

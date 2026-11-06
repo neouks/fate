@@ -62,6 +62,34 @@ function findingWhere(f: FindingFilter): { where: string; params: unknown[] } {
   return { where, params };
 }
 
+/** Task views and their exports use the same predicate against READABLE_FINDINGS. */
+export async function taskFindingsWhere(
+  db: FastifyInstance["db"],
+  q: Record<string, string>,
+  context: string,
+  filtered = true,
+) {
+  const taskID = Number(context);
+  const ownership = q.ownership ?? "all";
+  if (!/^\d+$/.test(context) || !Number.isSafeInteger(taskID) || taskID < 1 ||
+      !["all", "current", "inherited"].includes(ownership)) {
+    throw Object.assign(new Error("发现范围无效"), { statusCode: 400 });
+  }
+  if (!(await db.query("SELECT 1 FROM tasks WHERE id=$1 AND deleted_at IS NULL", [taskID])).rowCount) {
+    throw Object.assign(new Error("任务不存在"), { statusCode: 404 });
+  }
+  const filter = filtered ? parseFilter(q) : {};
+  delete filter.taskID;
+  if (filter.q) filter.q = filter.q.replace(/[\\%_]/g, "\\$&");
+  const { where, params } = findingWhere(filter);
+  params.push(taskID);
+  const param = `$${params.length}`;
+  const current = `f.task_id=${param}`;
+  const inherited = `f.task_id IN (SELECT source_task_id FROM task_relations WHERE task_id=${param}) AND f.task_id<>${param}`;
+  const scope = ownership === "current" ? current : ownership === "inherited" ? inherited : `${current} OR (${inherited})`;
+  return { where: `${where} AND (${scope})`, params };
+}
+
 // ─── 资产树（makeFindingsAssetTreeHandler）───────────────────────────────────
 
 const TREE_FINDING_CAP = 3000;
@@ -313,7 +341,9 @@ export function makeFindingsExportHandler(app: FastifyInstance) {
 
     let where = "";
     let params: unknown[] = [];
-    if (scope === "filtered") {
+    if (q.context_task !== undefined) {
+      ({ where, params } = await taskFindingsWhere(db(), q, q.context_task, scope !== "all"));
+    } else if (scope === "filtered") {
       const w = findingWhere(parseFilter(q));
       where = w.where;
       params = w.params;
@@ -326,17 +356,21 @@ export function makeFindingsExportHandler(app: FastifyInstance) {
         .map((s) => Number(s.trim()))
         .filter((n) => Number.isInteger(n) && n > 0);
       if (ids.length === 0) return reply.code(400).send({ error: "scope=selected 需要 ids（finding_id 逗号列表）" });
-      where = ` WHERE f.id=ANY($1::bigint[])`;
-      params = [ids];
+      params.push(ids);
+      where += ` AND f.id=ANY($${params.length}::bigint[])`;
     }
 
+    const exportLimit = 5000;
     const rows = await db().query(
       `SELECT f.id, f.task_id, f.node_id, COALESCE(f.name,'') AS name, COALESCE(f.vulnclass,'') AS vulnclass,
               COALESCE(f.severity,'') AS severity, COALESCE(f.status,'') AS status,
               COALESCE(f.summary,'') AS summary, COALESCE(f.evidence,'') AS evidence, f.created_at
-       FROM ${READABLE_FINDINGS} f${where} ORDER BY f.created_at DESC LIMIT 5000`,
+       FROM ${READABLE_FINDINGS} f${where} ORDER BY f.created_at DESC, f.id DESC LIMIT ${q.context_task !== undefined ? exportLimit + 1 : exportLimit}`,
       params,
     );
+    if (rows.rows.length > exportLimit) {
+      return reply.code(400).send({ error: `一次最多导出 ${exportLimit} 条发现，请缩小筛选范围或勾选要导出的记录。` });
+    }
     const currentIDs=rows.rows.filter(r=>Number(r.id)>0).map(r=>Number(r.id));
     const details=new Map((await db().query('SELECT id,reproduction,report,report_sections,evidence_version,report_evidence_version FROM findings WHERE id=ANY($1::bigint[]) AND finding_readable(id)',[currentIDs])).rows.map(r=>[String(r.id),r]));
     const imageRows=(await db().query('SELECT finding_id,id,step_id,caption,mime,position,blob_hash FROM finding_step_images WHERE finding_id=ANY($1::bigint[]) ORDER BY finding_id,position,id',[currentIDs])).rows;
