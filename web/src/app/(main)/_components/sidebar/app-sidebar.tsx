@@ -14,9 +14,7 @@ import {
   useSidebar,
   SidebarContent,
   SidebarFooter,
-  SidebarHeader,
   SidebarGroup,
-  SidebarTrigger,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -44,9 +42,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
   return (
     <Sidebar {...props} variant={variant} collapsible={collapsible}>
-      <SidebarHeader className="app-sidebar-header">
-        <SidebarTrigger className="app-sidebar-toggle" aria-label="收起侧栏" title="收起侧栏（⌘B / Ctrl+B）" />
-      </SidebarHeader>
       <SidebarContent className="app-sidebar-content">
         <SidebarGroup>
           <SidebarMenu><SidebarMenuItem><SidebarMenuButton asChild tooltip="新建任务"><Link href="/function/tasks/new" onClick={()=>setOpenMobile(false)}><CirclePlusIcon/><span>新建任务</span></Link></SidebarMenuButton></SidebarMenuItem></SidebarMenu>
