@@ -190,7 +190,7 @@ export function SessionWorkspace({
         <SheetContent
           side="left"
           className={
-            expanded ? "w-full p-0 data-[side=left]:sm:max-w-5xl" : "w-full p-0 data-[side=left]:sm:max-w-xl"
+            expanded ? "w-full p-0 data-[side=left]:sm:max-w-5xl" : "max-w-sm p-0"
           }
           showCloseButton={false}
         >
