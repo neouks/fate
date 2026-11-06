@@ -90,4 +90,26 @@ test("task finding list, export and detail enforce the same direct task boundary
   assert.equal((await app.inject({ method: "PATCH", url: detail(own), payload: { vulnclass: "Updated" } })).json().vulnclass, "Updated");
   assert.equal((await app.inject(`${endpoint}/export?format=csv&scope=all&context_task=bad`)).statusCode, 400);
   assert.equal((await app.inject(`${endpoint}?context_task=${removed.id}`)).statusCode, 404);
+
+  await t.test("completed Worker count is task-scoped and independent of pagination", async () => {
+    await db.query(`INSERT INTO exploration_nodes(exploration_id,kind,state)
+      VALUES ($1,'intent','done'),($1,'intent','done'),($1,'intent','stopped'),($2,'intent','done')`,
+      [current.exploration_id, source.exploration_id]);
+    const url = `/api/exploration/intents?task=${current.id}&limit=1`;
+    const page = async (before?:string) => {
+      const response = await app.inject(before ? `${url}&before=${before}` : url);
+      assert.equal(response.statusCode, 200, response.body);
+      return response.json<{completed_count:number;has_more:boolean;items:Array<{id:string;state:string}>}>();
+    };
+    const latest = await page();
+    assert.equal(latest.items[0]?.state,"stopped");
+    assert.equal(latest.completed_count,2);
+    const older = await page(latest.items[0]!.id);
+    assert.equal(older.completed_count,2);
+    assert.equal(older.items[0]?.state,"done");
+    const last = await page(older.items[0]!.id);
+    assert.equal(last.completed_count,2);
+    assert.equal(last.items[0]?.state,"done");
+    assert.equal(last.has_more,false);
+  });
 });

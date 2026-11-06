@@ -151,16 +151,18 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const q = req.query as Record<string, string>;
     const expID = await expOf(q2n(q["task"], 0));
     const before = q2n(q["before"], 0);
-    const limit = Math.min(q2n(q["limit"], 300), 500);
-    const params: unknown[] = [expID, limit];
+    const limit = Math.max(1, Math.min(q2n(q["limit"], 300), 500));
+    const params: unknown[] = [expID, limit + 1];
     let where = `exploration_id=$1 AND kind='intent' AND exploration_node_readable($1,id)`;
     if (before > 0) {
       params.push(before);
       where += ` AND id < $${params.length}`;
     }
     const rows = await db().query(`SELECT ${NODE_COLS},EXISTS(SELECT 1 FROM engine_worker_slots s JOIN engine_task_leases l ON l.task_id=s.task_id AND l.token=s.token WHERE s.intent_id=exploration_nodes.id AND s.phase='running' AND l.expires_at>now()) executor_active,EXISTS(SELECT 1 FROM runtime_worker_resumes r WHERE r.intent_id=exploration_nodes.id AND r.status='pending') resume_pending FROM exploration_nodes WHERE ${where} ORDER BY id DESC LIMIT $2`, params);
-    const total = await db().query<{ n: string }>(`SELECT count(*) AS n FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND exploration_node_readable($1,id)`, [expID]);
-    return { items: rows.rows.map(row=>({...mapNode(row),executor_active:row.executor_active===true,resume_pending:row.resume_pending===true})), has_more: Number(total.rows[0]?.n ?? 0) > 0 && rows.rows.length >= limit };
+    const completed = await db().query<{ n: string }>(`SELECT count(*) AS n FROM exploration_nodes
+      WHERE exploration_id=$1 AND kind='intent' AND state='done' AND exploration_node_readable($1,id)`, [expID]);
+    return { items: rows.rows.slice(0,limit).map(row=>({...mapNode(row),executor_active:row.executor_active===true,resume_pending:row.resume_pending===true})),
+      has_more: rows.rows.length > limit, completed_count:Number(completed.rows[0]?.n ?? 0) };
   });
 
   // ─── 活动流（列表/详情/历史/搜索）─────────────────────────────────────────
