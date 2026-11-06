@@ -573,7 +573,7 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .task-launcher-card { min-width: 0; border: 1px solid var(--border); border-radius: 24px; background: var(--card); box-shadow: 0 12px 36px color-mix(in oklch,var(--foreground) 5%,transparent); overflow: hidden; }
 .task-launcher-field { padding: 22px 24px 14px; }
 .task-launcher-field textarea { min-height: 150px; max-height: 360px; resize: vertical; border: 0; border-radius: 4px; padding: 4px 0; box-shadow: none; background: transparent; font-size: var(--text-base); line-height: 1.8; }
-.task-launcher-field textarea:focus-visible { box-shadow: none; outline: 2px solid var(--ring); outline-offset: 4px; }
+.task-launcher-field textarea:focus-visible { box-shadow: none; outline: none; }
 .task-launcher-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 16px 14px; color: var(--muted-foreground); }
 .task-launcher-toolbar span { font-size: var(--text-sm); margin-left: 4px; }
 .task-launcher-confirmation { --card-spacing: 24px; }
