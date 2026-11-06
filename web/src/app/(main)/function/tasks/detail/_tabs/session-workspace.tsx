@@ -1,10 +1,9 @@
 "use client";
+
 import * as React from "react";
-import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Maximize2, Minimize2, X } from "lucide-react";
+import { ArrowLeft, ChevronUp, ListTodo } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   MessageScrollerProvider,
   MessageScroller,
@@ -17,190 +16,154 @@ import { WorkspaceEmpty, WorkspaceError } from "@/components/workspace";
 import type { Activity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export function MainConversation({
-  taskId,
-  items,
-  live,
-  stopping,
-  error,
-  loading,
-  hasMore,
-  onEarlier,
-  onRetry,
-  composer,
-  heading,
-  focused,
+export type TranscriptPositions = Map<string, { top: number; pinned: boolean }>;
+
+export function SessionTranscript({
+  taskId, sessionKey, items, live, stopping, chat, error, loading, loadingMore,
+  hasMore, onEarlier, onRetry, positions,
 }: {
   taskId: string;
+  sessionKey: string;
   items: Activity[];
   live: boolean;
-  stopping: boolean;
+  stopping?: boolean;
+  chat?: boolean;
   error?: string;
   loading?: boolean;
+  loadingMore?: boolean;
   hasMore?: boolean;
-  onEarlier: () => void;
+  onEarlier: (viewport: HTMLElement) => void;
   onRetry: () => void;
-  composer: React.ReactNode;
-  heading: React.ReactNode;
-  focused?: React.ReactNode;
+  positions: TranscriptPositions;
 }) {
+  const viewport = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const saved = positions.get(sessionKey);
+    if (saved && !saved.pinned && viewport.current) viewport.current.scrollTop = saved.top;
+  }, [positions, sessionKey]);
+
   return (
-    <section aria-label="主 Agent 对话" className="task-main-conversation flex h-full min-h-0 min-w-0 flex-col">
-      <div className="flex min-h-12 shrink-0 items-center justify-between gap-3 px-6 py-2 text-sm text-muted-foreground">
-        {heading}
-      </div>
-      {focused || (
-        <MessageScrollerProvider autoScroll>
-          <MessageScroller>
-            <MessageScrollerViewport preserveScrollOnPrepend>
-              <MessageScrollerContent>
-                {hasMore && (
-                  <Button variant="ghost" size="sm" disabled={loading} onClick={onEarlier}>
-                    加载更早对话
-                  </Button>
-                )}
-                {error ? (
-                  <WorkspaceError error={error} onRetry={onRetry} />
-                ) : !items.length ? (
-                  <WorkspaceEmpty
-                    title={loading ? "正在同步对话…" : "开始任务对话"}
-                    description="向主 Agent 提问或调整任务；从左侧 Agent 列表选择会话查看执行过程。"
-                  />
-                ) : (
-                  <Transcript
-                    activity={items}
-                    scrollItems
-                    live={live}
-                    taskId={taskId}
-                    chat
-                    pendingStatus={stopping ? "stopping" : undefined}
-                  />
-                )}
-              </MessageScrollerContent>
-            </MessageScrollerViewport>
-            <MessageScrollerButton />
-          </MessageScroller>
-        </MessageScrollerProvider>
-      )}
-      {composer}
-    </section>
+    <MessageScrollerProvider autoScroll={positions.get(sessionKey)?.pinned ?? true}>
+      <MessageScroller>
+        <MessageScrollerViewport
+          ref={viewport}
+          preserveScrollOnPrepend
+          onScroll={(event) => {
+            const node = event.currentTarget;
+            if (!node.clientHeight) return;
+            const top = node.scrollTop;
+            positions.set(sessionKey, { top, pinned: top + node.clientHeight >= node.scrollHeight - 60 });
+            if (top <= 80 && hasMore && !loading && !loadingMore) onEarlier(node);
+          }}
+        >
+          <MessageScrollerContent className="gap-2 p-4">
+            {hasMore && (
+              <Button variant="ghost" size="sm" disabled={loading || loadingMore} onClick={() => viewport.current && onEarlier(viewport.current)}>
+                {loadingMore ? "加载更早记录…" : "加载更早记录"}
+              </Button>
+            )}
+            {error ? (
+              <WorkspaceError error={error} onRetry={onRetry} />
+            ) : items.length ? (
+              <Transcript activity={items} scrollItems live={live} taskId={taskId} chat={chat}
+                pendingStatus={stopping ? "stopping" : undefined} />
+            ) : (
+              <WorkspaceEmpty title={loading ? "正在同步记录…" : chat ? "开始任务对话" : "暂无执行记录"} />
+            )}
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+        <MessageScrollerButton />
+      </MessageScroller>
+    </MessageScrollerProvider>
   );
 }
+
 export function SessionWorkspace({
-  main,
-  list,
-  detail,
-  open,
-  onOpenChange,
-  onBack,
-  showDetail,
-  primaryDetail,
-  primaryDetailKey,
-  primaryDetailLabel = "Worker 会话",
+  planner, list, detail, composer, open, onOpenChange, onBack, completedCount,
 }: {
-  main: React.ReactNode;
+  planner: React.ReactNode;
   list: React.ReactNode;
   detail: React.ReactNode;
+  composer: React.ReactNode;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onBack: () => void;
-  showDetail: boolean;
-  primaryDetail?: React.ReactNode;
-  primaryDetailKey?: string;
-  primaryDetailLabel?: string;
+  completedCount: number | null;
 }) {
-  const settingsOpen = useSearchParams().get("settings") === "true";
-  const [wide, setWide] = React.useState(false),
-    [expanded, setExpanded] = React.useState(false);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const backRef = React.useRef<HTMLButtonElement>(null);
+  const moveFocus = React.useRef(false);
+  const [visited, setVisited] = React.useState(false);
+  const showingDetail = !!detail;
   React.useEffect(() => {
-    const media = window.matchMedia("(min-width:1280px)");
-    const update = () => setWide(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-  React.useEffect(() => {
-    if (!primaryDetailKey) return;
-    setExpanded(false);
-    // Selecting a Worker reveals the main content underneath the mobile list.
-    // Do not depend on `open`: users can reopen the list to choose another one.
-    if (!window.matchMedia("(min-width:1280px)").matches) onOpenChange(false);
-  }, [primaryDetailKey, onOpenChange]);
-  const panel = (
-    <div className="task-process">
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-        {showDetail && (
-          <Button variant="ghost" size="icon-sm" aria-label="返回 Agent 列表" onClick={onBack}>
-            <ArrowLeft />
-          </Button>
-        )}
-        <span className="flex-1 text-sm font-medium">执行过程</span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={expanded ? "缩小执行过程" : "放大执行过程"}
-          onClick={() => setExpanded((v) => !v)}
-        >
-          {expanded ? <Minimize2 /> : <Maximize2 />}
-        </Button>
-        <Button variant="ghost" size="icon-sm" aria-label="关闭执行过程" onClick={() => onOpenChange(false)}>
-          <X />
-        </Button>
-      </div>
-      <div hidden={showDetail} className="min-h-0 flex-1 overflow-hidden">
-        {list}
-      </div>
-      <div hidden={!showDetail} className="min-h-0 flex-1 overflow-hidden">
-        {detail}
-      </div>
-    </div>
-  );
-  return (
-    <div className="h-full min-h-0 min-w-0">
-      <ResizablePanelGroup orientation="horizontal">
-        {wide && open && !expanded && (
-          <>
-            <ResizablePanel id="process" defaultSize="360px" minSize="300px" maxSize="65%">
-              {panel}
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-          </>
-        )}
+    if (!open) return;
+    setVisited(true);
+    if (moveFocus.current) {
+      moveFocus.current = false;
+      panelRef.current?.focus();
+    }
+  }, [open]);
+  React.useLayoutEffect(() => {
+    const focused = document.activeElement;
+    if (open && showingDetail && (focused === document.body || panelRef.current?.contains(focused))) {
+      backRef.current?.focus({ preventScroll: true });
+    }
+  }, [open, showingDetail]);
+  const toggle = (next: boolean) => {
+    onOpenChange(next);
+    if (!next) triggerRef.current?.focus();
+  };
 
-        <ResizablePanel id="main" minSize="320px">
-          <div className="relative h-full min-h-0 min-w-0">
-            {/* Keep the Main scroller and composer mounted at the same size. */}
-            <div className={cn("h-full min-h-0", primaryDetail && "invisible pointer-events-none")} aria-hidden={primaryDetail ? true : undefined} inert={primaryDetail ? true : undefined}>
-              {main}
-            </div>
-            {primaryDetail && (
-              <section aria-label={primaryDetailLabel} className="task-worker-conversation absolute inset-0 flex min-h-0 min-w-0 flex-col bg-card">
-                <div className="flex h-12 shrink-0 items-center border-b px-3">
-                  <Button variant="ghost" size="sm" onClick={onBack}>
-                    <ArrowLeft data-icon="inline-start" />返回主对话
+  return (
+    <div className="task-main-conversation flex h-full min-h-0 min-w-0 flex-col">
+      <section aria-label="Planner 执行记录" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {planner}
+      </section>
+      <div className="task-composer flex flex-col gap-2">
+        <Collapsible open={open} onOpenChange={toggle} className="flex flex-col gap-2">
+          <CollapsibleContent forceMount className="task-agent-tray min-h-0 overflow-hidden rounded-xl border bg-card data-[state=closed]:hidden">
+            <div
+              ref={panelRef}
+              role="region"
+              aria-label="任务会话"
+              tabIndex={-1}
+              className="flex h-full min-h-0 flex-col"
+              onKeyDown={(event) => {
+                if (event.key !== "Escape" || event.defaultPrevented) return;
+                event.stopPropagation();
+                toggle(false);
+              }}
+            >
+              {detail && (
+                <div className="flex shrink-0 items-center border-b px-2 py-1">
+                  <Button ref={backRef} variant="ghost" size="sm" onClick={() => { onBack(); panelRef.current?.focus(); }}>
+                    <ArrowLeft data-icon="inline-start" />
+                    返回列表
                   </Button>
                 </div>
-                <div className="min-h-0 flex-1 overflow-hidden">{primaryDetail}</div>
-              </section>
-            )}
-          </div>
-        </ResizablePanel>
-      </ResizablePanelGroup>
-      <Sheet open={open && !settingsOpen && (!wide || expanded)} onOpenChange={onOpenChange}>
-        <SheetContent
-          side="left"
-          className={
-            expanded ? "w-full p-0 data-[side=left]:sm:max-w-5xl" : "max-w-sm p-0"
-          }
-          showCloseButton={false}
-        >
-          <SheetHeader className="sr-only">
-            <SheetTitle>执行过程</SheetTitle>
-            <SheetDescription>查看 Agent 列表和完整执行记录</SheetDescription>
-          </SheetHeader>
-          {panel}
-        </SheetContent>
-      </Sheet>
+              )}
+              {(visited || open) && <div hidden={!!detail} className="min-h-0 flex-1 overflow-hidden">{list}</div>}
+              {detail && <div className="min-h-0 flex-1 overflow-hidden">{detail}</div>}
+            </div>
+          </CollapsibleContent>
+          <CollapsibleTrigger asChild>
+            <Button
+              ref={triggerRef}
+              type="button"
+              variant="secondary"
+              className="h-11 w-full justify-start gap-3 rounded-xl px-4"
+              onClick={() => { moveFocus.current = !open; }}
+            >
+              <ListTodo data-icon="inline-start" />
+              <span>任务</span>
+              {completedCount !== null && <span className="text-muted-foreground">{completedCount.toLocaleString()} 个 Worker 已完成</span>}
+              <ChevronUp data-icon="inline-end" className={cn("ml-auto transition-transform motion-reduce:transition-none", open && "rotate-180")} />
+            </Button>
+          </CollapsibleTrigger>
+        </Collapsible>
+        {composer}
+      </div>
     </div>
   );
 }

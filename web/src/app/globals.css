@@ -322,9 +322,9 @@ html {
 .task-composer textarea { min-height: 84px; font-size: var(--text-base); }
 .task-scroll-panel { height: 100%; min-height: 0; overflow: auto; padding: 1.5rem; }
 .task-scroll-panel > * { min-width: 0; }
-.task-worker-conversation [data-slot="message-scroller-content"] { width: 100%; max-width: none; }
-.task-process { min-width: 0; height: 100%; display: flex; flex-direction: column; background: var(--card); }
-.task-process [data-slot="bubble-content"], .task-worker-conversation [data-slot="bubble-content"] { font-size: var(--text-base); line-height: 1.65; }
+.task-agent-tray { height: min(48dvh, 29rem); }
+.task-main-conversation .task-agent-tray [data-slot="message-scroller-content"] { max-width: none; padding: 1rem; gap: .75rem; }
+.task-main-conversation .task-agent-tray [data-slot="bubble-content"] { line-height: 1.65; }
 @media (max-width: 639px) { .task-scroll-panel { padding: 1rem; } .task-composer { padding: .5rem .75rem; } .task-main-conversation [data-slot="message-scroller-content"] { padding: 1rem; } }
 
 .task-main-conversation .transcript-markdown { font-size: var(--text-base); line-height: 1.75; }

@@ -807,9 +807,10 @@ export const api = {
     if (task) q.set("task", task);
     q.set("before", String(before > 0 ? before : 0));
     q.set("page", "1"); // marker so the backend returns the paged {items,has_more} shape
-    return get<{ items: TaskNode[]; has_more: boolean }>(`/exploration/intents?${q.toString()}`).then((r) => ({
+    return get<{ items: TaskNode[]; has_more: boolean; completed_count?: number }>(`/exploration/intents?${q.toString()}`).then((r) => ({
       items: arr(r.items),
       hasMore: !!r.has_more,
+      completedCount: typeof r.completed_count === "number" ? r.completed_count : null,
     }));
   },
 

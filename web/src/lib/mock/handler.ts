@@ -2497,15 +2497,18 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       page_size: pageSize,
     };
   }
+  if ((seg[0] === "tasks" || seg[0] === "conversations") && seg[2] === "turns" && m === "GET") {
+    return { items: [] };
+  }
   if (path === "/exploration/intents") {
+    const visible = task === D.tasks[0]?.id ? mockIntents.filter(intent=>!intent.inherited) : [];
     if (q.has("page")) {
       const before = Number(q.get("before") ?? 0);
       const limit = Math.max(1, Number(q.get("limit") ?? 300));
-      let list = mockIntents;
-      if (before > 0) list = list.filter((intent) => Number(intent.id.replace(/\D/g, "") || intent.id) < before);
-      return { items: list.slice(0, limit), has_more: list.length > limit };
+      const list = before > 0 ? visible.filter((intent) => Number(intent.id.replace(/\D/g, "") || intent.id) < before) : visible;
+      return { items: list.slice(0, limit), has_more: list.length > limit, completed_count:visible.filter(intent=>intent.state==="done").length };
     }
-    return mockIntents;
+    return visible;
   }
   if (path === "/exploration/tokens") {
     const selectedTask = task ? mockTasks.find((item) => item.id === task) : undefined;
@@ -2581,7 +2584,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/exploration/activity" && seg.length === 2) {
     const since = Number(q.get("since") ?? 0);
     const limit = Math.max(1, Number(q.get("limit") ?? 300));
-    const items = mockActivity.filter((item) => item.seq > since).slice(0, limit);
+    const items = (!task || task === D.tasks[0]?.id ? mockActivity : []).filter((item) => item.seq > since).slice(0, limit);
     return { items, cursor: items.length ? items[items.length - 1].seq : since };
   }
   if (path === "/exploration/activity/search") {

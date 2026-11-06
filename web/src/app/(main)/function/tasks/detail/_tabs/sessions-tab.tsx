@@ -4,7 +4,6 @@ import {notifyTurnSummaries} from '@/lib/turn-summary';
 import { preserveTranscriptPosition } from "@/lib/transcript-scroll";
 import { openActivityStream } from "@/lib/activity-event-source";
 import { withLiveStreams, mergeConversationActivities, type StreamSnapshot } from "@/lib/conversation-turns";
-import { MessageScrollerProvider, MessageScroller, MessageScrollerViewport, MessageScrollerContent, MessageScrollerButton } from "@/components/ui/message-scroller";
 import * as React from "react";
 import {useWorkspaceState} from "@/hooks/use-workspace-state";
 import { lastMainActivity } from "@/lib/worker-feedback";
@@ -17,7 +16,6 @@ import {
   SlidersHorizontalIcon,
   GaugeIcon,
   BrainIcon,
-  ChevronDownIcon,
   CircleCheckIcon,
   CircleSlashIcon,
   CircleXIcon,
@@ -42,7 +40,6 @@ import {
 import { toast } from "sonner";
 
 import { TodoPopover } from "@/components/todo-popover";
-import { Transcript } from "@/components/transcript";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -83,7 +80,7 @@ import type {
 import { cn } from "@/lib/utils";
 
 import { RelatedSessions, RelatedSessionDetail } from "./related-sessions";
-import { MainConversation, SessionWorkspace } from "./session-workspace";
+import { SessionTranscript, SessionWorkspace, type TranscriptPositions } from "./session-workspace";
 import { WorkerQueue } from "./worker-queue";
 
 // resolutionLabel names the LLM a session runs on. The badge shows this alone and
@@ -497,14 +494,16 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
 
 export function SessionsTab({
   taskId,
-  processOpen, onProcessOpenChange, onOpenSettings,
+  onOpenSettings,
   workerExecutionAllowed = true,
 }: {
   taskId: string;
   workerExecutionAllowed?: boolean;
-  processOpen: boolean; onProcessOpenChange: (open:boolean)=>void;
   onOpenSettings?:()=>void;
 }) {
+  const [processOpen, setProcessOpen] = React.useState(false);
+  const [showDetail, setShowDetail] = React.useState(false);
+  const [completedCount, setCompletedCount] = React.useState<number | null>(null);
   const [relatedSession,setRelatedSession]=React.useState<import("@/lib/types").Conversation|null>(null);
   const [selectedSessionId, setActiveId] = React.useState(PLANNER_ID);
   const [sourceIntent, setSourceIntent] = React.useState<TaskNode | null>(null);
@@ -515,6 +514,8 @@ export function SessionsTab({
   const focusSeq = Number(params.get("activity"));
   const focused =
     Number.isSafeInteger(focusSeq) && focusSeq > 0 && /^(main:\d+|plan|intent:[1-9]\d*)$/.test(focusSession);
+  const plannerFocused = focused && focusSession === "plan";
+  const panelFocused = focused && !plannerFocused;
   const invalidFocus = (params.has("session") || params.has("activity")) && !focused;
   const clearFocus = () => {
     const next = new URLSearchParams(params);
@@ -526,13 +527,8 @@ export function SessionsTab({
   // Main-agent conversation segments (newest-first); currentSeg is the writable one.
   const [mainSegs, setMainSegs] = React.useState<{ seq: number; created_at: string }[]>([{ seq: 0, created_at: "" }]);
   const [currentSeg, setCurrentSeg] = React.useState(0);
-  const [viewedMainSeg,setViewedMainSeg]=React.useState<number|null>(null);
   const [creatingMain, setCreatingMain] = React.useState(false);
   const [confirmNewMain, setConfirmNewMain] = React.useState(false);
-  // 手机端（<lg）会话列表默认折叠：屏幕高度本就紧张，列表若固定占掉 10~15rem，
-  // 下方的会话记录会被挤到只剩标题与输入框。折叠后记录区拿到几乎全部高度，
-  // 点标题栏可展开选会话，选完自动收起。桌面端不受影响（lg 起始终展开）。
-  const [listOpen, setListOpen] = React.useState(true);
   // Per-session lazily-loaded caches, keyed by session_key (main | plan | intent:<id>).
   const [store, setStore] = React.useState<SessionStore>({});
   // Worker sessions derived from exploration intents (paged past the old 300 cap).
@@ -595,7 +591,10 @@ export function SessionsTab({
       // Seed an empty, loaded state so the new (empty) session renders immediately.
       setStore((prev) => ({ ...prev, [mainSessionKey(r.seq)]: { ...emptyState(), loaded: true } }));
       setActiveId(mainSessionId(r.seq));
-      setListOpen(false);
+      setRelatedSession(null);
+      clearFocus();
+      setShowDetail(true);
+      setProcessOpen(true);
       setInput("");
     } catch (e) {
       toast.error(`新建会话失败：${(e as Error).message}`);
@@ -707,8 +706,10 @@ export function SessionsTab({
   const esRef = React.useRef<ReturnType<typeof openActivityStream> | null>(null);
   // Transient provider text is separate from the durable, sequence-numbered transcript.
   const [streaming, setStreaming] = React.useState<StreamSnapshot[]>([]);
-  const activeKeyRef = React.useRef(mainSessionKey(0)); // current session key (for SSE dispatch/unread)
-  const atBottomRef = React.useRef(true); // transcript pinned to bottom?
+  const activeKeyRef = React.useRef("plan");
+  const [plannerPositions] = React.useState<TranscriptPositions>(() => new Map());
+  const [detailPositions] = React.useState<TranscriptPositions>(() => new Map());
+  const [olderLoads] = React.useState(() => new Set<string>());
   const llmToastSeqRef = React.useRef<Set<number>>(new Set());
   const chatStatusRequestRef = React.useRef(0);
   const firstIntentsRef = React.useRef<TaskNode[]>([]);
@@ -812,7 +813,8 @@ export function SessionsTab({
   const loadEarlier = React.useCallback(
     (key: string, viewport: () => HTMLElement | null) => {
       const st = store[key];
-      if (!st || st.loadingMore || !st.hasMore || !st.earliestSeq) return;
+      if (!st || st.loadingMore || !st.hasMore || !st.earliestSeq || olderLoads.has(key)) return;
+      olderLoads.add(key);
       const restore = preserveTranscriptPosition(viewport());
       patchStore(key, (s) => ({ ...s, loadingMore: true }));
       api
@@ -832,9 +834,9 @@ export function SessionsTab({
         })
         .catch(() => {
           patchStore(key, (s) => ({ ...s, loadingMore: false }));
-        }).finally(restore);
+        }).finally(() => { olderLoads.delete(key); restore(); });
     },
-    [taskId, store, patchStore],
+    [taskId, store, patchStore, olderLoads],
   );
 
   // ── task token total (whole task, all agents) ───────────────────────────────────
@@ -951,7 +953,7 @@ export function SessionsTab({
       }
       pending = [];
       const activeK = activeKeyRef.current;
-      const atBottom = atBottomRef.current;
+
       setStore((prev) => {
         const next = { ...prev };
         for (const [key, batch] of batches) {
@@ -971,7 +973,9 @@ export function SessionsTab({
           let hasMore = cur.hasMore;
           let earliestSeq = cur.earliestSeq;
           // Preserve scrolled-up history; trimmed rows remain available via pagination.
-          if ((key !== activeK || atBottom) && items.length > MAX_KEEP) {
+          const reading = (key === "plan" && plannerPositions.get(key)?.pinned === false) ||
+            (key === activeK && detailPositions.get(key)?.pinned === false);
+          if (!reading && items.length > MAX_KEEP) {
             items = items.slice(-MAX_KEEP);
             hasMore = true;
             earliestSeq = items[0].seq;
@@ -982,7 +986,7 @@ export function SessionsTab({
             lastTs,
             hasMore,
             earliestSeq,
-            unread: key === activeK ? 0 : cur.unread + batch.length,
+            unread: key === activeK || key === "plan" ? 0 : cur.unread + batch.length,
           };
         }
         return next;
@@ -1011,12 +1015,14 @@ export function SessionsTab({
           }
           buckets[mainSessionKey(0)] ??= { ...emptyState(), loaded: true };
           buckets.system ??= { ...emptyState(), loaded: true };
+          buckets.plan ??= { ...emptyState(), loaded: true };
           setStore(buckets);
         })
         .catch(() =>
           setStore({
             [mainSessionKey(0)]: { ...emptyState(), loaded: true },
             system: { ...emptyState(), loaded: true },
+            plan: { ...emptyState(), loaded: true },
           }),
         );
       return () => {
@@ -1127,7 +1133,7 @@ export function SessionsTab({
       setStreaming([]);
       esRef.current = null;
     };
-  }, [taskId, patchStore]);
+  }, [taskId, patchStore, plannerPositions, detailPositions]);
 
   React.useEffect(() => {
     let active = true;
@@ -1189,8 +1195,10 @@ export function SessionsTab({
           firstIntentsRef.current = r.items;
           setIntents(r.items);
           setFirstIntentsHasMore(r.hasMore);
+          setCompletedCount(r.completedCount);
         })
         .catch(() => {
+          if (active) setCompletedCount(null);
           // Polling is best-effort; the next interval retries automatically.
         })
         .finally(() => {
@@ -1393,6 +1401,7 @@ export function SessionsTab({
       if (failures.length) toast.error("部分 Worker 未删除，已保留选择", { description: failures.join("；") });
       const fresh = await api.intentsPage(taskId, 0, 300);
       setIntents(fresh.items.filter((item) => !deletedWorkerIds.current.has(item.id)));
+      setCompletedCount(fresh.completedCount);
     } catch (e) {
       toast.error(`刷新失败：${(e as Error).message}`);
     } finally {
@@ -1437,11 +1446,9 @@ export function SessionsTab({
     system: sessions.filter((s) => s.role === "system"),
   };
 
-  const focusedSession: Session | undefined = focused
+  const focusedSession: Session | undefined = panelFocused
     ? sessions.find((s) => keyForSession(s) === focusSession) ||
-      (focusSession === "plan"
-        ? PLANNER_SESSION
-        : focusSession.startsWith("main:")
+      (focusSession.startsWith("main:")
           ? {
               ...MAIN_SESSION,
               id: mainSessionId(Number(focusSession.split(":")[1])),
@@ -1471,41 +1478,23 @@ export function SessionsTab({
   // main segment is mid-turn the active composer is disabled. Clear it the moment the
   // active session's terminal record (kind='result', or an error) lands, so the input
   // re-enables immediately instead of waiting for the next chat-status poll.
-  const activeItems = activeState?.items ?? [];
-  const activeLast = lastMainActivity(activeItems);
-  const activeSettled =
-    !!activeLast && (activeLast.kind === "result" || (activeLast.kind === "text" && activeLast.is_error));
-  const mainSeg=isMain?(active.seg??currentSeg):(viewedMainSeg??currentSeg);
-  const mainKey=mainSessionKey(mainSeg);
-  const mainState=store[mainKey];
-  const mainBusy=sending||(mainChatRunning??recentLive(mainKey));
-  React.useEffect(()=>{if(isMain)setViewedMainSeg(active.seg??currentSeg);},[isMain,active.seg,currentSeg]);
-  React.useEffect(()=>{loadSession(mainKey);},[mainKey,loadSession]);
-  React.useEffect(()=>{
-    if(focused)onProcessOpenChange(!isMain&&(active.role!=="worker"||window.matchMedia("(min-width:1280px)").matches));
-  },[focused,isMain,active.role,onProcessOpenChange]);
-  // 折叠态（手机端）标题栏要替代整张列表：显示当前会话名 + 其它会话的未读合计，
-  // 否则收起后既不知道自己在看哪个会话，也看不到别处有新消息。
-  const activeDisplayTitle = (active.role === "worker" ? sessionMeta.get(active.id)?.title : "") || active.title;
-  const hiddenUnread = React.useMemo(
-    () => Object.entries(store).reduce((sum, [key, s]) => (key === activeKey ? sum : sum + s.unread), 0),
-    [store, activeKey],
-  );
-
-  // Keep the SSE dispatcher's notion of the active session current, and lazily load
-  // + clear unread whenever the active session changes. Recheck after boot resolves
-  // the current segment: it releases the initial main:0 reservation, which may
-  // still be selected by an activity link into an older segment.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cache updates must not reactivate the current session.
+  const mainBusy = sending || (mainChatRunning ?? recentLive(currentMainKey));
+  const detailVisible = showDetail || panelFocused || invalidFocus;
   React.useEffect(() => {
-    activeKeyRef.current = activeKey;
-    const st = store[activeKey];
-    if (!st || (!st.loaded && !st.loading)) {
-      loadSession(activeKey);
-    } else if (st.unread) {
-      patchStore(activeKey, (s) => ({ ...s, unread: 0 }));
-    }
-  }, [activeKey, currentSeg]);
+    if (panelFocused || invalidFocus) setProcessOpen(true);
+  }, [panelFocused, invalidFocus, focusSession, focusSeq]);
+  React.useEffect(() => { loadSession("plan"); }, [loadSession]);
+
+  const visibleKey = processOpen && detailVisible && !relatedSession ? activeKey : "plan";
+  // The task stream remains mounted. Open only the selected history and clear
+  // unread counts for the currently visible detail.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cache updates must not reactivate a session.
+  React.useEffect(() => {
+    activeKeyRef.current = visibleKey;
+    const state = store[visibleKey];
+    if (!state || (!state.loaded && !state.loading)) loadSession(visibleKey);
+    else if (state.unread) patchStore(visibleKey, (s) => ({ ...s, unread: 0 }));
+  }, [visibleKey, currentSeg]);
 
   // Main agent is the human↔orchestrator CONSOLE: only the conversation (user msgs +
   // the main agent's own replies/steps). Planner session shows planner steps; a
@@ -1583,23 +1572,6 @@ export function SessionsTab({
   }, [activity]);
   const runDuration = runSpan ? Math.max(0, (active.live || workerExiting ? tick : runSpan.max) - runSpan.min) : null;
 
-  // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
-  const contentRef = React.useRef<HTMLDivElement | null>(null);
-  const viewport = React.useCallback(
-    () => (contentRef.current?.closest('[data-slot="scroll-area-viewport"], [data-slot="message-scroller-viewport"]') as HTMLElement | null) ?? null,
-    [],
-  );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: activeId intentionally rebinds the scroll listener.
-  React.useEffect(() => {
-    const vp = viewport();
-    if (!vp) return;
-    const onScroll = () => {
-      atBottomRef.current = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 60;
-      if (vp.scrollTop <= 80) loadEarlier(activeKeyRef.current, viewport); // near top → older page
-    };
-    vp.addEventListener("scroll", onScroll, { passive: true });
-    return () => vp.removeEventListener("scroll", onScroll);
-  }, [viewport, focused, activeId, loadEarlier]);
   function stop() {
     if (stopping) return;
     setStopping(true);
@@ -1611,17 +1583,25 @@ export function SessionsTab({
   function send() {
     const text = input.trim();
     const atts = attachments;
-    if ((!text && atts.length === 0) || sending || mainBusy) return;
+    if ((!text && atts.length === 0) || !mainLoaded || sending || mainBusy) return;
     const requestID=crypto.randomUUID();
-    const sentKey=mainKey;
-    patchStore(sentKey,s=>({...s,items:mergeBySeq(s.items,[{seq:-Date.now(),worker:"mainagent",main_seg:mainSeg,kind:"user",summary:text,detail:text,ts:new Date().toISOString(),turn_id:requestID,metadata:{turn_id:requestID,attachments:atts}}])}));
+    const sentKey=currentMainKey;
+    if (panelFocused || invalidFocus) clearFocus();
+    setRelatedSession(null);
+    setActiveId(mainSessionId(currentSeg));
+    setShowDetail(true);
+    setProcessOpen(true);
+    patchStore(sentKey,s=>({...s,items:mergeBySeq(s.items,[{seq:-Date.now(),worker:"mainagent",main_seg:currentSeg,kind:"user",summary:text,detail:text,ts:new Date().toISOString(),turn_id:requestID,metadata:{turn_id:requestID,attachments:atts}}])}));
     setInput("");
     setAttachments([]);
     setSending(true);
     chatStatusRequestRef.current++;
     api
-      .chat(text, taskId, atts.length > 0 ? atts : undefined, mainSeg,requestID)
-      .then(({ mode }) => {
+      .chat(text, taskId, atts.length > 0 ? atts : undefined, currentSeg,requestID)
+      .then(({ mode, reply }) => {
+        if (MOCK && reply) patchStore(sentKey, s => ({...s, items:mergeBySeq(s.items, [{
+          seq:-Date.now()-1, worker:"mainagent", main_seg:currentSeg, kind:"text", summary:reply, detail:reply, ts:new Date().toISOString(), turn_id:requestID,
+        }])}));
         chatStatusRequestRef.current++;
         setMainChatRunning(mode === "llm");
       })
@@ -1655,7 +1635,7 @@ export function SessionsTab({
     active.role === "worker" && active.intent_id ? intentAssetsByID.get(active.intent_id) : undefined;
 
   const composer=(
-<div className="task-composer">
+<div>
                 {attachments.length > 0 && (
                   <div className="mb-2 flex flex-wrap gap-1.5">
                     {attachments.map((a) => (
@@ -1691,9 +1671,9 @@ export function SessionsTab({
                   <MentionTextarea
                     inputGroup
                     rows={1}
-                    aria-label="给主 Agent 发消息"
+                    aria-label="给主 Agent 当前会话发消息"
                     placeholder={
-                      mainBusy ? "主 Agent 正在运行，可输入 /btw 提问…" : "给主 Agent 发消息，@ 引用漏洞、资产等…"
+                      mainBusy ? "主 Agent 正在运行，可输入 /btw 提问…" : "给主 Agent 当前会话发消息，@ 引用漏洞、资产等…"
                     }
                     value={input}
                     disabled={sending}
@@ -1740,7 +1720,7 @@ export function SessionsTab({
                         size="icon-sm"
                         variant="default"
                         onClick={send}
-                        disabled={(!input.trim() && attachments.length === 0) || sending}
+                        disabled={(!input.trim() && attachments.length === 0) || !mainLoaded || sending}
                         title="发送消息"
                         aria-label="发送消息"
                       >
@@ -1756,30 +1736,7 @@ export function SessionsTab({
         <div className="flex h-full min-h-0 flex-col overflow-hidden bg-card">
           <div className="border-b px-3 py-2">
             <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setListOpen(true)}
-                aria-expanded={listOpen}
-                aria-controls="session-list-panel"
-                className="flex min-w-0 flex-1 items-center gap-1 text-left text-xs font-medium text-muted-foreground lg:pointer-events-none"
-              >
-                <ChevronDownIcon
-                  className={cn("size-3.5 shrink-0 transition-transform lg:hidden", !listOpen && "-rotate-90")}
-                />
-                <span className="shrink-0">会话列表</span>
-                {!listOpen && (
-                  <>
-                    <span className="min-w-0 truncate text-foreground lg:hidden" title={activeDisplayTitle}>
-                      · {activeDisplayTitle}
-                    </span>
-                    {hiddenUnread > 0 && (
-                      <span className="inline-flex min-w-4 shrink-0 items-center justify-center rounded-md bg-blue-500/15 px-1 text-[10px] font-medium tabular-nums text-blue-600 lg:hidden dark:text-blue-400">
-                        {hiddenUnread > 99 ? "99+" : hiddenUnread}
-                      </span>
-                    )}
-                  </>
-                )}
-              </button>
+              <span className="text-xs font-medium text-muted-foreground">会话列表</span>
               {!MOCK && (
                 <span
                   className={cn(
@@ -1826,10 +1783,7 @@ export function SessionsTab({
           <ScrollArea
             id="session-list-panel"
             type="auto"
-            className={cn(
-              "min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!",
-              !listOpen && "max-lg:hidden",
-            )}
+            className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!"
           >
             <div className="flex w-full flex-col gap-3 p-2">
               {(["mainagent", "planner", "system", "worker"] as const).map((role) => {
@@ -1963,10 +1917,10 @@ export function SessionsTab({
                           displayTitle={meta?.title ?? s.title}
                           unread={store[keyForSession(s)]?.unread}
                           onClick={() => {
-                            if (focused || invalidFocus) clearFocus();
+                            if (panelFocused || invalidFocus) clearFocus();
                             setRelatedSession(null);
                             setActiveId(s.id);
-                            onProcessOpenChange(window.matchMedia("(min-width:1280px)").matches);
+                            setShowDetail(true);
                           }}
                           controlling={controllingIntent !== null}
                           selected={selectedWorkers.has(s.intent_id ?? "")}
@@ -2010,7 +1964,7 @@ export function SessionsTab({
                   </div>
                 );
               })}
-              <RelatedSessions taskId={taskId} onSelect={row=>{setRelatedSession(row);onProcessOpenChange(true);}}/>
+              <RelatedSessions taskId={taskId} onSelect={row=>{if (panelFocused || invalidFocus) clearFocus();setRelatedSession(row);setShowDetail(true);}}/>
               {mainLoaded && !workerSessions.length && (
                 <div className="px-2 py-1 text-xs text-muted-foreground">暂无运行中的 Worker 会话。</div>
               )}
@@ -2020,6 +1974,8 @@ export function SessionsTab({
 
 
   );
+  const activityWithStreams = (key:string, items:Activity[]) =>
+    withLiveStreams(items,streaming.filter(s=>sessionKeyOf({...s,seq:-1,kind:s.channel,summary:s.text})===key));
   const processDetail=(
 
           <div className="flex h-full min-h-0 flex-1 min-w-0 flex-col overflow-hidden bg-card">
@@ -2115,7 +2071,7 @@ export function SessionsTab({
                     {fmtDuration(runDuration)}
                   </span>
                 )}
-                {isMain && <span>可交互</span>}
+                {isMain && <span>{active.seg === currentSeg ? "当前会话" : "历史会话 · 只读"}</span>}
               </div>
             </div>
             {(() => {
@@ -2150,7 +2106,7 @@ export function SessionsTab({
                     返回会话
                   </Button>
                 </Alert>
-              ) : focused ? (
+              ) : panelFocused ? (
                 <SourceTranscript
                   key={`${taskId}:${focusSession}:${focusSeq}`}
                   taskId={taskId}
@@ -2160,55 +2116,18 @@ export function SessionsTab({
                   onLatest={() => {
                     setSourceSession(active);
                     setActiveId(active.id);
+                    setShowDetail(true);
                     clearFocus();
                     loadSession(activeKey);
                   }}
                 />
               ) : (
-                <MessageScrollerProvider key={activeKey} autoScroll>
-                <MessageScroller><MessageScrollerViewport preserveScrollOnPrepend>
-                  <MessageScrollerContent className="gap-2 p-4" ref={contentRef}>
-                    {activeState?.loadingMore && (
-                      <div className="flex items-center justify-center gap-2 pb-2 text-xs text-muted-foreground">
-                        <Loader2Icon className="size-3.5 animate-spin" />
-                        加载更早历史…
-                      </div>
-                    )}
-                    {showLoader ? (
-                      <div className="flex items-center gap-2 pl-9 text-xs text-muted-foreground">
-                        <Loader2Icon className="size-3.5 animate-spin" />
-                        加载活动流…
-                      </div>
-                    ) : activeState?.error ? (
-                      <div className="flex items-center gap-2 pl-9 text-xs text-red-500">
-                        <CircleXIcon className="size-3.5" />
-                        加载失败：{activeState.error}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-xs"
-                          onClick={() => loadSession(activeKey)}
-                        >
-                          重试
-                        </Button>
-                      </div>
-                    ) : activity.length || streaming.some(s=>sessionKeyOf({...s,seq:-1,kind:s.channel,summary:s.text})===activeKey) ? (
-                      <Transcript
-                        activity={withLiveStreams(activity,streaming.filter(s=>sessionKeyOf({...s,seq:-1,kind:s.channel,summary:s.text})===activeKey))}
-                        scrollItems
-                        live={active.live}
-                        pendingStatus={isMain&&stopping?"stopping":undefined}
-                        taskId={taskId}
-                        chat={isMain}
-                      />
-                    ) : (
-                      <div className="pl-9 text-xs text-muted-foreground">
-                        {isMain ? "还没有对话。在下方给主 Agent 发消息，引导探索方向或介入流程。" : "暂无活动记录。"}
-                      </div>
-                    )}
-                  </MessageScrollerContent>
-                </MessageScrollerViewport><MessageScrollerButton /></MessageScroller>
-                </MessageScrollerProvider>
+                <SessionTranscript key={activeKey} sessionKey={activeKey} positions={detailPositions}
+                  taskId={taskId} items={activityWithStreams(activeKey,activity)} live={active.live}
+                  chat={isMain} stopping={isMain && active.seg === currentSeg && stopping}
+                  loading={showLoader} loadingMore={activeState?.loadingMore} error={activeState?.error}
+                  hasMore={activeState?.hasMore} onEarlier={node=>loadEarlier(activeKey,()=>node)}
+                  onRetry={()=>loadSession(activeKey)} />
               )}
             {active.role === "worker" &&
               !active.inherited &&
@@ -2236,15 +2155,26 @@ export function SessionsTab({
           </div>
 
   );
-  const mainItems=withLiveStreams(mainState?.items??[],streaming.filter(stream=>sessionKeyOf({...stream,seq:-1,kind:stream.channel,summary:stream.text})===mainKey));
-  const sessionInMain=!isMain||!!relatedSession;
+  const plannerState = store.plan;
+  const planner = plannerFocused ? (
+    <SourceTranscript key={`${taskId}:plan:${focusSeq}`} taskId={taskId} session="plan" anchor={focusSeq}
+      onLatest={()=>{clearFocus();loadSession("plan");}} />
+  ) : (
+    <SessionTranscript sessionKey="plan" positions={plannerPositions} taskId={taskId}
+      items={activityWithStreams("plan",plannerState?.items??[])} live={plannerLive}
+      loading={!plannerState?.loaded && !plannerState?.error} loadingMore={plannerState?.loadingMore}
+      error={plannerState?.error} hasMore={plannerState?.hasMore}
+      onEarlier={node=>loadEarlier("plan",()=>node)} onRetry={()=>loadSession("plan")} />
+  );
+  const detail = detailVisible ? (relatedSession
+    ? <RelatedSessionDetail key={relatedSession.id} row={relatedSession} />
+    : processDetail) : null;
   return <TooltipProvider delayDuration={300}>
-    <SessionWorkspace open={processOpen} onOpenChange={onProcessOpenChange} showDetail={false} onBack={()=>{setRelatedSession(null);clearFocus();setActiveId(mainSessionId(mainSeg));}}
-      primaryDetail={relatedSession?<RelatedSessionDetail key={relatedSession.id} row={relatedSession}/>:sessionInMain?processDetail:undefined} primaryDetailKey={sessionInMain?`${taskId}:${relatedSession?.id??activeKey}`:undefined} primaryDetailLabel={active.role==='worker'?'Worker 会话':active.role==='planner'?'Planner 会话':'执行会话'}
-      list={agentList} detail={null} main={<MainConversation key={mainKey} taskId={taskId} items={mainItems} live={!!mainBusy} stopping={stopping} loading={mainState?.loading} error={mainState?.error} hasMore={mainState?.hasMore}
-        onEarlier={()=>loadEarlier(mainKey,()=>null)} onRetry={()=>loadSession(mainKey)} composer={composer}
-        heading={<><span>主 Agent · {mainSeg===currentSeg?'当前会话':`历史会话 ${mainSeg}`}</span><span className="text-xs">{sseLive?'实时连接':'正在重连，已保留内容'}</span></>}
-        focused={isMain&&(focused||invalidFocus)?processDetail:undefined}/>} />
+    <SessionWorkspace open={processOpen} onOpenChange={setProcessOpen} completedCount={completedCount}
+      planner={<><div className="flex h-10 shrink-0 items-center justify-between px-4 text-sm text-muted-foreground">
+        <span>Planner</span>{!MOCK && <span className="text-xs">{sseLive?"实时连接":"正在重连，已保留内容"}</span>}
+      </div>{planner}</>} list={agentList} detail={detail} composer={composer}
+      onBack={()=>{setRelatedSession(null);setShowDetail(false);if (panelFocused || invalidFocus) clearFocus();}} />
         <AlertDialog
           open={deleteWorkers.length > 0}
           onOpenChange={(open) => {

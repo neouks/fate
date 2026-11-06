@@ -8,7 +8,6 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import {
-  PanelRightIcon,
   FolderIcon,
   Settings2Icon,
   ArchiveIcon,
@@ -111,10 +110,6 @@ function TaskDetailInner() {
   React.useEffect(() => setVisited((v) => (v.includes(tab) ? v : [...v, tab])), [tab]);
   const [visitedSections, setVisitedSections] = React.useState<string[]>([section]);
   React.useEffect(() => setVisitedSections((v) => v.includes(section) ? v : [...v, section]), [section]);
-  const [processOpen, setProcessOpen] = React.useState(false);
-  React.useEffect(() => {
-    setProcessOpen(window.matchMedia("(min-width:1280px)").matches);
-  }, []);
   const [findingCount, setFindingCount] = React.useState<number | null>(null);
   const [controlling, setControlling] = React.useState(false);
   React.useEffect(() => {
@@ -335,18 +330,6 @@ function TaskDetailInner() {
           <Button variant="ghost" size="icon-sm" aria-label="任务设置" onClick={() => navigate({ panel: "settings" })}>
             <Settings2Icon />
           </Button>
-          <Button
-            variant={processOpen && tab === "sessions" && section === "chat" ? "secondary" : "ghost"}
-            size="icon-sm"
-            aria-label="执行过程"
-            aria-expanded={processOpen && tab === "sessions" && section === "chat"}
-            onClick={() => {
-              navigate({ tab: "sessions", section: "chat", panel: null });
-              setProcessOpen(!(processOpen && tab === "sessions" && section === "chat"));
-            }}
-          >
-            <PanelRightIcon />
-          </Button>
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-hidden">
@@ -360,11 +343,10 @@ function TaskDetailInner() {
           </Tabs>
           <div hidden={section !== "chat"} className="min-h-0 flex-1">
           <SessionsTab
+            key={id}
             taskId={id}
             onOpenSettings={()=>navigate({panel:"settings"})}
             workerExecutionAllowed={!task.paused && !task.queued && !task.pause_pending && task.status === "running"}
-            processOpen={processOpen && tab === "sessions" && section === "chat"}
-            onProcessOpenChange={setProcessOpen}
           />
           </div>
           {visitedSections.includes("overview") && <div hidden={section !== "overview"} className="task-scroll-panel min-h-0 flex-1"><OverviewTab taskId={id} /></div>}
