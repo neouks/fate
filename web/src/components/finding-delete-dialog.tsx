@@ -24,12 +24,18 @@ export function FindingDeleteDialog({
   finding,
   disabled,
   onDelete,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   finding: Finding;
   disabled?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onDelete: (finding: Finding, reason: string) => Promise<void>;
 }) {
-  const [open, setOpen] = React.useState(false);
+  const [localOpen, setLocalOpen] = React.useState(false);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = onOpenChange ?? setLocalOpen;
   const [reason, setReason] = React.useState("");
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -64,11 +70,11 @@ export function FindingDeleteDialog({
         }
       }}
     >
-      <AlertDialogTrigger asChild>
+      {controlledOpen === undefined && <AlertDialogTrigger asChild>
         <Button variant="destructive" size="sm" disabled={busy || disabled === true}>
           删除
         </Button>
-      </AlertDialogTrigger>
+      </AlertDialogTrigger>}
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>删除此漏洞？</AlertDialogTitle>

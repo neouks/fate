@@ -545,11 +545,18 @@ export const api = {
     scope: "filtered" | "all" | "selected";
     filters?: Omit<FindingQuery, "page" | "pageSize">;
     ids?: string[];
+    contextTask?: string;
+    ownership?: "all" | "current" | "inherited";
   }) => {
     const p = new URLSearchParams({ format: opts.format, scope: opts.scope });
+    if (opts.contextTask) {
+      p.set("context_task", opts.contextTask);
+      if (opts.ownership) p.set("ownership", opts.ownership);
+    }
     if (opts.scope === "selected") {
       p.set("ids", (opts.ids ?? []).join(","));
-    } else if (opts.scope === "filtered" && opts.filters) {
+    }
+    if ((opts.scope === "filtered" || (opts.contextTask && opts.scope === "selected")) && opts.filters) {
       for (const [k, v] of findingFilterParams(opts.filters)) p.set(k, v);
     }
     let blob: Blob, filename: string;
@@ -564,7 +571,10 @@ export const api = {
       const r = await entryAwareFetch(`/api/exploration/findings/export?${p.toString()}`, {
         headers: token ? { "X-Series-Token": token } : {},
       });
-      if (!r.ok) throw new Error(`export: ${r.status}`);
+      if (!r.ok) {
+        const body = await r.json().catch(() => null);
+        throw new Error(typeof body?.error === "string" ? body.error : `HTTP ${r.status}`);
+      }
       blob = await r.blob();
       // 文件名优先取后端 Content-Disposition,取不到则用默认名。
       const disp = r.headers.get("Content-Disposition") ?? "";
@@ -661,16 +671,19 @@ export const api = {
   },
   // 漏洞链路:该漏洞节点回溯到任务初始节点的子图(节点 + 关系)。
   findingLineage: (id: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/findings/${id}/lineage?id_kind=record`),
-  setFindingStatus: (id: string, status: FindingStatus) => patch<Finding>(`/exploration/findings/${id}?id_kind=record`, { status }),
-  setFindingSeverity: (id: string, severity: Severity) => patch<Finding>(`/exploration/findings/${id}?id_kind=record`, { severity }),
+  setFindingStatus: (id: string, status: FindingStatus, contextTask?: string) =>
+    patch<Finding>(`/exploration/findings/${id}?id_kind=record${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`, { status }),
+  setFindingSeverity: (id: string, severity: Severity, contextTask?: string) =>
+    patch<Finding>(`/exploration/findings/${id}?id_kind=record${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`, { severity }),
   // 一次保存漏洞的名称/类别/严重等级(发现列表行内编辑用),只传出现的字段。
   updateFinding: (
     id: string,
     fields: { name?: string; vulnclass?: string; severity?: Severity; status?: FindingStatus },
-  ) => patch<Finding>(`/exploration/findings/${id}?id_kind=record`, fields),
+    contextTask?: string,
+  ) => patch<Finding>(`/exploration/findings/${id}?id_kind=record${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`, fields),
   // 删除漏洞:移除 findings 记录 + 来源探索节点(从发现列表/任务发现 Tab/探索图一并消失)。
-  deleteFinding: (id: string, reason?: string) =>
-    del<{ deleted: boolean; id: number }>(`/exploration/findings/${id}?id_kind=record`, reason === undefined ? undefined : { reason }),
+  deleteFinding: (id: string, reason?: string, contextTask?: string) =>
+    del<{ deleted: boolean; id: number }>(`/exploration/findings/${id}?id_kind=record${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`, reason === undefined ? undefined : { reason }),
   findingRetests: (id: string) =>
     get<{ retests: FindingRetest[] }>(`/exploration/findings/${encodeURIComponent(id)}/retests`).then((r) =>
       arr(r.retests),

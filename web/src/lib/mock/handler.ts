@@ -49,7 +49,6 @@ import { mockToolCalls } from "./tool-calls";
 import { createMockTraffic } from "./traffic";
 
 const mockTraffic = createMockTraffic(D.traffic.exchanges ?? []);
-const findingTraffic: Record<string, (...a: unknown[]) => unknown> = new Proxy({}, { get: () => () => ({ refs: [] }) });
 
 const delay = (ms = 120) => new Promise((r) => setTimeout(r, ms));
 const mockTasks = structuredClone(D.tasks);
@@ -551,6 +550,26 @@ function mockFindingMatchesQuery(finding: (typeof mockFindings)[number], query: 
       .toLowerCase()
       .includes(needle),
   );
+}
+
+function mockTaskFindings(q: URLSearchParams, context: string, filtered = true): Finding[] {
+  const owner = mockTasks.find((task) => task.id === context);
+  if (!owner) throw new Error("任务不存在");
+  const ownership = q.get("ownership") ?? "all";
+  if (!["all", "current", "inherited"].includes(ownership)) throw new Error("发现范围无效");
+  const query = filtered ? q.get("q")?.trim().toLowerCase() : undefined;
+  const severity = filtered ? q.get("severity") : null;
+  const status = filtered ? q.get("status") : null;
+  const vulnclass = filtered ? q.get("vulnclass") : null;
+  const sources = new Set(owner.source_task_ids ?? []);
+  return [...mockFindings.map((finding) => ({ ...finding, finding_id: finding.id })), ...mockLegacyFindings].filter((finding) => {
+    const current = finding.task_id === context;
+    if (current ? ownership === "inherited" : ownership === "current" || !sources.has(finding.task_id ?? "")) return false;
+    if (severity && severity !== "all" && !severity.split(",").map((value) => value.trim()).includes(finding.severity)) return false;
+    if (status && status !== "all" && !status.split(",").map((value) => value.trim()).includes(finding.status)) return false;
+    if (vulnclass && vulnclass !== "all" && finding.vulnclass !== vulnclass) return false;
+    return !query || [finding.name, finding.summary, finding.vulnclass].some((value) => value?.toLowerCase().includes(query));
+  });
 }
 
 // ── 「按资产」视图 ────────────────────────────────────────────────────────────
@@ -2147,6 +2166,15 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const scope = q.get("scope");
     if (!["all", "filtered", "selected"].includes(scope ?? "")) throw new Error("invalid export scope");
     const ids = new Set((q.get("ids") ?? "").split(","));
+    const context = q.get("context_task");
+    if (context !== null) {
+      if (scope === "selected" && !q.get("ids")) throw new Error("请选择要导出的记录");
+      const items = mockTaskFindings(q, context, scope !== "all")
+        .filter((item) => scope !== "selected" || (item.finding_id && ids.has(item.finding_id)))
+        .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+      if (items.length > 5000) throw new Error("一次最多导出 5000 条发现，请缩小筛选范围或勾选要导出的记录。");
+      return mockFindingExport(items, q.get("format") ?? "md-single");
+    }
     let items = mockFindings;
     if (scope === "selected") items = mockFindings.filter((item) => ids.has(item.id));
     else if (scope === "filtered") items = mockApplyAssetScope(mockFilterFindings(q), q.get("asset_scope"));
@@ -2317,13 +2345,24 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const inherited = !!context && finding.task_id !== context;
     if (context && (!owner || (inherited && !owner.source_task_ids?.includes(finding.task_id ?? ""))))
       throw new Error("finding not found in task");
-    const result = findingTraffic.handle(finding.id, seg[4], seg[5], m, b, q, inherited);
-    if (m !== "GET" && result && typeof result === "object" && "bindings" in result && "version" in result) {
-      finding.traffic_count = (result.bindings as unknown[]).length;
-      finding.evidence_version = Number(result.version);
-      finding.report_stale = !!finding.report && finding.evidence_version !== (finding.report_evidence_version ?? 0);
+    if (m !== "GET" || seg[4]) throw new Error("演示数据未提供可绑定的证据报文");
+    return { finding_id: finding.id, version: finding.evidence_version ?? 0,
+      report_version: finding.report_evidence_version ?? 0, bindings: [] };
+  }
+  if (seg[0] === "exploration" && seg[1] === "findings" && ["reproduction", "analyze"].includes(seg[3])) {
+    const context = q.get("context_task");
+    const finding = context !== null
+      ? mockTaskFindings(new URLSearchParams(), context).find((item) => item.finding_id === seg[2])
+      : mockFindings.find((item) => item.id === seg[2]);
+    if (!finding) throw new Error("漏洞不属于当前任务及直接来源任务");
+    if (m !== "GET" || seg[3] !== "reproduction") {
+      throw new Error(context && finding.task_id !== context ? "来源任务漏洞只读" : "演示模式仅提供报告预览");
     }
-    return result;
+    return {
+      reproduction: finding.reproduction ?? null, report_sections: finding.report_sections ?? null,
+      report_revision: finding.report_revision ?? 0, evidence_version: finding.evidence_version ?? 0,
+      images: [], versions: [], markdown: finding.report ?? "",
+    };
   }
   // 单条 finding:GET 详情 / PATCH 改状态/严重度/名称/类别(demo 直接改内存对象)。
   if (seg[0] === "exploration" && seg[1] === "findings" && seg.length === 3 && seg[2] !== "stats") {
@@ -2400,9 +2439,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
         !["asc", "desc"].includes(direction)
       )
         throw new Error("invalid pagination");
-      const sources = new Set(owner.source_task_ids ?? []);
-      const items = [...mockFindings.map((f) => ({ ...f, finding_id: f.id })), ...mockLegacyFindings]
-        .filter((f) => f.task_id === context || (!!f.task_id && sources.has(f.task_id)))
+      const items = mockTaskFindings(q, owner.id)
         .sort(
           (a, b) =>
             (Date.parse(a.ts) - Date.parse(b.ts) || a.id.localeCompare(b.id, undefined, { numeric: true })) *

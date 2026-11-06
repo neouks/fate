@@ -587,6 +587,24 @@ export const findings: Finding[] = [
     name: "官网搜索接口报错型 SQL 注入",
     severity: "high",
     status: "pending",
+    report_sections: {
+      description: "官网搜索接口的 `q` 参数触发了数据库错误。此条为本地演示记录。",
+      impact: ["应用会将数据库版本和错误信息返回给访客。"],
+      remediation: ["使用参数化查询，生产环境返回统一错误响应。"],
+    },
+    reproduction: {
+      entry_point: "GET /search",
+      prerequisites: [],
+      provenance: "本地演示证据",
+      steps: [{
+        id: "demo-search",
+        action: "提交含引号的搜索词，比较响应",
+        expected: "响应包含数据库转换错误",
+        proves: "应用直接返回数据库错误详情",
+        request: "GET /search?q=example%27",
+        response: "HTTP/1.1 500 Internal Server Error",
+      }],
+    },
     report:
       '## 漏洞概述\n\n`www.acme.com/search` 的 `q` 参数存在**报错型 SQL 注入**（MSSQL），可读取数据库版本、库结构乃至敏感数据。\n\n## 影响\n\n- 可读取 `acme_prod` 库的表结构与用户/订单数据\n- 报错回显便于快速构造利用，风险高\n\n## 复现步骤\n\n1. 触发报错注入：\n\n```\nGET /search?q=1\' AND 1=CONVERT(int,@@version)--\n```\n\n2. 响应回显 MSSQL 版本报错，确认可注入\n3. 进一步枚举库：`sqlmap -u "https://www.acme.com/search?q=1" --dbs`\n\n## 修复建议\n\n- 全部改用参数化查询/预编译语句，杜绝字符串拼接\n- 关闭生产环境详细报错回显\n- 数据库账号最小权限，禁用 `xp_cmdshell` 等危险扩展\n',
     summary: "www.acme.com/search q 参数存在报错型 SQL 注入",

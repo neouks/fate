@@ -1,14 +1,15 @@
 "use client";
-import {FindingReproductionPanel} from "@/components/finding-reproduction";
+import { FindingReproductionPanel } from "@/components/finding-reproduction";
 
 import * as React from "react";
 
 import Link from "next/link";
+import { ArrowLeftIcon, EllipsisIcon, PencilIcon } from "lucide-react";
 
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
-import {FindingEvidencePanel} from "@/components/finding-evidence-panel";
+import { FindingEvidencePanel } from "@/components/finding-evidence-panel";
 import { FindingDeleteDialog } from "@/components/finding-delete-dialog";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
@@ -24,6 +25,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Separator } from "@/components/ui/separator";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -140,11 +149,18 @@ export function FindingDetailContent({
   onRefresh,
   onDelete,
   onDeepen,
-}: Omit<DetailProps, "onChanged"> & { onRefresh: () => void }) {
+  onBack,
+  onCopyLink,
+}: Omit<DetailProps, "onChanged"> & {
+  onRefresh: () => void;
+  onBack?: () => void;
+  onCopyLink?: () => void;
+}) {
   const id = finding.finding_id ?? "";
   const readOnly = !!finding.inherited || !id;
   const [busy, setBusy] = React.useState(false);
   const [editing, setEditing] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
   const [draft, setDraft] = React.useState({
     name: finding.name ?? "",
     vulnclass: finding.vulnclass,
@@ -167,151 +183,299 @@ export function FindingDetailContent({
   const detailHref = id
     ? `/function/findings/detail?id=${encodeURIComponent(id)}${contextTask ? `&context_task=${encodeURIComponent(contextTask)}` : ""}`
     : null;
-  return (
-    <div className="flex min-w-0 flex-col gap-4">
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <CardTitle>漏洞详情</CardTitle>
-            <div className="flex flex-wrap gap-2">
-              {detailHref && (
-                <Button asChild variant="outline" size="sm">
-                  <Link href={detailHref}>独立详情 / 链路图 ↗</Link>
-                </Button>
-              )}
-              {!readOnly && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => {
-                    setDraft({ name: finding.name ?? "", vulnclass: finding.vulnclass, severity: finding.severity });
-                    setEditing(true);
-                  }}
-                >
-                  编辑
-                </Button>
-              )}
-              {!readOnly && onDeepen && finding.task_id && (
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => onDeepen(finding)}>
-                  深化测试
-                </Button>
-              )}
-              {!readOnly && onDelete && <FindingDeleteDialog finding={finding} disabled={busy} onDelete={onDelete} />}
-            </div>
-          </div>
-          <h2 className="break-words font-semibold text-base">{finding.name || finding.vulnclass || "未分类"}</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge domain="severity" value={finding.severity} dot />
-            <StatusBadge domain="finding" value={finding.status} dot />
-            {finding.inherited && (
-              <Badge variant="outline">来源任务 #{finding.source_task_id || finding.task_id} · 只读</Badge>
-            )}
-            <span className="text-muted-foreground text-xs">{new Date(finding.ts).toLocaleString("zh-CN")}</span>
-          </div>
-        </CardHeader>
-        <CardContent className="flex min-w-0 flex-col gap-4">
-          <div className="flex flex-wrap gap-3">
-            <Select
-              value={finding.severity}
-              disabled={readOnly || busy}
-              onValueChange={(value) => void mutate(() => api.setFindingSeverity(id, value as Severity))}
-            >
-              <SelectTrigger aria-label="严重等级">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {SEVERITIES.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {statusMeta("severity", value).label}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Select
-              value={finding.status}
-              disabled={readOnly || busy}
-              onValueChange={(value) => void mutate(() => api.setFindingStatus(id, value as FindingStatus))}
-            >
-              <SelectTrigger aria-label="处理状态">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {FINDING_STATUSES.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {statusMeta("finding", value).label}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            {finding.task_id && (
-              <Button variant="link" asChild>
-                <Link href={`/function/tasks/detail?id=${finding.task_id}`}>任务 #{finding.task_id}</Link>
+  function startEditing() {
+    setDraft({ name: finding.name ?? "", vulnclass: finding.vulnclass, severity: finding.severity });
+    setEditing(true);
+  }
+  const severityControl = (
+    <Select
+      value={finding.severity}
+      disabled={readOnly || busy}
+      onValueChange={(value) => void mutate(() => api.setFindingSeverity(id, value as Severity, contextTask))}
+    >
+      <SelectTrigger aria-label="严重等级">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          {SEVERITIES.map((value) => (
+            <SelectItem key={value} value={value}>
+              {statusMeta("severity", value).label}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  );
+  const statusControl = (
+    <Select
+      value={finding.status}
+      disabled={readOnly || busy}
+      onValueChange={(value) => void mutate(() => api.setFindingStatus(id, value as FindingStatus, contextTask))}
+    >
+      <SelectTrigger aria-label="处理状态">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          {FINDING_STATUSES.map((value) => (
+            <SelectItem key={value} value={value}>
+              {statusMeta("finding", value).label}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  );
+  const rawEvidence = (
+    <details open={!finding.reproduction}>
+      <summary>原始证据与历史报告</summary>
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="font-medium">证据 / PoC</h3>
+          {finding.evidence && <CopyButton text={finding.evidence} />}
+        </div>
+        <pre className="max-h-[46vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs">
+          {finding.evidence || "暂无证据。"}
+        </pre>
+      </div>
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="font-medium">详细报告</h3>
+          {finding.report && <CopyButton text={finding.report} />}
+        </div>
+        {finding.report_stale && (
+          <Alert>
+            <AlertDescription>流量证据已变更，详细报告待更新。</AlertDescription>
+          </Alert>
+        )}
+        <div className="max-h-[60vh] overflow-auto">
+          {finding.report ? (
+            <Markdown text={finding.report} />
+          ) : (
+            <p className="text-muted-foreground">暂无详细报告。</p>
+          )}
+        </div>
+      </div>
+    </details>
+  );
+  const workspaceEvidence = onBack && (
+    <section className="task-finding-section">
+      <h2>证据</h2>
+      <div className="flex flex-col gap-4">
+        {rawEvidence}
+        {id && <FindingEvidencePanel finding={finding} contextTask={contextTask} readOnly={readOnly} />}
+      </div>
+    </section>
+  );
+  const workspace = onBack && (
+    <div className="task-finding-detail-grid">
+      <article className="task-finding-article">
+        <header className="task-finding-detail-actions">
+          <Button variant="ghost" onClick={onBack}>
+            <ArrowLeftIcon data-icon="inline-start" />
+            返回发现
+          </Button>
+          <div className="flex items-center gap-2">
+            {!readOnly && (
+              <Button variant="outline" disabled={busy} onClick={startEditing}>
+                <PencilIcon data-icon="inline-start" />
+                编辑
               </Button>
             )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" aria-label="漏洞更多操作">
+                  <EllipsisIcon />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={onCopyLink}>复制链接</DropdownMenuItem>
+                  {detailHref && (
+                    <DropdownMenuItem asChild>
+                      <Link href={detailHref}>独立详情 / 链路图</Link>
+                    </DropdownMenuItem>
+                  )}
+                  {!readOnly && onDelete && (
+                    <DropdownMenuItem variant="destructive" onSelect={() => setDeleting(true)}>
+                      删除
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
-          <div>
-            <h3 className="mb-2 font-medium">完整摘要</h3>
-            <p className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words">
-              {finding.summary || "暂无摘要。"}
-            </p>
-          </div>
-          <div>
-            <h3 className="mb-2 font-medium">关联资产</h3>
-            <div className="flex flex-wrap gap-2">
-              {finding.assets?.length ? (
-                finding.assets.map((asset) => (
-                  <Badge className="max-w-full whitespace-normal break-all" key={asset.id} variant="outline">
-                    {asset.type} · {asset.label}
-                  </Badge>
-                ))
-              ) : (
-                <span className="text-muted-foreground">暂无关联资产。</span>
-              )}
-            </div>
-          </div>
-          <details open={!finding.reproduction}><summary>原始证据与历史报告</summary>
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="font-medium">证据 / PoC</h3>
-              {finding.evidence && <CopyButton text={finding.evidence} />}
-            </div>
-            <pre className="max-h-[46vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs">
-              {finding.evidence || "暂无证据。"}
-            </pre>
-          </div>
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="font-medium">详细报告</h3>
-              {finding.report && <CopyButton text={finding.report} />}
-            </div>
-            {finding.report_stale && (
-              <Alert>
-                <AlertDescription>流量证据已变更，详细报告待更新。</AlertDescription>
-              </Alert>
-            )}
-            <div className="max-h-[60vh] overflow-auto">
-              {finding.report ? (
-                <Markdown text={finding.report} />
-              ) : (
-                <p className="text-muted-foreground">暂无详细报告。</p>
-              )}
-            </div>
-          </div>
-          </details>
-        </CardContent>
-      </Card>
-      {id&&<FindingReproductionPanel key={`${id}:${contextTask??""}`} finding={finding} contextTask={contextTask} readOnly={readOnly} onChanged={onRefresh}/>}
-      {id ? <FindingEvidencePanel finding={finding} contextTask={contextTask} readOnly={readOnly} /> : (
-        <Alert>
-          <AlertDescription>
-            此为历史探索节点，未关联持久化漏洞记录，仅展示已有证据；不提供流量绑定或复测操作。
-          </AlertDescription>
-        </Alert>
+        </header>
+        <h1>{finding.name || finding.vulnclass || "未分类"}</h1>
+        {id ? (
+          <FindingReproductionPanel
+            finding={finding}
+            contextTask={contextTask}
+            readOnly={readOnly}
+            onChanged={onRefresh}
+            workspaceEvidence={workspaceEvidence}
+          />
+        ) : (
+          <>
+            <section className="task-finding-section">
+              <h2>漏洞描述</h2>
+              <Markdown text={finding.summary || "暂无描述。"} />
+            </section>
+            {workspaceEvidence}
+          </>
+        )}
+      </article>
+      <aside className="task-finding-properties" aria-label="漏洞属性">
+        <h2>详细信息</h2>
+        <dl>
+          <dt>状态</dt>
+          <dd>{readOnly ? <StatusBadge domain="finding" value={finding.status} dot /> : statusControl}</dd>
+          <dt>严重性</dt>
+          <dd>{readOnly ? <StatusBadge domain="severity" value={finding.severity} dot /> : severityControl}</dd>
+          {finding.vulnclass && (
+            <>
+              <dt>类型</dt>
+              <dd>{finding.vulnclass}</dd>
+            </>
+          )}
+          <dt>编号</dt>
+          <dd>{id ? `#${id}` : `节点 #${finding.id}`}</dd>
+          {!id && (
+            <>
+              <dt>记录</dt>
+              <dd>历史图节点 · 只读</dd>
+            </>
+          )}
+        </dl>
+        <Separator />
+        <h2>资产与来源</h2>
+        <dl>
+          {finding.assets?.map((asset) => (
+            <React.Fragment key={asset.id}>
+              <dt>关联资产</dt>
+              <dd>{asset.label}</dd>
+            </React.Fragment>
+          ))}
+          {finding.task_id && (
+            <>
+              <dt>来源任务</dt>
+              <dd>
+                <Link
+                  href={`/function/tasks/detail?id=${encodeURIComponent(finding.source_task_id || finding.task_id)}`}
+                >
+                  任务 #{finding.source_task_id || finding.task_id}
+                </Link>
+                {finding.inherited && <span className="block text-muted-foreground">只读</span>}
+              </dd>
+            </>
+          )}
+          {finding.ts && (
+            <>
+              <dt>发现时间</dt>
+              <dd>
+                <time dateTime={finding.ts}>{new Date(finding.ts).toLocaleString("zh-CN")}</time>
+              </dd>
+            </>
+          )}
+        </dl>
+      </aside>
+    </div>
+  );
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      {workspace || (
+        <>
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle>漏洞详情</CardTitle>
+                <div className="flex flex-wrap gap-2">
+                  {detailHref && (
+                    <Button asChild variant="outline" size="sm">
+                      <Link href={detailHref}>独立详情 / 链路图 ↗</Link>
+                    </Button>
+                  )}
+                  {!readOnly && (
+                    <Button variant="outline" size="sm" disabled={busy} onClick={startEditing}>
+                      编辑
+                    </Button>
+                  )}
+                  {!readOnly && onDeepen && finding.task_id && (
+                    <Button variant="outline" size="sm" disabled={busy} onClick={() => onDeepen(finding)}>
+                      深化测试
+                    </Button>
+                  )}
+                  {!readOnly && onDelete && (
+                    <FindingDeleteDialog finding={finding} disabled={busy} onDelete={onDelete} />
+                  )}
+                </div>
+              </div>
+              <h2 className="break-words font-semibold text-base">{finding.name || finding.vulnclass || "未分类"}</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge domain="severity" value={finding.severity} dot />
+                <StatusBadge domain="finding" value={finding.status} dot />
+                {finding.inherited && (
+                  <Badge variant="outline">来源任务 #{finding.source_task_id || finding.task_id} · 只读</Badge>
+                )}
+                <span className="text-muted-foreground text-xs">{new Date(finding.ts).toLocaleString("zh-CN")}</span>
+              </div>
+            </CardHeader>
+            <CardContent className="flex min-w-0 flex-col gap-4">
+              <div className="flex flex-wrap gap-3">
+                {severityControl}
+                {statusControl}
+                {finding.task_id && (
+                  <Button variant="link" asChild>
+                    <Link href={`/function/tasks/detail?id=${finding.task_id}`}>任务 #{finding.task_id}</Link>
+                  </Button>
+                )}
+              </div>
+              <div>
+                <h3 className="mb-2 font-medium">完整摘要</h3>
+                <p className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words">
+                  {finding.summary || "暂无摘要。"}
+                </p>
+              </div>
+              <div>
+                <h3 className="mb-2 font-medium">关联资产</h3>
+                <div className="flex flex-wrap gap-2">
+                  {finding.assets?.length ? (
+                    finding.assets.map((asset) => (
+                      <Badge className="max-w-full whitespace-normal break-all" key={asset.id} variant="outline">
+                        {asset.type} · {asset.label}
+                      </Badge>
+                    ))
+                  ) : (
+                    <span className="text-muted-foreground">暂无关联资产。</span>
+                  )}
+                </div>
+              </div>
+              {rawEvidence}
+            </CardContent>
+          </Card>
+          {id && (
+            <FindingReproductionPanel
+              key={`${id}:${contextTask ?? ""}`}
+              finding={finding}
+              contextTask={contextTask}
+              readOnly={readOnly}
+              onChanged={onRefresh}
+            />
+          )}
+          {id ? (
+            <FindingEvidencePanel finding={finding} contextTask={contextTask} readOnly={readOnly} />
+          ) : (
+            <Alert>
+              <AlertDescription>
+                此为历史探索节点，未关联持久化漏洞记录，仅展示已有证据；不提供流量绑定或复测操作。
+              </AlertDescription>
+            </Alert>
+          )}
+        </>
+      )}
+      {onBack && onDelete && deleting && (
+        <FindingDeleteDialog finding={finding} onDelete={onDelete} open onOpenChange={setDeleting} />
       )}
       <Dialog
         open={editing}
@@ -370,7 +534,11 @@ export function FindingDetailContent({
               disabled={busy || !draft.vulnclass.trim()}
               onClick={() =>
                 void mutate(() =>
-                  api.updateFinding(id, { ...draft, name: draft.name.trim(), vulnclass: draft.vulnclass.trim() }),
+                  api.updateFinding(
+                    id,
+                    { ...draft, name: draft.name.trim(), vulnclass: draft.vulnclass.trim() },
+                    contextTask,
+                  ),
                 )
               }
             >

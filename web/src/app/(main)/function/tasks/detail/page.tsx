@@ -106,7 +106,7 @@ function TaskDetailInner() {
     // Radix can select on pointer down and focus before React commits the new URL.
     if (window.location.pathname + window.location.search !== next) window.history.pushState(null, "", next);
   };
-  const setTab = (value: string) => navigate({ tab: value, panel: null });
+  const setTab = (value: string) => navigate({ tab: value, panel: null, ...(value !== "findings" ? { finding: null } : {}) });
   const [visited, setVisited] = React.useState<string[]>(["sessions", tab]);
   React.useEffect(() => setVisited((v) => (v.includes(tab) ? v : [...v, tab])), [tab]);
   const [visitedSections, setVisitedSections] = React.useState<string[]>([section]);
@@ -372,7 +372,7 @@ function TaskDetailInner() {
         </section>
         {visited.includes("findings") && (
           <section hidden={tab !== "findings"} className="task-scroll-panel task-findings-panel">
-            <FindingsTab taskId={id} />
+            <FindingsTab taskId={id} active={tab === "findings"} findingRef={searchParams.get("finding")} search={searchParams.toString()} />
           </section>
         )}
         {visited.includes("graph") && (
