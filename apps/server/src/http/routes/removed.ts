@@ -13,11 +13,9 @@ const REMOVED_PATHS = [
   // 一键自更新
   "/api/update",
   "/api/update/*",
-  // 任务归档 / 任务模板
+  // 任务归档
   "/api/task-archives",
   "/api/task-archives/*",
-  "/api/task-templates",
-  "/api/task-templates/*",
   // 侧问（side questions）
   "/api/side-questions",
   "/api/side-questions/*",

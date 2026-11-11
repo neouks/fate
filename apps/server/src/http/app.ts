@@ -25,6 +25,7 @@ import type { Engine } from "../engine/engine.js";
 import { requireJWT } from "./auth.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerTaskTemplateRoutes } from "./routes/task-templates.js";
 import { registerExplorationRoutes } from "./routes/exploration.js";
 import { registerAssetRoutes } from "./routes/assets.js";
 import { registerConfigRoutes } from "./routes/config.js";
@@ -148,6 +149,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   registerAuthRoutes(app, { jwtKey: deps.jwtKey });
   registerTaskRoutes(app);
+  registerTaskTemplateRoutes(app);
   registerExplorationRoutes(app);
   registerAssetRoutes(app);
   app.addHook('preHandler',async req=>{const key=(req.params as {key?:string})?.key;if(req.url.startsWith('/api/agents/')&&key)assertActiveRole(key);});
