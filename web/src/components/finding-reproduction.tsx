@@ -29,6 +29,10 @@ export function FindingReproductionPanel({finding,contextTask,readOnly,onChanged
  const jobStatus=data?.job?.status;
  const sections=data?.report_sections??finding.report_sections;
  const descriptionText=sections?.description||finding.summary||"暂无描述。";
+ const discovery=([["vulnerability","漏洞发现思路"],["asset","资产发现思路"]] as const).map(([key,label])=>{
+  const value=sections?.discovery?.[key];
+  return value?.trim()?<section className="task-finding-section" key={key}><h2>{label}</h2><p>{value}</p></section>:null;
+ });
  const openEditor=()=>{setDraft(structuredClone(repro??{entry_point:"",prerequisites:[],steps:[],provenance:""}));setDescription(sections?.description??finding.summary);setImpact(sections?.impact.join("\n")??"");setRemediation(sections?.remediation.join("\n")??"");setEditing(true);};
  const actions=!readOnly&&<div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy||running} onClick={()=>void act(()=>http(base+"/analyze"+q,{method:"POST"}))}>重新分析</Button><Button variant="outline" disabled={busy||running||!data} onClick={openEditor}>编辑过程与说明</Button></div>;
  const sectionList=(values: string[]) => <ul className="list-inside list-disc">{values.map((value,i)=><li key={i}>{value}</li>)}</ul>;
@@ -39,7 +43,7 @@ export function FindingReproductionPanel({finding,contextTask,readOnly,onChanged
  {editing&&draft&&<FieldGroup><Field><FieldLabel>漏洞说明</FieldLabel><Textarea value={description} onChange={e=>setDescription(e.target.value)}/></Field><Field><FieldLabel>入口</FieldLabel><Input value={draft.entry_point} onChange={e=>setDraft({...draft,entry_point:e.target.value})}/></Field><Field><FieldLabel>前置条件（每行一项）</FieldLabel><Textarea value={draft.prerequisites.join("\n")} onChange={e=>setDraft({...draft,prerequisites:e.target.value.split("\n")})}/></Field>
  {draft.steps.map((step,i)=><FieldGroup key={step.id}><Badge variant="secondary">步骤 {i+1}</Badge>{([['action','做了什么'],['expected','实际结果说明'],['proves','证明什么'],['traffic_id','关联真实流量 ID']] as const).map(([key,label])=><Field key={key}><FieldLabel>{label}</FieldLabel><Textarea value={step[key]??""} onChange={e=>setDraft({...draft,steps:draft.steps.map(s=>s.id===step.id?{...s,[key]:e.target.value}:s)})}/></Field>)}<div className="flex gap-2"><Button variant="outline" disabled={i===0} onClick={()=>{const steps=[...draft.steps];[steps[i-1],steps[i]]=[steps[i]!,steps[i-1]!];setDraft({...draft,steps});}}>上移步骤</Button><Button variant="outline" onClick={()=>setDraft({...draft,steps:draft.steps.filter(s=>s.id!==step.id)})}>删除步骤</Button></div></FieldGroup>)}
  <Field><FieldLabel>具体影响（每行一项）</FieldLabel><Textarea value={impact} onChange={e=>setImpact(e.target.value)}/></Field><Field><FieldLabel>修复建议（每行一项）</FieldLabel><Textarea value={remediation} onChange={e=>setRemediation(e.target.value)}/></Field><div className="flex gap-2"><Button disabled={busy} onClick={()=>void act(async()=>{await http(base+"/reproduction"+q,{method:"PATCH",body:JSON.stringify({report_revision:data!.report_revision,evidence_version:data!.evidence_version,reproduction:draft,report_sections:{description,impact:impact.split("\n").filter(Boolean),remediation:remediation.split("\n").filter(Boolean)}})});setEditing(false);})}>保存</Button><Button variant="ghost" onClick={()=>setEditing(false)}>取消</Button></div></FieldGroup>}
- {!workspaceEvidence&&<Markdown text={descriptionText}/>}
+ {!workspaceEvidence&&<><Markdown text={descriptionText}/>{discovery}</>}
  {repro?<><p>入口：{repro.entry_point||"未记录"}</p>{repro.prerequisites.length>0&&<ul className="list-inside list-disc">{repro.prerequisites.map((p,i)=><li key={i}>{p}</li>)}</ul>}
  {repro.steps.map((step,i)=><Card key={step.id}><CardHeader><CardTitle>步骤 {i+1} · {step.action||"验证"}</CardTitle><CardDescription>{step.expected}{step.expected&&step.proves?"；":""}{step.proves}</CardDescription></CardHeader><CardContent className="flex min-w-0 flex-col gap-3">
  {!step.verified&&<Badge variant="outline">Worker 提交，待关联原始证据</Badge>}{step.truncated&&<Alert><AlertDescription>当前为关键片段，完整内容请查看证据来源。</AlertDescription></Alert>}
@@ -48,13 +52,15 @@ export function FindingReproductionPanel({finding,contextTask,readOnly,onChanged
  {(step.source||step.source_ref)&&<Button variant="outline" onClick={()=>void readSource(step.id)}>查看完整证据来源</Button>}
  {source?.id===step.id&&<div><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words">{source.content}</pre>{source.next_offset<source.total&&<Button variant="outline" onClick={()=>void readSource(step.id,true)}>继续读取</Button>}</div>}
  <Images images={data?.images.filter(im=>im.step_id===step.id)??[]} base={base} q={q} disabled={busy||readOnly} upload={f=>upload(f,step.id)} mutate={fn=>act(fn)}/>
- </CardContent></Card>)}{repro.provenance&&<p>发现来源：{repro.provenance}</p>}</>:<Alert><AlertDescription>尚未整理分步骤过程。原始证据完整保留，可选择重新分析；缺失材料不会补造成已验证步骤。</AlertDescription></Alert>}
+ </CardContent></Card>)}{!sections?.discovery&&repro.provenance&&<p>发现来源：{repro.provenance}</p>}</>:<Alert><AlertDescription>尚未整理分步骤过程。原始证据完整保留，可选择重新分析；缺失材料不会补造成已验证步骤。</AlertDescription></Alert>}
  <Images images={data?.images.filter(im=>!im.step_id||!repro?.steps.some(s=>s.id===im.step_id))??[]} base={base} q={q} disabled={busy||readOnly} upload={upload} mutate={fn=>act(fn)}/>
- {!workspaceEvidence&&data?.report_sections&&<><h3>具体影响</h3>{sectionList(data.report_sections.impact)}<h3>修复建议</h3>{sectionList(data.report_sections.remediation)}</>}
+ {!workspaceEvidence&&sections?.impact.length ? <><h3>具体影响</h3>{sectionList(sections.impact)}</> : null}
+ {!workspaceEvidence&&sections?.remediation.length ? <><h3>修复建议</h3>{sectionList(sections.remediation)}</> : null}
  {data?.versions.length? <details><summary>历史报告版本</summary>{data.versions.map(v=><Button key={v.revision} variant="link" onClick={()=>void act(async()=>{const value=await http<{report:string}>(base+`/report-versions/${v.revision}`+q);await navigator.clipboard.writeText(value.report);toast.success("历史版本已复制");})}>版本 {v.revision} · 证据 {v.evidence_version} · 复制原文</Button>)}</details>:null}
  </>;
  if (workspaceEvidence) return <>
    <section className="task-finding-section"><h2>漏洞描述</h2><Markdown text={descriptionText}/></section>
+   {discovery}
    {Boolean(sections?.impact.length)&&<section className="task-finding-section"><h2>影响</h2>{sectionList(sections!.impact)}</section>}
    <section className="task-finding-section"><h2>复现步骤</h2>{actions}<div className="flex min-w-0 flex-col gap-4">{contents}</div></section>
    {workspaceEvidence}

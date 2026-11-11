@@ -1,7 +1,8 @@
 import {randomUUID,createHash} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {cleanupOrphanBlobs,putBlob,readBlob} from '../../evidence/blobs.js';
-import {archiveReport,normalizeReproduction,prepareReproduction,attachStepTraffic,assembleReport,reportSections,stepSource} from '../../evidence/reproduction.js';
+import {archiveReport,normalizeReproduction,prepareReproduction,attachStepTraffic,assembleReport,stepSource} from '../../evidence/reproduction.js';
+import {reportSections,REPORTER_SAVE_GUIDANCE,type ReportSections} from '../../evidence/report-sections.js';
 const error=(m:string,statusCode=400)=>Object.assign(new Error(m),{statusCode});
 export function registerFindingReproductionRoutes(app:FastifyInstance){
  const db=app.db,base='/api/exploration/findings/:id';
@@ -34,12 +35,16 @@ export function registerFindingReproductionRoutes(app:FastifyInstance){
   return db.transaction(async tx=>{
    const f=(await tx.query('SELECT * FROM findings WHERE id=$1 FOR UPDATE',[p.id])).rows[0]!;
    if(Number(f.report_revision)!==b.report_revision||Number(f.evidence_version)!==b.evidence_version)throw error('版本已变化，请刷新',409);
+   let sections=b.report_sections===undefined?null:reportSections(b.report_sections);
+   const savedDiscovery=(f.report_sections as ReportSections|null)?.discovery;
+   if(sections && sections.discovery===undefined && savedDiscovery!==undefined)
+    sections=reportSections({...sections,discovery:savedDiscovery});
    const repro=normalizeReproduction(b.reproduction),old=normalizeReproduction(f.reproduction);
    for(const step of repro?.steps??[]){const before=old?.steps.find(s=>s.id===step.id);if(before&&before.request===step.request&&before.response===step.response&&before.traffic_id===step.traffic_id&&before.source===step.source&&before.source_ref===step.source_ref){step.verified=(f.reproduction as {steps:Array<{id:string;verified?:boolean}>})?.steps.find(s=>s.id===step.id)?.verified;continue;}
     const checked=await prepareReproduction(tx,{...repro,steps:[step]},{taskID:Number(f.task_id),evidence:String(f.evidence),findingNodeID:Number(f.node_id)},true);Object.assign(step,checked!.steps[0]);}
    await archiveReport(tx,f);await attachStepTraffic(tx,Number(f.id),Number(f.task_id),repro);
    await tx.query('UPDATE findings SET reproduction=$2,report_revision=report_revision+1,evidence_version=evidence_version+1 WHERE id=$1',[f.id,repro]);
-   if(b.report_sections){const sections=reportSections(b.report_sections);const current=(await tx.query('SELECT * FROM findings WHERE id=$1',[f.id])).rows[0]!;await tx.query('UPDATE findings SET report_sections=$2,report=$3,report_evidence_version=evidence_version WHERE id=$1',[f.id,sections,assembleReport({...current,report_sections:sections,report_evidence_version:current.evidence_version})]);}
+   if(sections){const current=(await tx.query('SELECT * FROM findings WHERE id=$1',[f.id])).rows[0]!;await tx.query('UPDATE findings SET report_sections=$2,report=$3,report_evidence_version=evidence_version WHERE id=$1',[f.id,sections,assembleReport({...current,report_sections:sections,report_evidence_version:current.evidence_version})]);}
    await tx.query('UPDATE finding_step_images SET step_id=NULL WHERE finding_id=$1 AND NOT(step_id=ANY($2::text[]))',[f.id,repro?.steps.map(s=>s.id)??[]]);return {saved:true};
   });
  });
@@ -51,7 +56,7 @@ export function registerFindingReproductionRoutes(app:FastifyInstance){
    const triggered=(await tx.query(`SELECT r.id,r.conversation_id FROM conversation_runs r JOIN conversations c ON c.id=r.conversation_id WHERE c.agent_key='reporter' AND r.status IN ('queued','running') AND EXISTS(SELECT 1 FROM agent_trigger_events e WHERE e.event_key=ANY(r.event_keys) AND e.kind='finding' AND (e.payload->>'finding_id')::bigint=$1) ORDER BY r.id LIMIT 1`,[f.id])).rows[0];
    if(triggered)return (await tx.query('INSERT INTO finding_report_jobs(finding_id,conversation_id,run_id,evidence_version,report_revision) VALUES($1,$2,$3,$4,$5) ON CONFLICT(finding_id,run_id) DO UPDATE SET finding_id=EXCLUDED.finding_id RETURNING *',[f.id,triggered.conversation_id,triggered.id,f.evidence_version,f.report_revision])).rows[0]!;
    const c=await app.engine.conversations.create('reporter',`整理漏洞 #${f.id}`,null,Number(f.task_id),tx);
-   const run=await app.engine.conversations.enqueue(Number(c.id),`请读取漏洞 #${f.id}，按已有真实证据整理分步骤报告。使用 report_sections 提交说明、影响和修复建议。历史过程只能使用 source=evidence 的原文摘录或真实 traffic_id 补全，缺失材料如实说明。保持已提交步骤 ID，不修改报文原文。`,[],randomUUID(),tx);
+   const run=await app.engine.conversations.enqueue(Number(c.id),`请读取漏洞 #${f.id}，用通俗中文整理简短报告，保留复现步骤和原始证据。历史过程只引用逐字证据或真实 traffic_id，保留步骤 ID。${REPORTER_SAVE_GUIDANCE}`,[],randomUUID(),tx);
    return (await tx.query('INSERT INTO finding_report_jobs(finding_id,conversation_id,run_id,evidence_version,report_revision) VALUES($1,$2,$3,$4,$5) RETURNING *',[f.id,c.id,run.run_id,f.evidence_version,f.report_revision])).rows[0]!;
   });if(typeof app.engine.conversations.pump==='function')void app.engine.conversations.pump().catch(()=>{});return reply.code(202).send(job);
  });

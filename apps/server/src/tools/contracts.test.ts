@@ -142,14 +142,20 @@ test('context_search rejects unsupported filters and retains valid pagination pa
   assert.throws(() => validate(contextSearchTool(runContext(noDB,1,1,'reporter')),{source:'operations'}));
 });
 
-test('update_finding_report requires structured or legacy nonblank report content', async () => {
-  const tool = conversationDomainTools(runContext(noDB,1,1,'reporter'),{} as never).find(t=>t.name==='update_finding_report')!;
-  const ids = {finding_id:1,evidence_version:2};
-  assert.throws(() => validate(tool,ids));
-  assert.throws(() => validate(tool,{...ids,report:' '}));
-  assert.equal((await invoke(tool,ids,false)).error,true);
-  for (const args of [{...ids,report:'旧版报告'}, {...ids,report_sections:{description:'分析说明',impact:[],remediation:[]}}])
-    assert.deepEqual(validate(tool,args),args);
+test('Reporter requires concise sections and Auto still accepts legacy report content', async () => {
+  const tool = (role:'reporter'|'auto') => conversationDomainTools(runContext(noDB,1,1,role),{} as never)
+    .find(t=>t.name==='update_finding_report')!;
+  const ids = {finding_id:1,evidence_version:2,report_revision:3};
+  const sections = {description:'分析说明',impact:[],remediation:[]};
+  assert.throws(() => validate(tool('reporter'),ids));
+  assert.throws(() => validate(tool('reporter'),{...ids,report:'旧版报告'}));
+  assert.throws(() => validate(tool('reporter'),{...ids,report_sections:sections}));
+  assert.equal((await invoke(tool('reporter'),{...ids,report:'旧版报告'},false)).error,true);
+  const concise = {...ids,report_sections:{...sections,discovery:{}}};
+  assert.deepEqual(validate(tool('reporter'),concise),concise);
+  assert.throws(() => validate(tool('auto'),{...ids,report:' '}));
+  for (const args of [{...ids,report:'旧版报告'}, {...ids,report_sections:sections}])
+    assert.deepEqual(validate(tool('auto'),args),args);
 });
 
 test('native PI stops a loop after three rejected add_intent rounds with no turn limit', async () => {

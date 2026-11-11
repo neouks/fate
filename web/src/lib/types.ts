@@ -1542,6 +1542,6 @@ export interface EvidenceContentPage { content:string; offset:number; next_offse
 
 export interface FindingStep {id:string;action:string;request:string;response:string;expected:string;proves:string;traffic_id?:string;source?:"evidence";source_ref?:string;verified?:boolean;truncated?:boolean}
 export interface FindingReproduction {entry_point:string;prerequisites:string[];steps:FindingStep[];provenance:string}
-export interface FindingReportSections {description:string;impact:string[];remediation:string[]}
+export interface FindingReportSections {description:string;impact:string[];remediation:string[];discovery?:{vulnerability?:string;asset?:string}}
 export interface FindingStepImage {id:string;step_id?:string|null;caption:string;mime:string;position:number}
 export interface FindingReproductionDetail {reproduction:FindingReproduction|null;report_sections:FindingReportSections|null;report_revision:number;evidence_version:number;markdown:string;images:FindingStepImage[];versions:Array<{revision:number;evidence_version:number;created_at:string}>;job?:{id:number;conversation_id:number;status?:string;error?:string}}

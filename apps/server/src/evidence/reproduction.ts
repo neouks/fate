@@ -5,9 +5,9 @@ import type {Database} from '../db/index.js';
 import {readBlob} from './blobs.js';
 import {authorizeEvidence} from './authorization.js';
 import {bindEvidence} from './store.js';
+import {DISCOVERY_LABELS,type ReportSections} from './report-sections.js';
 export interface ReproStep {id:string;action:string;request:string;response:string;expected:string;proves:string;traffic_id?:string;source?:'evidence';source_ref?:string;verified?:boolean;truncated?:boolean;}
 export interface Reproduction {entry_point:string;prerequisites:string[];steps:ReproStep[];provenance:string;}
-export interface ReportSections {description:string;impact:string[];remediation:string[];}
 const invalid=(m:string)=>Object.assign(new Error(m),{statusCode:400});
 const text=(v:unknown)=>typeof v==='string'?v:'';
 export function normalizeReproduction(value:unknown):Reproduction|null{
@@ -93,18 +93,16 @@ export async function attachStepTraffic(db:Database,findingID:number,taskID:numb
 export async function archiveReport(db:Database,f:Record<string,unknown>){
  await db.query(`INSERT INTO finding_report_versions(finding_id,revision,evidence_version,report,sections,reproduction) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,[f.id,f.report_revision, f.report_evidence_version??f.evidence_version,f.report??'',f.report_sections??null,f.reproduction??null]);
 }
-export function reportSections(value:unknown):ReportSections{
- if(!value||typeof value!=='object')throw invalid('需要结构化 report_sections');const v=value as Record<string,unknown>;
- for(const key of Object.keys(v))if(!['description','impact','remediation'].includes(key))throw invalid('报告模型只能提交说明、影响与修复建议');
- if(typeof v.description!=='string'||!Array.isArray(v.impact)||!Array.isArray(v.remediation)||[...v.impact,...v.remediation].some(x=>typeof x!=='string'))throw invalid('报告字段格式错误');
- return v as unknown as ReportSections;
-}
 const fence=(v:string)=>{const marks='`'.repeat(Math.max(3,...(v.match(/`+/g)??[]).map(s=>s.length+1)));return `${marks}\n${v}\n${marks}`;};
 /** One deterministic assembler for the UI's report text and every export. */
 export function assembleReport(f:Record<string,unknown>,images:Array<{id:string;step_id?:string|null;caption:string;mime:string}>=[],imageURL=(id:string)=>`/api/exploration/findings/${f.id}/images/${id}`){
  const r=f.reproduction as Reproduction|null,sections=f.report_sections as ReportSections|null;
  const out=[`# ${f.name||f.vulnclass||'漏洞报告'}`,'',`## 漏洞说明`,sections?.description||String(f.summary??''),''];
  if(Number(f.report_evidence_version)!==Number(f.evidence_version))out.push('> 报告依据已变化，请核对当前证据。','');
+ for(const key of ['vulnerability','asset'] as const){
+  const value=sections?.discovery?.[key];
+  if(value?.trim())out.push(`## ${DISCOVERY_LABELS[key]}`,value,'');
+ }
  if(r){out.push('## 测试过程',`入口：${r.entry_point||'未记录'}`,'',...r.prerequisites.map(p=>`- ${p}`),'');
  for(const [i,s]of r.steps.entries()){
   out.push(`### 步骤 ${i+1}：${s.action||'验证'}`,'',s.expected,s.proves,'');
@@ -115,10 +113,11 @@ export function assembleReport(f:Record<string,unknown>,images:Array<{id:string;
   if(s.traffic_id)out.push(`[完整流量证据](/function/traffic?exchange=${encodeURIComponent(s.traffic_id)})`,'');
   for(const img of images.filter(im=>im.step_id===s.id))out.push(`![${img.caption.replace(/[\[\]\n]/g,' ')}](${imageURL(img.id)})`,'');
  }
- if(r.provenance)out.push('## 发现来源',r.provenance,'');
+ if(!sections?.discovery&&r.provenance)out.push('## 发现来源',r.provenance,'');
  }else out.push('## 测试过程','尚未整理分步骤过程，以下原始证据完整保留。','');
  const extra=images.filter(im=>!im.step_id||!r?.steps.some(s=>s.id===im.step_id));if(extra.length)out.push('## 补充证据',...extra.flatMap(img=>[`![${img.caption.replace(/[\[\]\n]/g,' ')}](${imageURL(img.id)})`,'']));
- if(sections)out.push('## 具体影响',...sections.impact.map(s=>`- ${s}`),'','## 修复建议',...sections.remediation.map(s=>`- ${s}`),'');
+ if(sections?.impact.length)out.push('## 具体影响',...sections.impact.map(s=>`- ${s}`),'');
+ if(sections?.remediation.length)out.push('## 修复建议',...sections.remediation.map(s=>`- ${s}`),'');
  if(!sections&&f.report)out.push('## 历史报告',String(f.report),'');
  out.push('## 原始证据 / PoC',fence(String(f.evidence??'')),'');return out.join('\n');
 }

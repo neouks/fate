@@ -1,3 +1,5 @@
+import { REPORTER_SAVE_GUIDANCE } from '../evidence/report-sections.js';
+
 /** Exact shipped text from ARTEX agent/tools.go:setConstraints. No fuzzy matching:
  * edited descriptions remain user configuration. */
 export const ARTEX_CONSTRAINT_DESCRIPTION =
@@ -16,6 +18,8 @@ export function recognizedHistoricalDescription(name:string,stored:unknown):unkn
 /** These are built-in capability hints, not edits to the user's prompt or text. */
 export function roleToolDescription(name:string,resolved:{description:string;source:string},role:string):string {
   if (resolved.source !== 'builtin') return resolved.description;
+  if (name === 'update_finding_report') return resolved.description + (role === 'reporter'
+    ? ' ' + REPORTER_SAVE_GUIDANCE : ' 提交 report_sections 或兼容的非空 report。');
   let description = resolved.description;
   if (role !== 'planner' && name === 'context_search')
     description = description.replace(' Planner 可用 source=planner_session 检索本任务历史规划原文；历史不能代替实时图查询。','');
@@ -33,7 +37,6 @@ export function describeToolContract(name: string, description: string): string 
   if (name === 'insert_assets') return description + ' 整批失败返回工具错误，部分成功只重试失败项。';
   if (name === 'register_user_target') return description + ' evidence 引用目标或描述中的完整原句。精确域名用 subdomain；root_domain 仅用于原文明确的通配根域。';
   if (name === 'context_search') return description + ' source=operations/needs 不支持图谱筛选 q/types/state/asset_id。';
-  if (name === 'update_finding_report') return description + ' 提交 report_sections 或兼容的非空 report。';
   return description;
 }
 
