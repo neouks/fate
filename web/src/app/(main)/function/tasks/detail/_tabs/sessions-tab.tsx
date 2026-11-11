@@ -39,7 +39,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { TodoPopover } from "@/components/todo-popover";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -72,8 +71,6 @@ import type {
   Session,
   SessionStatus,
   SessionTokenUsage,
-  TaskLLMResolution,
-  TaskLLMResolutions,
   TaskNode,
   TokenTotal,
 } from "@/lib/types";
@@ -82,13 +79,6 @@ import { cn } from "@/lib/utils";
 import { RelatedSessions, RelatedSessionDetail } from "./related-sessions";
 import { SessionTranscript, SessionWorkspace, type TranscriptPositions } from "./session-workspace";
 import { WorkerQueue } from "./worker-queue";
-
-// resolutionLabel names the LLM a session runs on. The badge shows this alone and
-// keeps the model id in its tooltip. Env-backed configs can arrive without a name,
-// so fall back to the model id rather than rendering an empty badge.
-function resolutionLabel(r: TaskLLMResolution): string {
-  return r.name || r.model || "未命名配置";
-}
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
 function fmtBytes(n: number): string {
@@ -494,15 +484,16 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
 
 export function SessionsTab({
   taskId,
+  processOpen, onProcessOpenChange,
   onOpenSettings,
   workerExecutionAllowed = true,
 }: {
   taskId: string;
+  processOpen: boolean;
+  onProcessOpenChange: (open: boolean) => void;
   workerExecutionAllowed?: boolean;
   onOpenSettings?:()=>void;
 }) {
-  const [processOpen, setProcessOpen] = React.useState(false);
-  const [showDetail, setShowDetail] = React.useState(false);
   const [completedCount, setCompletedCount] = React.useState<number | null>(null);
   const [relatedSession,setRelatedSession]=React.useState<import("@/lib/types").Conversation|null>(null);
   const [selectedSessionId, setActiveId] = React.useState(PLANNER_ID);
@@ -514,8 +505,6 @@ export function SessionsTab({
   const focusSeq = Number(params.get("activity"));
   const focused =
     Number.isSafeInteger(focusSeq) && focusSeq > 0 && /^(main:\d+|plan|intent:[1-9]\d*)$/.test(focusSession);
-  const plannerFocused = focused && focusSession === "plan";
-  const panelFocused = focused && !plannerFocused;
   const invalidFocus = (params.has("session") || params.has("activity")) && !focused;
   const clearFocus = () => {
     const next = new URLSearchParams(params);
@@ -593,8 +582,6 @@ export function SessionsTab({
       setActiveId(mainSessionId(r.seq));
       setRelatedSession(null);
       clearFocus();
-      setShowDetail(true);
-      setProcessOpen(true);
       setInput("");
     } catch (e) {
       toast.error(`新建会话失败：${(e as Error).message}`);
@@ -700,15 +687,13 @@ export function SessionsTab({
   // Whole-task token total (all agents), polled from the backend aggregate.
   const [taskTokens, setTaskTokens] = React.useState<TokenTotal | null>(null);
   const [sessionTokens, setSessionTokens] = React.useState<Record<string, SessionTokenUsage>>({});
-  const [llmResolutions, setLLMResolutions] = React.useState<TaskLLMResolutions | null>(null);
   // Refs backing SSE/loading without re-render churn.
   const snapshotRef = React.useRef(0); // task-level snapshot cursor → SSE since=
   const esRef = React.useRef<ReturnType<typeof openActivityStream> | null>(null);
   // Transient provider text is separate from the durable, sequence-numbered transcript.
   const [streaming, setStreaming] = React.useState<StreamSnapshot[]>([]);
   const activeKeyRef = React.useRef("plan");
-  const [plannerPositions] = React.useState<TranscriptPositions>(() => new Map());
-  const [detailPositions] = React.useState<TranscriptPositions>(() => new Map());
+  const [transcriptPositions] = React.useState<TranscriptPositions>(() => new Map());
   const [olderLoads] = React.useState(() => new Set<string>());
   const llmToastSeqRef = React.useRef<Set<number>>(new Set());
   const chatStatusRequestRef = React.useRef(0);
@@ -884,25 +869,6 @@ export function SessionsTab({
     };
   }, [taskId]);
 
-  React.useEffect(() => {
-    let alive = true;
-    const load = () =>
-      api
-        .taskLLMResolution(taskId)
-        .then((value) => {
-          if (alive) setLLMResolutions(value);
-        })
-        .catch(() => {
-          // Polling is best-effort; the next interval retries automatically.
-        });
-    void load();
-    const timer = setInterval(load, 10_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [taskId]);
-
   // Re-render on a timer so "streaming" liveness recomputes as activity goes stale.
   const [tick, setTick] = React.useState(() => Date.now());
   React.useEffect(() => {
@@ -927,7 +893,6 @@ export function SessionsTab({
     setHasLoadedOlderIntentsPage(false);
     setTaskTokens(null);
     setSessionTokens({});
-    setLLMResolutions(null);
     setSseLive(false);
     setActiveId(PLANNER_ID); // a stale worker id from the previous task must not leak in
     setMainSegs([{ seq: 0, created_at: "" }]);
@@ -973,8 +938,7 @@ export function SessionsTab({
           let hasMore = cur.hasMore;
           let earliestSeq = cur.earliestSeq;
           // Preserve scrolled-up history; trimmed rows remain available via pagination.
-          const reading = (key === "plan" && plannerPositions.get(key)?.pinned === false) ||
-            (key === activeK && detailPositions.get(key)?.pinned === false);
+          const reading = (key === "plan" || key === activeK) && transcriptPositions.get(key)?.pinned === false;
           if (!reading && items.length > MAX_KEEP) {
             items = items.slice(-MAX_KEEP);
             hasMore = true;
@@ -1101,14 +1065,6 @@ export function SessionsTab({
             } else {
               toast.info(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
             }
-            void api
-              .taskLLMResolution(taskId)
-              .then((value) => {
-                if (alive) setLLMResolutions(value);
-              })
-              .catch(() => {
-                // The periodic resolver poll will retry if this event-triggered refresh fails.
-              });
           }
           streamCursor=Math.max(streamCursor,a.seq);
           pending.push(a);
@@ -1133,7 +1089,7 @@ export function SessionsTab({
       setStreaming([]);
       esRef.current = null;
     };
-  }, [taskId, patchStore, plannerPositions, detailPositions]);
+  }, [taskId, patchStore, transcriptPositions]);
 
   React.useEffect(() => {
     let active = true;
@@ -1446,9 +1402,9 @@ export function SessionsTab({
     system: sessions.filter((s) => s.role === "system"),
   };
 
-  const focusedSession: Session | undefined = panelFocused
+  const focusedSession: Session | undefined = focused
     ? sessions.find((s) => keyForSession(s) === focusSession) ||
-      (focusSession.startsWith("main:")
+      (focusSession === "plan" ? PLANNER_SESSION : focusSession.startsWith("main:")
           ? {
               ...MAIN_SESSION,
               id: mainSessionId(Number(focusSession.split(":")[1])),
@@ -1479,13 +1435,10 @@ export function SessionsTab({
   // active session's terminal record (kind='result', or an error) lands, so the input
   // re-enables immediately instead of waiting for the next chat-status poll.
   const mainBusy = sending || (mainChatRunning ?? recentLive(currentMainKey));
-  const detailVisible = showDetail || panelFocused || invalidFocus;
-  React.useEffect(() => {
-    if (panelFocused || invalidFocus) setProcessOpen(true);
-  }, [panelFocused, invalidFocus, focusSession, focusSeq]);
-  React.useEffect(() => { loadSession("plan"); }, [loadSession]);
-
-  const visibleKey = processOpen && detailVisible && !relatedSession ? activeKey : "plan";
+  const mainSeg = isMain ? active.seg ?? currentSeg : currentSeg;
+  const mainKey = mainSessionKey(mainSeg);
+  const mainState = store[mainKey];
+  const visibleKey = relatedSession ? currentMainKey : activeKey;
   // The task stream remains mounted. Open only the selected history and clear
   // unread counts for the currently visible detail.
   // biome-ignore lint/correctness/useExhaustiveDependencies: cache updates must not reactivate a session.
@@ -1529,15 +1482,6 @@ export function SessionsTab({
     active.inherited,
     sessionMeta,
   ]);
-
-  // seq of this session's most-recent TodoWrite call — for the Todo popover.
-  const latestTodoSeq = React.useMemo(() => {
-    for (let i = activity.length - 1; i >= 0; i--) {
-      const a = activity[i];
-      if (a.kind === "tool_use" && a.tool === "TodoWrite") return a.seq;
-    }
-    return null;
-  }, [activity]);
 
   // Ledger snapshots already include completed requests from a live execution.
   // Never add the cumulative native usage frame on top of a server snapshot.
@@ -1586,11 +1530,9 @@ export function SessionsTab({
     if ((!text && atts.length === 0) || !mainLoaded || sending || mainBusy) return;
     const requestID=crypto.randomUUID();
     const sentKey=currentMainKey;
-    if (panelFocused || invalidFocus) clearFocus();
+    if (focused || invalidFocus) clearFocus();
     setRelatedSession(null);
     setActiveId(mainSessionId(currentSeg));
-    setShowDetail(true);
-    setProcessOpen(true);
     patchStore(sentKey,s=>({...s,items:mergeBySeq(s.items,[{seq:-Date.now(),worker:"mainagent",main_seg:currentSeg,kind:"user",summary:text,detail:text,ts:new Date().toISOString(),turn_id:requestID,metadata:{turn_id:requestID,attachments:atts}}])}));
     setInput("");
     setAttachments([]);
@@ -1624,18 +1566,11 @@ export function SessionsTab({
   const sendMode = useChatSendMode();
   // What the transcript pane should show for the active session.
   const showLoader = !activeState || (activeState.loading && !activeState.loaded);
-  const resolutionForSession = (session: Session): TaskLLMResolution | undefined => {
-    if (!llmResolutions || session.inherited || session.role === "system") return undefined;
-    if (session.role === "mainagent") return llmResolutions.mainagent;
-    if (session.role === "planner") return llmResolutions.planner;
-    return llmResolutions.worker;
-  };
-  const activeResolution = resolutionForSession(active);
   const activeAssets =
     active.role === "worker" && active.intent_id ? intentAssetsByID.get(active.intent_id) : undefined;
 
   const composer=(
-<div>
+<div className="task-composer">
                 {attachments.length > 0 && (
                   <div className="mb-2 flex flex-wrap gap-1.5">
                     {attachments.map((a) => (
@@ -1667,7 +1602,14 @@ export function SessionsTab({
                   onChange={(e) => void pickFiles(e.target.files)}
                 />
                 <InputGroup className="min-h-9 has-disabled:opacity-100">
-                  {onOpenSettings && <InputGroupAddon align="block-start"><InputGroupButton variant="outline" className="composer-config" onClick={onOpenSettings}><GaugeIcon data-icon="inline-start"/>任务配置</InputGroupButton></InputGroupAddon>}
+                  {onOpenSettings && (
+                    <InputGroupAddon align="block-start">
+                      <InputGroupButton variant="outline" className="composer-config" onClick={onOpenSettings}>
+                        <GaugeIcon data-icon="inline-start" />
+                        任务配置
+                      </InputGroupButton>
+                    </InputGroupAddon>
+                  )}
                   <MentionTextarea
                     inputGroup
                     rows={1}
@@ -1737,6 +1679,9 @@ export function SessionsTab({
           <div className="border-b px-3 py-2">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium text-muted-foreground">会话列表</span>
+              {completedCount !== null && (
+                <span className="text-xs text-muted-foreground">{completedCount.toLocaleString()} 个 Worker 已完成</span>
+              )}
               {!MOCK && (
                 <span
                   className={cn(
@@ -1913,14 +1858,14 @@ export function SessionsTab({
                         <SessionItem
                           key={s.id}
                           s={s}
-                          active={s.id === active.id}
+                          active={!relatedSession && s.id === active.id}
                           displayTitle={meta?.title ?? s.title}
                           unread={store[keyForSession(s)]?.unread}
                           onClick={() => {
-                            if (panelFocused || invalidFocus) clearFocus();
+                            if (focused || invalidFocus) clearFocus();
                             setRelatedSession(null);
                             setActiveId(s.id);
-                            setShowDetail(true);
+                            if (!window.matchMedia("(min-width:1280px)").matches) onProcessOpenChange(false);
                           }}
                           controlling={controllingIntent !== null}
                           selected={selectedWorkers.has(s.intent_id ?? "")}
@@ -1964,7 +1909,11 @@ export function SessionsTab({
                   </div>
                 );
               })}
-              <RelatedSessions taskId={taskId} onSelect={row=>{if (panelFocused || invalidFocus) clearFocus();setRelatedSession(row);setShowDetail(true);}}/>
+              <RelatedSessions taskId={taskId} onSelect={(row) => {
+                if (focused || invalidFocus) clearFocus();
+                setRelatedSession(row);
+                if (!window.matchMedia("(min-width:1280px)").matches) onProcessOpenChange(false);
+              }} />
               {mainLoaded && !workerSessions.length && (
                 <div className="px-2 py-1 text-xs text-muted-foreground">暂无运行中的 Worker 会话。</div>
               )}
@@ -1978,7 +1927,7 @@ export function SessionsTab({
     withLiveStreams(items,streaming.filter(s=>sessionKeyOf({...s,seq:-1,kind:s.channel,summary:s.text})===key));
   const processDetail=(
 
-          <div className="flex h-full min-h-0 flex-1 min-w-0 flex-col overflow-hidden bg-card">
+          <div className="flex h-full min-h-0 flex-1 min-w-0 flex-col overflow-hidden">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 sm:px-4 sm:py-2.5">
               {(() => {
                 const isWorker = active.role === "worker";
@@ -1998,28 +1947,6 @@ export function SessionsTab({
                   titleEl
                 );
               })()}
-              {activeResolution && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Badge
-                      variant="outline"
-                      className="max-w-28 shrink-0 font-normal"
-                      aria-label={
-                        activeResolution.available ? `当前配置：${resolutionLabel(activeResolution)}` : "模型不可用"
-                      }
-                    >
-                      <span className="truncate">
-                        {activeResolution.available ? resolutionLabel(activeResolution) : "模型不可用"}
-                      </span>
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="max-w-xs [overflow-wrap:anywhere]">
-                    {activeResolution.available
-                      ? [resolutionLabel(activeResolution), activeResolution.model].filter(Boolean).join(" / ")
-                      : activeResolution.reason || "没有可用的 LLM 配置"}
-                  </TooltipContent>
-                </Tooltip>
-              )}
               {activeAssets && activeAssets.length > 0 && <WorkerAssetBadge assets={activeAssets} />}
               {active.inherited && active.source_task_id && (
                 <Badge variant="outline">来源任务 #{active.source_task_id} · 只读历史</Badge>
@@ -2106,7 +2033,7 @@ export function SessionsTab({
                     返回会话
                   </Button>
                 </Alert>
-              ) : panelFocused ? (
+              ) : focused ? (
                 <SourceTranscript
                   key={`${taskId}:${focusSession}:${focusSeq}`}
                   taskId={taskId}
@@ -2116,13 +2043,12 @@ export function SessionsTab({
                   onLatest={() => {
                     setSourceSession(active);
                     setActiveId(active.id);
-                    setShowDetail(true);
                     clearFocus();
                     loadSession(activeKey);
                   }}
                 />
               ) : (
-                <SessionTranscript key={activeKey} sessionKey={activeKey} positions={detailPositions}
+                <SessionTranscript key={activeKey} sessionKey={activeKey} positions={transcriptPositions}
                   taskId={taskId} items={activityWithStreams(activeKey,activity)} live={active.live}
                   chat={isMain} stopping={isMain && active.seg === currentSeg && stopping}
                   loading={showLoader} loadingMore={activeState?.loadingMore} error={activeState?.error}
@@ -2131,7 +2057,7 @@ export function SessionsTab({
               )}
             {active.role === "worker" &&
               !active.inherited &&
-              (active.status === "running" || active.status === "paused") ? (
+              (active.status === "running" || active.status === "paused") && (
               <div className="flex items-center justify-between gap-3 border-t p-3">
                 <span className="text-sm text-muted-foreground" role="status">
                   {workerExiting || pausingIntent === active.intent_id ? "正在暂停 Worker…" : controllingIntent === active.intent_id || workerResuming ? "正在恢复 Worker…" : active.status === "paused" ? "Worker 已暂停" : "Worker 正在执行"}
@@ -2144,37 +2070,40 @@ export function SessionsTab({
                   {workerExiting || pausingIntent === active.intent_id ? "正在暂停" : workerResuming ? "正在恢复" : active.status === "running" ? "暂停" : "恢复"}
                 </Button>
               </div>
-            ) : (
-              <div className="flex items-center border-t px-4 py-2">
-                <TodoPopover
-                  seq={latestTodoSeq}
-                  fetchDetail={(seq) => api.activityDetail(seq, taskId).then((r) => r.detail ?? "")}
-                />
-              </div>
             )}
           </div>
 
   );
-  const plannerState = store.plan;
-  const planner = plannerFocused ? (
-    <SourceTranscript key={`${taskId}:plan:${focusSeq}`} taskId={taskId} session="plan" anchor={focusSeq}
-      onLatest={()=>{clearFocus();loadSession("plan");}} />
-  ) : (
-    <SessionTranscript sessionKey="plan" positions={plannerPositions} taskId={taskId}
-      items={activityWithStreams("plan",plannerState?.items??[])} live={plannerLive}
-      loading={!plannerState?.loaded && !plannerState?.error} loadingMore={plannerState?.loadingMore}
-      error={plannerState?.error} hasMore={plannerState?.hasMore}
-      onEarlier={node=>loadEarlier("plan",()=>node)} onRetry={()=>loadSession("plan")} />
-  );
-  const detail = detailVisible ? (relatedSession
+  const detail = relatedSession
     ? <RelatedSessionDetail key={relatedSession.id} row={relatedSession} />
-    : processDetail) : null;
+    : !isMain ? processDetail : undefined;
   return <TooltipProvider delayDuration={300}>
-    <SessionWorkspace open={processOpen} onOpenChange={setProcessOpen} completedCount={completedCount}
-      planner={<><div className="flex h-10 shrink-0 items-center justify-between px-4 text-sm text-muted-foreground">
-        <span>Planner</span>{!MOCK && <span className="text-xs">{sseLive?"实时连接":"正在重连，已保留内容"}</span>}
-      </div>{planner}</>} list={agentList} detail={detail} composer={composer}
-      onBack={()=>{setRelatedSession(null);setShowDetail(false);if (panelFocused || invalidFocus) clearFocus();}} />
+    <SessionWorkspace open={processOpen} onOpenChange={onProcessOpenChange}
+      list={agentList} primaryDetail={detail}
+      sessionKey={relatedSession ? `related:${relatedSession.id}` : activeKey}
+      primaryDetailLabel={relatedSession ? "执行会话" : isPlanner ? "Planner 会话" : isSystem ? "执行会话" : "Worker 会话"}
+      main={
+        <section aria-label="主 Agent 对话" className="task-main-conversation flex h-full min-h-0 min-w-0 flex-col">
+          <div className="flex min-h-12 shrink-0 items-center justify-between gap-3 px-6 py-2 text-sm text-muted-foreground">
+            <span>{mainSeg === currentSeg ? "主 Agent · 当前会话" : `主 Agent · 历史会话 ${mainSeg + 1}`}</span>
+            {!MOCK && <span className="text-xs">{sseLive ? "实时连接" : "正在重连，已保留内容"}</span>}
+          </div>
+          {isMain && (focused || invalidFocus) ? processDetail : (
+            <SessionTranscript key={mainKey} sessionKey={mainKey} positions={transcriptPositions} taskId={taskId}
+              items={activityWithStreams(mainKey,mainState?.items ?? [])} live={mainSeg === currentSeg && !!mainBusy}
+              chat stopping={mainSeg === currentSeg && stopping}
+              loading={!mainState?.loaded && !mainState?.error} loadingMore={mainState?.loadingMore}
+              error={mainState?.error} hasMore={mainState?.hasMore}
+              onEarlier={node=>loadEarlier(mainKey,()=>node)} onRetry={()=>loadSession(mainKey)} />
+          )}
+          {composer}
+        </section>
+      }
+      onBack={() => {
+        if (focused || invalidFocus) clearFocus();
+        setRelatedSession(null);
+        setActiveId(mainSessionId(currentSeg));
+      }} />
         <AlertDialog
           open={deleteWorkers.length > 0}
           onOpenChange={(open) => {

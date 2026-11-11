@@ -312,20 +312,17 @@ html {
 .workspace-page [data-slot="table-cell"] { padding-block: .875rem; }
 .workspace-page [data-slot="card"] { box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 3%, transparent); }
 .task-workspace { height: 100dvh; max-height: 100dvh; flex: 0 0 auto; min-height: 0; overflow: hidden; }
-.task-main-conversation [data-slot="message-scroller"] { flex: 1; height: auto; }
+.task-main-conversation [data-slot="message-scroller"], .task-worker-conversation [data-slot="message-scroller"] { flex: 1; height: auto; }
 .task-main-conversation [data-slot="bubble-content"] { font-size: var(--text-base); line-height: 1.75; }
 .task-main-conversation [data-slot="bubble"][data-align="start"] { max-width: 100%; width: 100%; }
 .task-main-conversation [data-slot="bubble"][data-align="start"] > [data-slot="bubble-content"] { background: transparent; }
 .task-main-conversation [data-slot="message-scroller-content"] { width: 100%; max-width: 860px; margin-inline: auto; padding: 1.5rem; gap: 1.5rem; }
-.task-composer { flex-shrink: 0; width: 100%; max-width: 860px; margin-inline: auto; padding: .75rem 1.5rem 1.25rem; }
-.task-composer [data-slot="input-group"] { border-radius: var(--composer-radius); background: var(--card); padding: .5rem; box-shadow: 0 4px 20px color-mix(in oklch, var(--foreground) 4%, transparent); }
-.task-composer textarea { min-height: 84px; font-size: var(--text-base); }
 .task-scroll-panel { height: 100%; min-height: 0; overflow: auto; padding: 1.5rem; }
 .task-scroll-panel > * { min-width: 0; }
-.task-agent-tray { height: min(48dvh, 29rem); }
-.task-main-conversation .task-agent-tray [data-slot="message-scroller-content"] { max-width: none; padding: 1rem; gap: .75rem; }
-.task-main-conversation .task-agent-tray [data-slot="bubble-content"] { line-height: 1.65; }
-@media (max-width: 639px) { .task-scroll-panel { padding: 1rem; } .task-composer { padding: .5rem .75rem; } .task-main-conversation [data-slot="message-scroller-content"] { padding: 1rem; } }
+.task-worker-conversation [data-slot="message-scroller-content"] { width: 100%; max-width: none; }
+.task-process { min-width: 0; height: 100%; display: flex; flex-direction: column; background: var(--card); }
+.task-worker-conversation [data-slot="bubble-content"] { font-size: var(--text-base); line-height: 1.65; }
+@media (max-width: 639px) { .task-scroll-panel { padding: 1rem; } }
 
 .task-main-conversation .transcript-markdown { font-size: var(--text-base); line-height: 1.75; }
 
@@ -354,18 +351,19 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .task-header-tabs [data-slot="tabs-trigger"][data-state="active"] { background: var(--card); border-color: transparent; box-shadow: none; color: var(--foreground); }
 .task-header .lucide { width: 16px; height: 16px; stroke-width: 1.65; }
 .task-header-tabs [data-slot="tabs-trigger"] > span { margin-left: 0; padding: 0 4px; border-radius: 999px; font-size: var(--text-xs); line-height: 18px; font-weight: 400; }
-.task-main-conversation { background: var(--workspace-canvas); }
+.task-main-conversation, .task-worker-conversation { background: var(--workspace-canvas); }
 .task-main-conversation [data-slot="message-scroller-content"] { max-width: 920px; padding: 28px 28px 36px; gap: 32px; }
 .conversation-user-bubble > [data-slot="bubble-content"] { border-radius: 20px; padding: 14px 18px; background: var(--card); border-color: var(--border); }
+.task-workspace .conversation-user-bubble > [data-slot="bubble-content"] { background: var(--workspace-canvas); }
 .execution-status { display: inline-flex; align-items: center; gap: 9px; }
 .execution-status-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; flex-shrink: 0; }
-.task-composer { max-width: 960px; padding: 12px 20px 20px; background: linear-gradient(transparent,var(--workspace-canvas) 35%); }
-.task-composer [data-slot="input-group"] { border-color: color-mix(in oklch,var(--foreground) 25%,var(--border)); padding: 10px 12px; box-shadow: 0 8px 24px color-mix(in oklch,var(--foreground) 7%,transparent); }
+.task-composer { flex-shrink: 0; width: 100%; max-width: 960px; margin-inline: auto; padding: 12px 20px 20px; background: var(--workspace-canvas); }
+.task-composer [data-slot="input-group"] { border-radius: var(--composer-radius); background: var(--workspace-canvas); border-color: color-mix(in oklch,var(--foreground) 25%,var(--border)); padding: 10px 12px; box-shadow: 0 8px 24px color-mix(in oklch,var(--foreground) 7%,transparent); }
 .task-composer textarea { min-height: 96px; padding: 12px 4px; font-size: var(--text-base); line-height: 1.6; }
-.task-composer .composer-config { border-radius: 999px; background: var(--card); }
+.task-composer .composer-config { border-radius: 999px; background: var(--workspace-canvas); }
 .task-composer .composer-send { border-radius: 999px; width: 36px; height: 36px; }
 .task-composer [data-slot="input-group-addon"] { padding: 2px 0; }
-@media (max-width:639px) { .task-main-conversation [data-slot="message-scroller-content"] { padding: 20px 16px; gap: 24px; } .task-composer { padding: 8px 10px 12px; } .task-composer textarea { min-height: 76px; font-size: var(--text-base); } }
+@media (max-width:639px) { .task-main-conversation [data-slot="message-scroller-content"] { padding: 20px 16px; gap: 24px; } .task-composer { padding: 8px 10px 12px; } .task-composer textarea { min-height: 76px; } }
 .task-findings { min-height: 100%; }
 /* Sidebar reference rhythm: 30px rows, 14/20px text, 16px line icons.
    Scoped to the app navigation; settings and other Sidebar consumers are unaffected. */
