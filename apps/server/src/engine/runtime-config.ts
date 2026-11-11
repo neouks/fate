@@ -4,12 +4,13 @@ import {assertToolBinding} from '../agent/tool-registry.js';
 import {domainState} from '../agent/domain-state.js';
 import {platformPolicy,validatePlatformRunner} from '../pi/platform-policy.js';
 import {resolveRolePrompt,hostProtocol} from '../agent/prompts.js';
-import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
+import path from 'node:path';
 import type {Database} from '../db/index.js';
 import {AgentRunner,type AgentRunnerOptions} from '../pi/runner.js';
 import {resolveModelProfiles} from '../pi/modelResolver.js';
 import {registerNativeActivityRun} from './native-activity-recovery.js';
+import { trackWorkspaceFileWrites } from '../pi/workspace-file-changes.js';
 
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export async function configuredRole(db:Database,taskID:number,role:string,conversationID?:number){
@@ -44,6 +45,12 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
  options.signal?.throwIfAborted();
  const configured=await configuredRole(db,taskID,role,conversationID),id=randomUUID();
  if(options.nativeActivity&&!options.inMemory)options={...options,nativeActivityRuntime:id};
+ if (options.nativeActivity && options.turnID && (conversationID || taskID > 0)) {
+  options = { ...options, writeWorkspaceFile: trackWorkspaceFileWrites(db, {
+   scope: { kind: conversationID ? 'conversation' : 'task', id: conversationID ?? taskID, turnID: options.turnID },
+   taskID, intentID: options.intentID, cwd: options.cwd, dataDir: path.dirname(options.agentDir),
+  }) };
+ }
  options={...options,...await prepareToolLoading(db,role,options,configured.platform_policy.builtinLoading==='direct',configured.platform_policy.fallback)};
  options.modelPolicy?.setRuntimeID?.(id);
  options.modelPolicy?.setScope?.({intentID:options.intentID,mainSegment:options.mainSegment,turnID:options.turnID});

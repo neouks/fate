@@ -22,6 +22,7 @@ import {SteeringNotice} from '@/components/steering-notice';
 import {isSteering} from '@/lib/steering';
 import {useTurnSummaries} from '@/hooks/use-turn-summaries';
 import {TurnModels} from './turn-models';
+import {TurnFileChanges} from './turn-file-changes';
 import {turnParts,durationLabel,type TurnSummary} from '@/lib/turn-summary';
 import {Popover,PopoverTrigger,PopoverContent,PopoverHeader,PopoverTitle,PopoverDescription} from '@/components/ui/popover';
 import {Separator} from '@/components/ui/separator';
@@ -536,6 +537,8 @@ function ExecutionTurn({turn,summary,latest,onProcessInteraction,...props}:Execu
       </Collapsible>}
       {!hasProse&&!live&&<p className="text-sm text-muted-foreground">本轮未记录文字回复</p>}
       {final&&<div data-final-answer="true"><ActivitySteps {...stepProps} activity={[final]}/></div>}
+      {ended&&summary?.file_changes&&<TurnFileChanges key={summary.turn_id} summary={summary.file_changes}
+        turn={summary.turn_id} taskId={props.taskId} conversationId={props.conversationId}/>}
     </BubbleContent></Bubble>
     {(ended||!!final)&&<MessageFooter className="gap-3"><Button variant="ghost" size="icon-sm" onClick={()=>void copy()} disabled={!final&&!processSteps.some(s=>["text","assistant","result"].includes(s.kind)&&!!(s.detail||s.summary))} aria-label="复制答复"><CopyIcon/></Button><ActivityTime ts={terminal?.ts??last.ts}/>{last.inherited&&<Badge variant="outline">来源任务 · 只读</Badge>}</MessageFooter>}
   </MessageContent></Message></ExecutionLiveContext.Provider>;

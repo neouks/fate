@@ -1,6 +1,7 @@
 import {projectPlannerDisplay} from '../db/planner-rounds.js';
 import {turnProjectionSQL,turnUsageRefreshSQL,turnReferenceRefreshSQL,TURN_MODEL_PAGE_SIZE} from '../db/turn-projection.js';
 import {readTurnRevisions} from '../db/turn-read-versions.js';
+import { isFinishedFileChangeTurn, readTurnFileChangePreviews } from '../db/turn-file-changes.js';
 import {getTurnProjection,putTurnProjection,forgetTurnProjection,recordTurnProjectionRead} from '../db/turn-projection-cache.js';
 import {turnDeltaSQL,turnControlDeltaSQL,retainTurnControls} from '../db/turn-projection-delta.js';
 import {prepareUsageRollups} from '../db/usage-rollups.js';
@@ -214,13 +215,16 @@ export async function readTurnSummaries(db:Database,scope:StreamScope,id:number,
  }
  if(modelOffset===0)for(const turn of ids){const r=found.get(turn);if(r&&revisions.has(turn))putTurnProjection(db,scope,cacheID,r);else forgetTurnProjection(db,scope,cacheID,turn);}
  const rows=[...found.values()].sort((a,b)=>Number(a.first_id)-Number(b.first_id));
- return rows.map(r=>({...projectTurn(r.rows.map((a:Row)=>({...a,created_at:new Date(a.created_at)})),[],r.runtime??undefined,{
+ const summaries = rows.map(r=>({...projectTurn(r.rows.map((a:Row)=>({...a,created_at:new Date(a.created_at)})),[],r.runtime??undefined,{
   response:r.response?{...r.response,created_at:new Date(r.response.created_at)}:undefined,steps:Number(r.steps),toolCalls:Number(r.tools),failedToolCalls:Number(r.errors),
   models:r.models,usage:r.usage,attemptUpdatedAt:r.attempt_updated_at,observedAt:iso(r.observed_at)!,
  }),data_revision:revisions.has(r.turn_id)?String(r.data_revision):undefined,observed_at:iso(r.observed_at),
   models_total:Number(r.models_total),models_offset:modelOffset,
   models_next_offset:modelOffset+r.models.length<Number(r.models_total)?modelOffset+r.models.length:null,
   model_names_truncated:r.model_names_truncated,model_name_lengths:r.model_name_lengths}));
+ const finished = summaries.filter(isFinishedFileChangeTurn).map(turn => turn.turn_id);
+ const files = modelOffset === 0 ? await readTurnFileChangePreviews(db, scope, scopeID, finished) : undefined;
+ return summaries.map(turn => ({ ...turn, file_changes: files?.get(turn.turn_id) }));
 }
 
 /** Names use Unicode offsets; page replacement never requires buffering a whole name. */

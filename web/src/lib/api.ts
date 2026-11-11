@@ -754,6 +754,10 @@ export const api = {
     }));
   },
   turnSummaries: (task:string|undefined,conversation:number|undefined,ids:string[]) => get<{items:import('./turn-summary').TurnSummary[]}>(`/${conversation?`conversations/${conversation}`:`tasks/${task}`}/turns?ids=${encodeURIComponent(ids.join(','))}`),
+  turnFileChanges: (scope:string,turn:string,cursor:string,signal:AbortSignal) =>
+    get<{items:import('./turn-summary').TurnFileChange[];next_cursor:string|null}>(`/${scope}/turns/${encodeURIComponent(turn)}/file-changes?cursor=${encodeURIComponent(cursor)}`,{signal}),
+  turnFileChange: (scope:string,turn:string,id:string,signal:AbortSignal) =>
+    get<import('./turn-summary').TurnFileChange&{patch:string|null}>(`/${scope}/turns/${encodeURIComponent(turn)}/file-changes/${encodeURIComponent(id)}`,{signal}),
   turnModels: (task:string|undefined,conversation:number|undefined,id:string,offset:number,version:string) => get<{items:import('./turn-summary').TurnSummary[]}>(`/${conversation?`conversations/${conversation}`:`tasks/${task}`}/turns?${new URLSearchParams({ids:id,models_offset:String(offset),data_revision:version})}`),
   turnModelName: (task:string|undefined,conversation:number|undefined,id:string,index:number,offset:number,version:string) => get<{name:{content:string;offset:number;next_offset:number;total_chars:number;has_more:boolean}}>(`/${conversation?`conversations/${conversation}`:`tasks/${task}`}/turns?${new URLSearchParams({ids:id,name_index:String(index),name_offset:String(offset),data_revision:version})}`),
   activityDetail: (id: number, task?: string) => get<{ detail: string }>(`/exploration/activity/${id}${tq(task)}`),

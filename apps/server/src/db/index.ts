@@ -39,6 +39,7 @@ const usageSQL=readFileSync(path.join(__dirname,'sql','usage-ledger.sql'),'utf8'
 const activityOutboxSQL=readFileSync(path.join(__dirname,'sql','activity-outbox.sql'),'utf8');
 const streamStorageSQL=readFileSync(path.join(__dirname,'sql','stream-storage.sql'),'utf8');
 const turnReadSQL=readFileSync(path.join(__dirname,'sql','turn-read-versions.sql'),'utf8');
+const turnFileChangesSQL=readFileSync(path.join(__dirname,'sql','turn-file-changes.sql'),'utf8');
 const usageRollupSQL=readFileSync(path.join(__dirname,'sql','usage-rollups.sql'),'utf8');
 const usageLegacySQL=readFileSync(path.join(__dirname,'sql','usage-legacy-intervals.sql'),'utf8');
 const activityRollupSQL=`CREATE OR REPLACE FUNCTION activity_presentation_metadata(source JSONB) RETURNS JSONB LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN RETURN ${activityMetadataSQL('source')}; END $$;\n`+
@@ -216,7 +217,7 @@ export async function openDatabase(): Promise<Database> {
     try {
       await prepareToolOutputAccessMigration(client);
       // 无参数的 query 走简单查询协议，支持单次执行整份多语句 schema。
-      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL;
+      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL;
       for (let attempt = 0; ; attempt++) {
         try {
           await client.query(ddl);

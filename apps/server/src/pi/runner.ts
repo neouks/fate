@@ -7,6 +7,7 @@ import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
 import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
 import {stableToolPayload,hostTaskContext} from './request-prefix.js';
 import {restrictRegisteredTools,wrapRegisteredTools} from './operation-tools.js';
+import { nativeWorkspaceFileTools } from './workspace-file-changes.js';
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -28,7 +29,6 @@ import path from 'node:path';
 
 import {
 	createAgentSession,
-  createWriteToolDefinition,createEditToolDefinition,
 	DefaultResourceLoader,
 	loadSkillsFromDir,
 	ModelRuntime,
@@ -119,6 +119,7 @@ export interface AgentRunnerOptions {
   goalsPhase?: import('../db/goals-bootstrap.js').GoalsPhase;
   /** Host execution receipts; never wraps model requests or changes pi's tool loop. */
   wrapExecutionTool?: (tool:ToolDefinition)=>ToolDefinition;
+  writeWorkspaceFile?: (absolutePath: string, content: string) => Promise<void>;
   /** Unknown external effects end at the native batch boundary, without a retry loop. */
   stopOnRecoveryBlock?:()=>boolean;
   contextLayout?: 'stable-prefix-v1';
@@ -511,8 +512,8 @@ export class AgentRunner {
 				: SessionManager.create(opts.cwd, opts.sessionDir);
 
     const customTools=[...(opts.customTools??[])];
-    if(opts.wrapExecutionTool)for(const factory of [createWriteToolDefinition,createEditToolDefinition]){
-      const tool=factory(opts.cwd) as ToolDefinition;
+    if(opts.wrapExecutionTool || opts.writeWorkspaceFile)for(const definition of nativeWorkspaceFileTools(opts.cwd, opts.writeWorkspaceFile)){
+      const tool=definition as ToolDefinition;
       if(opts.toolAllowlist?.includes(tool.name)&&!customTools.some(t=>t.name===tool.name))customTools.push(tool);
     }
 		const { session } = await createAgentSession({

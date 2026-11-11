@@ -45,6 +45,7 @@ export const TURN_REVISIONS_CTE=`ids AS (SELECT DISTINCT unnest($3::text[]) turn
   SELECT turn_id,'activity' kind,turn_id entity FROM ids
   UNION SELECT turn_id,'activity_rewrite',turn_id FROM ids
   UNION SELECT turn_id,'activity_data_rewrite',turn_id FROM ids
+  UNION SELECT turn_id,'file_changes',turn_id FROM ids
   UNION SELECT turn_id,'access','all' FROM ids
   UNION SELECT turn_id,'runtime',runtime_id FROM runtimes
   UNION SELECT turn_id,'usage',entity FROM executions
