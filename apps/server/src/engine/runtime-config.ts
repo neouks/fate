@@ -11,6 +11,7 @@ import {AgentRunner,type AgentRunnerOptions} from '../pi/runner.js';
 import {resolveModelProfiles} from '../pi/modelResolver.js';
 import {registerNativeActivityRun} from './native-activity-recovery.js';
 import { trackWorkspaceFileWrites } from '../pi/workspace-file-changes.js';
+import { lockTaskWorkspace } from '../db/task-workspace-lock.js';
 
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export async function configuredRole(db:Database,taskID:number,role:string,conversationID?:number){
@@ -45,6 +46,11 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
  options.signal?.throwIfAborted();
  const configured=await configuredRole(db,taskID,role,conversationID),id=randomUUID();
  if(options.nativeActivity&&!options.inMemory)options={...options,nativeActivityRuntime:id};
+ if(taskID>0 && !conversationID && options.toolAllowlist?.some(name=>['write','edit','bash','shell_open'].includes(name))){
+  const note='工作区文件：把可丢弃的中间文件放在当前工作区的 tmp/。供后续执行引用的脚本、产出及证据不要放进 tmp/、.tmp/ 或 temp/。';
+  if(options.contextLayout)options={...options,taskContext:[options.taskContext,note].filter(Boolean).join('\n')};
+  else if(options.systemPrompt)options={...options,systemPrompt:options.systemPrompt+'\n\n'+note};
+ }
  if (options.nativeActivity && options.turnID && (conversationID || taskID > 0)) {
   options = { ...options, writeWorkspaceFile: trackWorkspaceFileWrites(db, {
    scope: { kind: conversationID ? 'conversation' : 'task', id: conversationID ?? taskID, turnID: options.turnID },
@@ -107,7 +113,12 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
   }});
  Object.assign(effective,{context_policy:options.contextPolicy,active_tools:runner.activeToolNames,prompt_diagnostics:runner.promptDiagnostics,prompt_source:configured.prompt_source,prompt_version:configured.prompt_version});
  try{
-  await db.query('INSERT INTO runtime_role_configs(id,task_id,conversation_id,role,configured,effective,expires_at) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,now()+interval \'20 seconds\')',[id,taskID||null,conversationID??null,role,JSON.stringify(configured),JSON.stringify(effective)]);
+  const register = async (tx: Database) => {
+   if(taskID>0)await lockTaskWorkspace(tx,taskID);
+   await tx.query('INSERT INTO runtime_role_configs(id,task_id,conversation_id,role,configured,effective,expires_at) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,now()+interval \'20 seconds\')',[id,taskID||null,conversationID??null,role,JSON.stringify(configured),JSON.stringify(effective)]);
+  };
+  if(taskID>0)await db.transaction(register);
+  else await register(db);
   if(options.nativeActivityRuntime)await registerNativeActivityRun(db,id,runner,options.nativeActivity!,options.flushNativeSession);
  }
  catch(error){try{await runner.dispose();}finally{await db.query('UPDATE runtime_role_configs SET finished_at=now(),expires_at=now() WHERE id=$1',[id]);}throw error;}

@@ -194,9 +194,18 @@ async function downloadWorkspaceResource(url:string,name:string){
  a.href=objectURL;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(objectURL),1000);
 }
 export const api = {
-  taskFiles:(task:string,ref='',cursor='')=>get<{items:import('./types').TaskFileEntry[];next_cursor:string|null}>(`/tasks/${task}/files?${new URLSearchParams({ref,cursor})}`),
-  taskFileContent:(task:string,ref:string,offset=0,version='')=>get<import('./types').FileContentPage>(`/tasks/${task}/files/content?${new URLSearchParams({ref,offset:String(offset),version})}`),
-  downloadTaskFile:(task:string,ref:string,name:string)=>downloadWorkspaceResource(`/tasks/${task}/files/content?${new URLSearchParams({ref,download:'1'})}`,name),
+  taskFiles:(task:string,filters:Record<string,string>,signal?:AbortSignal)=>get<{items:import('./types').TaskFileEntry[];next_cursor:string|null;busy:boolean}>(`/tasks/${task}/files?${new URLSearchParams({view:'flat',...filters})}`,{signal}),
+  taskFileContent:(task:string,ref:string,offset=0,version='',signal?:AbortSignal)=>get<import('./types').FileContentPage>(`/tasks/${task}/files/content?${new URLSearchParams({ref,offset:String(offset),version,preview:'1'})}`,{signal}),
+  taskFileDownloadURL:(task:string,ref:string)=>`/api/tasks/${task}/files/content?${new URLSearchParams({ref,download:'1'})}`,
+  taskFileImage:async(task:string,ref:string,version:string,signal:AbortSignal)=>{
+    const token=getToken();
+    const response=await entryAwareFetch(`/api/tasks/${task}/files/content?${new URLSearchParams({ref,version,image:'1'})}`,{signal,headers:token?{'X-Series-Token':token}:{}});
+    if(!response.ok)throw new Error(response.status===409?'文件已变化，请刷新预览。':'图片无法预览，可下载原文件。');
+    return response.blob();
+  },
+  deleteTaskFile:(task:string,ref:string,version:string)=>del<{deleted:boolean}>(`/tasks/${task}/files`,{ref,version}),
+  previewTaskFileCleanup:(task:string)=>post<import('./types').TaskFileCleanupPreview>(`/tasks/${task}/files/cleanup/preview`),
+  runTaskFileCleanup:(task:string,snapshot:string)=>post<import('./types').TaskFileCleanupResult>(`/tasks/${task}/files/cleanup`,{snapshot}),
   taskTraffic:(task:string,filters:Record<string,string>)=>get<TrafficResp>(`/traffic?${new URLSearchParams({...filters,task})}`),
   trafficBody:(task:string,id:string,side:'request'|'response',offset=0)=>get<import('./types').EvidenceContentPage>(`/traffic/exchange/${encodeURIComponent(id)}/body?${new URLSearchParams({task,side,offset:String(offset)})}`),
   downloadTrafficBody:(task:string,id:string,side:'request'|'response')=>downloadWorkspaceResource(`/traffic/exchange/${encodeURIComponent(id)}/body?${new URLSearchParams({task,side,download:'1'})}`,`${side}.bin`),

@@ -1533,8 +1533,11 @@ export interface NotificationSummary {
   counts: { findings: number; assets: number };
 }
 
-export interface TaskFileEntry { ref:string; name:string; kind:'file'|'directory'; size:number; modified_at:string; version:string; origin:'attachment'|'work'; intent_id?:string }
-export interface FileContentPage { ref:string; version:string; offset:number; next_offset:number; total:number; has_more:boolean; binary:boolean; content:string }
+export type TaskFileCategory = 'work' | 'temporary' | 'attachment';
+export interface TaskFileEntry { ref:string; name:string; kind:'file'|'directory'; size:number; modified_at:string; version:string; origin:'attachment'|'work'; intent_id?:string; relative_path:string; category:TaskFileCategory; deletable:boolean; delete_reason:string|null }
+export interface FileContentPage { ref:string; version:string; offset:number; next_offset:number; total:number; has_more:boolean; binary:boolean; content:string; preview?:'text'|'image'|'binary'|'too_large' }
+export interface TaskFileCleanupPreview { snapshot:string|null; count:number; bytes:number; sample:{path:string;size:number}[]; skipped:number; busy:boolean; has_more:boolean }
+export interface TaskFileCleanupResult { deleted:number; deleted_bytes:number; changed:number; missing:number; protected:number; remaining:number; busy:number }
 export interface EvidenceContentPage { content:string; offset:number; next_offset:number; total:number; truncated:boolean; binary:boolean; encoding:'base64'|'utf8' }
 
 export interface FindingStep {id:string;action:string;request:string;response:string;expected:string;proves:string;traffic_id?:string;source?:"evidence";source_ref?:string;verified?:boolean;truncated?:boolean}
