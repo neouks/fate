@@ -1050,6 +1050,30 @@ function normalizedTemplateName(value: unknown): string {
     .join(" ");
 }
 
+function readMockTaskTemplate(body: Record<string, unknown>, previous?: TaskTemplate) {
+  const fields = { name: ["模板名称", 120], description: ["任务说明", 16_000], goal: ["验收目标", 16_000] } as const;
+  const keys = Object.keys(body);
+  if (!keys.length || keys.some((key) => !Object.hasOwn(fields, key))) {
+    throw new Error("模板只接受 name、description 和 goal 字段");
+  }
+  const result = { name: "", description: "", goal: "" };
+  for (const field of Object.keys(fields) as (keyof typeof fields)[]) {
+    if (previous && !Object.hasOwn(body, field)) {
+      result[field] = previous[field];
+      continue;
+    }
+    const [label, limit] = fields[field];
+    const raw = body[field];
+    if (typeof raw !== "string" || raw.includes("\0") || !raw.trim()) {
+      throw new Error(`${label}必须是非空文本`);
+    }
+    const value = field === "name" ? normalizedTemplateName(raw) : raw.trim();
+    if (Array.from(value).length > limit) throw new Error(`${label}最多 ${limit} 个字符`);
+    result[field] = value;
+  }
+  return result;
+}
+
 function parseBody(body?: BodyInit | null): Record<string, unknown> {
   if (typeof body !== "string") return {};
   try {
@@ -1518,55 +1542,50 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     task.category_name = category?.name;
     return task;
   }
-  if (path === "/task-templates" && m === "GET") return { templates: mockTaskTemplates };
+  if (path === "/task-templates" && m === "GET") {
+    return { templates: structuredClone(mockTaskTemplates) };
+  }
   if (path === "/task-templates" && m === "POST") {
     const now = new Date().toISOString();
-    const name = normalizedTemplateName(b.name);
-    const description = String(b.description ?? "").trim();
-    const goal = String(b.goal ?? "").trim();
-    if (!name || !description || !goal) throw new Error("请填写模板名称、描述和目标");
+    const input = readMockTaskTemplate(b);
     if (
-      mockTaskTemplates.some((template) => normalizedTemplateName(template.name).toLowerCase() === name.toLowerCase())
+      mockTaskTemplates.some((template) => normalizedTemplateName(template.name).toLowerCase() === input.name.toLowerCase())
     ) {
       throw new Error("模板名称已存在");
     }
     const nextID = mockTaskTemplates.reduce((max, template) => Math.max(max, template.id), 0) + 1;
     const created: TaskTemplate = {
       id: nextID,
-      name,
-      description,
-      goal,
+      ...input,
       created_at: now,
       updated_at: now,
     };
     mockTaskTemplates.unshift(created);
-    return created;
+    return { ...created };
   }
   if (seg[0] === "task-templates" && seg.length === 2 && m === "PATCH") {
-    const template = mockTaskTemplates.find((item) => item.id === Number(seg[1]));
-    if (!template) return {};
-    const name = typeof b.name === "string" ? normalizedTemplateName(b.name) : template.name;
-    const description = typeof b.description === "string" ? b.description.trim() : template.description;
-    const goal = typeof b.goal === "string" ? b.goal.trim() : template.goal;
-    if (!name || !description || !goal) throw new Error("请填写模板名称、描述和目标");
+    const id = Number(seg[1]);
+    if (!/^[1-9]\d*$/.test(seg[1]!) || !Number.isSafeInteger(id)) throw new Error("无效的模板编号");
+    const template = mockTaskTemplates.find((item) => item.id === id);
+    if (!template) throw new Error("任务模板不存在");
+    const input = readMockTaskTemplate(b, template);
     if (
       mockTaskTemplates.some(
-        (item) => item.id !== template.id && normalizedTemplateName(item.name).toLowerCase() === name.toLowerCase(),
+        (item) => item.id !== template.id && normalizedTemplateName(item.name).toLowerCase() === input.name.toLowerCase(),
       )
     ) {
       throw new Error("模板名称已存在");
     }
-    template.name = name;
-    template.description = description;
-    template.goal = goal;
-    template.updated_at = new Date().toISOString();
+    Object.assign(template, input, { updated_at: new Date().toISOString() });
     mockTaskTemplates.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id);
-    return template;
+    return { ...template };
   }
   if (seg[0] === "task-templates" && seg.length === 2 && m === "DELETE") {
     const id = Number(seg[1]);
+    if (!/^[1-9]\d*$/.test(seg[1]!) || !Number.isSafeInteger(id)) throw new Error("无效的模板编号");
     const index = mockTaskTemplates.findIndex((item) => item.id === id);
-    if (index >= 0) mockTaskTemplates.splice(index, 1);
+    if (index < 0) throw new Error("任务模板不存在");
+    mockTaskTemplates.splice(index, 1);
     return { deleted: id };
   }
   if (seg[0] === "tasks" && seg.length === 2 && m === "GET") {

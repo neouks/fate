@@ -29,6 +29,7 @@ import {
 import { TablePagination } from "@/components/table-pagination";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
+import { TaskTemplateLibrary } from "@/components/task-template-library";
 const MAX_SOURCE_TASKS = 8;
 // fmtBytes renders a human file size for the upload manifest.
 function fmtBytes(n: number): string {
@@ -543,6 +544,7 @@ export function TaskLauncher() {
         <header>
           <h1>开始一项新的安全任务</h1>
           <p>描述测试对象与背景，接下来确认目标和执行配置。</p>
+          <div className="mt-4"><TaskTemplateLibrary /></div>
         </header>
         <form
           className="task-launcher-form"

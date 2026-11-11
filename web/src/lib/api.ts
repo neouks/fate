@@ -268,7 +268,8 @@ export const api = {
       task_ids: taskIds,
       category_id: categoryId ?? null,
     }),
-  taskTemplates: () => get<{ templates: TaskTemplate[] }>("/task-templates").then((r) => arr(r.templates)),
+  taskTemplates: (signal?: AbortSignal) =>
+    get<{ templates: TaskTemplate[] }>("/task-templates", { signal }).then((r) => arr(r.templates)),
   createTaskTemplate: (input: Pick<TaskTemplate, "name" | "description" | "goal">) =>
     post<TaskTemplate>("/task-templates", input),
   updateTaskTemplate: (id: number, input: Partial<Pick<TaskTemplate, "name" | "description" | "goal">>) =>

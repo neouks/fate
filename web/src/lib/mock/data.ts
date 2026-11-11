@@ -173,17 +173,17 @@ export const taskCategories: TaskCategory[] = [
 export const taskTemplates: TaskTemplate[] = [
   {
     id: 1,
-    name: "外部 Web 渗透",
-    description: "对目标互联网暴露面开展黑盒渗透测试，覆盖站点、接口和常见管理入口。",
-    goal: "识别并验证可造成未授权访问、敏感数据泄露或服务器失陷的安全问题。",
+    name: "发布说明核对",
+    description: "核对本次发布的变更清单、用户影响和回滚说明。",
+    goal: "每项发布变更均有负责人，发布记录已补齐。",
     created_at: T("2026-07-20T08:00:00Z"),
     updated_at: T("2026-07-25T08:00:00Z"),
   },
   {
     id: 2,
-    name: "API 越权专项",
-    description: "围绕目标 API 的身份认证、对象级授权和角色边界开展专项测试。",
-    goal: "确认是否存在 IDOR、水平越权、垂直越权及批量数据访问风险。",
+    name: "文档完整性检查",
+    description: "查看项目文档，记录缺失的说明、失效链接和待更新的内容。",
+    goal: "整理一份缺项清单，并为每项标注维护人。",
     created_at: T("2026-07-19T08:00:00Z"),
     updated_at: T("2026-07-24T08:00:00Z"),
   },
