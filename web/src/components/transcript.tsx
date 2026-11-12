@@ -1,5 +1,6 @@
 "use client";
 
+import {processPreview} from '@/lib/process-preview';
 import {terminalDiagnostic} from '@/lib/terminal-diagnostic';
 import * as React from "react";
 import {ActivityBody,ActivityContentProvider} from "@/components/activity-body";
@@ -181,7 +182,7 @@ function transcriptParts(groups: Group[], collapseProcess: boolean): TranscriptP
 function ProcessSegment({groups,focusActivity,children}: {groups:Group[];focusActivity?:number;children:React.ReactNode}) {
   const containsFocus = focusActivity != null && groups.some(g => groupActivities(g).some(a => a.seq === focusActivity));
   const [choice,setChoice] = React.useState<{open:boolean;focus?:number}>();
-  const open = (containsFocus && choice?.focus !== focusActivity) || (choice?.open ?? false);
+  const open = (containsFocus && choice?.focus !== focusActivity) || (choice?.open ?? true);
   const calls = groups.filter(g => g.type === "tool");
   const failures = calls.filter(g => g.result?.is_error).length;
   return <Collapsible open={open} onOpenChange={open=>setChoice({open,focus:focusActivity})} data-process-segment className="min-w-0">
@@ -297,15 +298,19 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
 function MessageBlock({group,showWorker}:{group:Extract<Group,{type:"msg"}>;getDetail:(seq:number)=>Promise<string>;showWorker?:boolean}) {
  const [open,setOpen]=React.useState(false),executing=React.useContext(ExecutionLiveContext);
  const thinking=group.steps.some(s=>s.kind==='thinking');
- const body=group.steps.slice(0,3).map(s=>s.summary).join('  ')||'…';
+ const body=processPreview(group.steps);
  return <Collapsible open={open} onOpenChange={setOpen} className="execution-thought">
   <CollapsibleTrigger className="execution-process-trigger"><ChevronRight className={cn('execution-chevron',open&&'rotate-90')}/>
    {thinking?<ProcessGlyph active={executing&&group.steps.some(s=>s.streaming)}/>:<MessageSquare/>}
    {showWorker&&<span className={chip(group.worker)}>{group.worker}</span>}
-   <span className="min-w-0 truncate">{thinking?'思考过程':body}</span>
+   <span className="min-w-0 truncate">{body}</span>
+   {thinking&&<span className="execution-thought-hint shrink-0">· 含推理</span>}
   </CollapsibleTrigger>
   <CollapsibleContent className="execution-thought-detail">{open&&<div data-search-body className="flex flex-col gap-3">
-   {group.steps.map(step=><ActivityBody key={`${step.seq}:${step.stream_id??''}`} step={step}/>)}
+   {group.steps.map(step=><section key={`${step.seq}:${step.stream_id??''}`} className="min-w-0">
+    <div className="execution-thought-label">【{step.kind==='thinking'?'推理':'正文'}】</div>
+    <ActivityBody step={step} copy/>
+   </section>)}
   </div>}</CollapsibleContent>
  </Collapsible>;
 }
