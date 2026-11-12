@@ -254,7 +254,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
     }
   }
 
-  if (loaded && !detail) {
+  if (!loaded) return <p role="status" className="p-6 text-center text-sm text-muted-foreground">正在加载 Agent 配置…</p>;
+  if (!detail) {
     return <div role="alert" className="flex flex-col items-center gap-3 p-6 text-center text-sm"><p>{loadError || `无法加载 Agent：${agentKey}`}</p><Button variant="outline" onClick={reload}>重试</Button></div>;
   }
   // config is meaningless for the conversational main agent and the fixed-budget
