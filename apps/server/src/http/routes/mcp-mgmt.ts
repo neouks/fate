@@ -1,3 +1,4 @@
+import {resourceUsageDetail,resourceUsageRows} from '../../db/resource-usage.js';
 import { McpClient } from "@earendil-works/pi-mcp";
 import { createServerTransport, validateServerTransport } from "../../pi/mcpTransport.js";
 // Management probes and pi sessions share the same native MCP client transports.
@@ -52,12 +53,12 @@ export function registerMcpMgmtRoutes(app: FastifyInstance): void {
     return res.rows[0] ?? null;
   }
 
-  const cachedTools = async (id: number): Promise<{ name: string; description: string }[]> => {
+  const cachedTools = async (id: number): Promise<{ name: string; description: string; calls:number }[]> => {
     const res = await db().query(
-      `SELECT tool_name, COALESCE(description,'') AS description FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`,
+      `SELECT c.tool_name, COALESCE(c.description,'') AS description, COALESCE(u.calls,0)::int AS calls FROM mcp_tools_cache c LEFT JOIN (SELECT operation,count(*) AS calls FROM (${resourceUsageRows}) r WHERE kind='mcp' AND server_id=$1 GROUP BY operation) u ON u.operation=c.tool_name WHERE c.server_id=$1 ORDER BY c.tool_name`,
       [id],
     );
-    return res.rows.map((r) => ({ name: String(r["tool_name"]), description: String(r["description"]) }));
+    return res.rows.map((r) => ({ name: String(r["tool_name"]), description: String(r["description"]),calls:Number(r["calls"]) }));
   };
 
   /** 拉一次 tools/list 并整表替换缓存（事务）。 */
@@ -97,7 +98,7 @@ export function registerMcpMgmtRoutes(app: FastifyInstance): void {
     try {
       const tools = await connectMcpOnce(serverRowToConfig(row));
       await refreshCache(id, tools);
-      return { tools: tools.map((t) => ({ name: t.name, description: t.description })) };
+      return { tools: await cachedTools(id) };
     } catch (err) {
       return { tools: [], error: err instanceof Error ? err.message : String(err) };
     }
@@ -150,45 +151,11 @@ export function registerMcpMgmtRoutes(app: FastifyInstance): void {
     }
   });
 
-  // GET /api/mcp/:id/usage — mcp_usage 计量（stats 按工具聚合 + 最近调用明细）。
+  // GET /api/mcp/:id/usage — 原生去重计量（兼容旧记录）（stats 按工具聚合 + 最近调用明细）。
   app.get("/api/mcp/:id/usage", async (req) => {
     const id = Number((req.params as { id: string }).id);
     const q = req.query as Record<string, string>;
     const limit = Math.min(Math.max(Number(q["limit"]) || 50, 1), 500);
-    const stats = await db().query(
-      `SELECT COALESCE(server_id,$1) AS server_id, COALESCE(NULLIF(server_name,''),'#'||$1::text) AS server_name, tool_name,
-              count(*) AS calls, count(DISTINCT task_id) AS tasks,
-              array_agg(DISTINCT agent_key) FILTER (WHERE agent_key IS NOT NULL AND agent_key<>'') AS agents,
-              max(ts) AS last_used
-       FROM mcp_usage WHERE server_id=$1 GROUP BY COALESCE(server_id,$1), COALESCE(NULLIF(server_name,''),'#'||$1::text), tool_name
-       ORDER BY count(*) DESC`,
-      [id],
-    );
-    const calls = await db().query(
-      `SELECT ts, tool_name, COALESCE(agent_key,'') AS agent_key, COALESCE(task_id,0) AS task_id,
-              COALESCE(session_id,'') AS session_id
-       FROM mcp_usage WHERE server_id=$1 ORDER BY ts DESC LIMIT $2`,
-      [id, limit],
-    );
-    return {
-      stats: stats.rows.map((r) => ({
-        server_id: Number(r["server_id"]),
-        server_name: String(r["server_name"]),
-        tool_name: String(r["tool_name"]),
-        calls: Number(r["calls"] ?? 0),
-        tasks: Number(r["tasks"] ?? 0),
-        agents: Array.isArray(r["agents"]) ? (r["agents"] as string[]).map(String) : [],
-        ...(r["last_used"]
-          ? { last_used: r["last_used"] instanceof Date ? (r["last_used"] as Date).toISOString() : String(r["last_used"]) }
-          : {}),
-      })),
-      calls: calls.rows.map((r) => ({
-        ts: r["ts"] instanceof Date ? (r["ts"] as Date).toISOString() : String(r["ts"] ?? ""),
-        tool_name: String(r["tool_name"]),
-        agent_key: String(r["agent_key"]),
-        task_id: Number(r["task_id"] ?? 0),
-        session_id: String(r["session_id"]),
-      })),
-    };
+    return resourceUsageDetail(db(),'mcp',id,limit);
   });
 }

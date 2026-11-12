@@ -36,6 +36,7 @@ const plannerContextDeltasSQL=readFileSync(path.join(__dirname,'sql','planner-co
 const agentHistorySQL=readFileSync(path.join(__dirname,'sql','agent-history.sql'),'utf8');
 const plannerHistorySQL=readFileSync(path.join(__dirname,'sql','planner-history.sql'),'utf8');
 const graphProjectionSQL=readFileSync(path.join(__dirname,'sql','graph-projection.sql'),'utf8');
+const resourceUsageSQL=readFileSync(path.join(__dirname,'sql','resource-usage.sql'),'utf8');
 const usageSQL=readFileSync(path.join(__dirname,'sql','usage-ledger.sql'),'utf8');
 const activityOutboxSQL=readFileSync(path.join(__dirname,'sql','activity-outbox.sql'),'utf8');
 const streamStorageSQL=readFileSync(path.join(__dirname,'sql','stream-storage.sql'),'utf8');
@@ -219,7 +220,7 @@ export async function openDatabase(): Promise<Database> {
     try {
       await prepareToolOutputAccessMigration(client);
       // 无参数的 query 走简单查询协议，支持单次执行整份多语句 schema。
-      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+taskFileCleanupsSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL+'\n'+goalIntegritySQL;
+      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+taskFileCleanupsSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL+'\n'+goalIntegritySQL+'\n'+resourceUsageSQL;
       for (let attempt = 0; ; attempt++) {
         try {
           await client.query(ddl);

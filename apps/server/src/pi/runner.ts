@@ -1,3 +1,4 @@
+import {classifyResourceCall,type ResourceCall,type McpOwner} from './resource-usage.js';
 import {loadBoundSkills} from '../agent/skill-files.js';
 import {ActivityDelivery} from './activity-delivery.js';
 import {nativeStreamID,withNativeActivity,type NativeActivityIdentity,type NativeActivityReference} from './native-activity.js';
@@ -110,9 +111,11 @@ export type RunnerActivity = (
 	| { kind: 'tool_end'; toolCallId: string; toolName: string; isError: boolean; durationMs?: number; text?: string }
 	| { kind: 'settled'; aborted: boolean; stopReason?: string }
 	| { kind: 'usage'; input: number; output: number; cacheRead: number; cacheWrite: number }
-	| { kind: 'queue_update'; steering: readonly string[]; followUp: readonly string[] }) & {native_event?:NativeActivityReference};
+	| { kind: 'queue_update'; steering: readonly string[]; followUp: readonly string[] }) & {native_event?:NativeActivityReference;resource_call?:ResourceCall};
 
 export interface AgentRunnerOptions {
+  resourceOwners?:Map<string,McpOwner>;
+  resourceServers?:Map<string,number>;
   nativeActivity?:NativeActivityIdentity;
   nativeActivityRuntime?:string;
   flushNativeSession?:()=>Promise<void>;
@@ -270,6 +273,7 @@ export class AgentRunner {
     );
     let enterClosing = () => {closing.active=true;};
     if(opts.platform) validatePlatformRunner(opts.platform.role,opts,opts.platform.taskID);
+    opts.resourceOwners??=new Map();
     const activityDelivery = new ActivityDelivery();
     const hostContextFailure: {error?:Error} = {};
     let invalidateNativeEntries=()=>{};
@@ -577,6 +581,7 @@ export class AgentRunner {
     return this.opts.nativeActivityRuntime?withNativeActivity(activity,this.opts.nativeActivityRuntime,this.nativeActivitySequence):activity;
   }
   private emitActivity(activity:RunnerActivity):void {
+    if(activity.kind==='tool_start')activity={...activity,resource_call:classifyResourceCall(activity.toolName,activity.args,this.opts,this.opts.resourceOwners??new Map(),this.opts.resourceServers??new Map())};
     this.nativeActivityRevision++;
     const delivered=this.nativeActivity(activity);
     this.activityDelivery.emit(() => this.opts.onActivity?.(delivered));

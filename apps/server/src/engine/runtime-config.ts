@@ -47,6 +47,10 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
  options.signal?.throwIfAborted();
  const configured=await configuredRole(db,taskID,role,conversationID),id=randomUUID();
  if(options.nativeActivity&&!options.inMemory)options={...options,nativeActivityRuntime:id};
+ if(options.mcpEntries?.length){
+  const servers=await db.query('SELECT id,name FROM mcp_servers WHERE name=ANY($1::text[])',[options.mcpEntries.map(e=>e.name)]);
+  options={...options,resourceServers:new Map(servers.rows.map(r=>[String(r.name),Number(r.id)]))};
+ }
  if(taskID>0 && !conversationID && options.toolAllowlist?.some(name=>['write','edit','bash','shell_open'].includes(name))){
   const note='工作区文件：把可丢弃的中间文件放在当前工作区的 tmp/。供后续执行引用的脚本、产出及证据不要放进 tmp/、.tmp/ 或 temp/。';
   if(options.contextLayout)options={...options,taskContext:[options.taskContext,note].filter(Boolean).join('\n')};

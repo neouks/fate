@@ -63,8 +63,10 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
         };
         if(key==='registerTool')return ((definition:Parameters<ExtensionAPI['registerTool']>[0])=>{
           const server=definition.namespace?.aliases?.[0];
-          if(server&&definition.name.startsWith('mcp__')&&definition.label.startsWith(server+'/'))
-            owners.set(definition.name,{server,tool:definition.label.slice(server.length+1)});
+          if(server&&definition.name.startsWith('mcp__')&&definition.label.startsWith(server+'/')){
+            const owner={server,tool:definition.label.slice(server.length+1)};
+            owners.set(definition.name,owner);opts.resourceOwners?.set(definition.name,owner);
+          }
           target.registerTool(definition);
         });
         return Reflect.get(target,key);

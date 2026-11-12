@@ -1,3 +1,4 @@
+import {projectResourceUsage} from './resource-usage.js';
 import type {Database} from './index.js';
 import {jsonbClean,utf8Clean,type Activity} from './exploration.js';
 import {lockStream} from './stream-storage.js';
@@ -48,6 +49,7 @@ export async function projectActivity(db:Database,source:ActivitySource,activity
        registered.scope==='conversation'&&source.scope==='conversation'&&registered.runID===source.runID&&registered.token===source.token&&registered.turnID===source.turnID);
     if(!identity||!sameSource)throw new Error('Native activity source is outside its registered scope');
     if(identity.worker!==a.worker||identity.turn_id!==a.metadata.turn_id||(identity.node_id??null)!==(a.node_id??null)||(identity.main_seg??null)!==(a.main_seg??null))throw new Error('Native activity identity does not match its registered turn');
+    await projectResourceUsage(db,a,native);
     const inserted=await db.query('INSERT INTO native_activity_receipts(runtime_id,event_key,source_hash) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING runtime_id',[native.runtime_id,native.key,native.source_hash]);
     if(!inserted.rowCount){
       const prior=(await db.query('SELECT source_hash,activity_id FROM native_activity_receipts WHERE runtime_id=$1 AND event_key=$2',[native.runtime_id,native.key])).rows[0];

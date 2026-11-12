@@ -1,3 +1,4 @@
+import {resourceUsageList,emptyResourceUsage} from '../../db/resource-usage.js';
 import {skillFilePath,parseSkillDocument,loadBoundSkills} from '../../agent/skill-files.js';
 import {validateServerTransport} from '../../pi/mcpTransport.js';
 import {configuredRuntimeResources,resourcePolicy,invalidateRuntimeResources,validateRuntimeResources} from '../../engine/runtime-resources.js';
@@ -403,8 +404,10 @@ export function registerConfigRoutes(app: FastifyInstance): void {
 
   app.get("/api/mcp", async () => {
     const servers = await platform().listMCP();
+    const usage = await resourceUsageList(app.db,'mcp');
     return {
       servers: servers.map((m) => ({
+        ...emptyResourceUsage,...usage.get(String(m.id)),
         id: m.id,
         name: m.name,
         transport: m.transport,
@@ -448,6 +451,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
 
   app.get("/api/skills", async () => {
     const root = app.skillsRoot;
+    const usage = await resourceUsageList(app.db,'skill');
     const skills: Array<Record<string, unknown>> = [];
     let entries: string[] = [];
     try {
@@ -470,7 +474,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       let mcps=metadata.mcps;
       if(typeof mcps==='string')try{mcps=JSON.parse(mcps);}catch{mcps=[];}
       const files = listFiles(dir, dir).map((f) => f.split(path.sep).join("/"));
-      skills.push({name,description:typeof metadata.description==='string'?metadata.description:'',
+      skills.push({...emptyResourceUsage,...usage.get(name),name,description:typeof metadata.description==='string'?metadata.description:'',
         license:typeof metadata.license==='string'?metadata.license:undefined,compatibility:typeof metadata.compatibility==='string'?metadata.compatibility:undefined,mcps:Array.isArray(mcps)?mcps.filter(m=>typeof m==='string'):[],files,
         loadable:loaded.skills.length>0,model_visible:loaded.skills.some(s=>!s.disableModelInvocation),
         diagnostics:[...(parseError?[parseError]:[]),...loaded.diagnostics.map(d=>d.message)]});

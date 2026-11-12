@@ -6,7 +6,7 @@ export const NATIVE_ACTIVITY_MARKER='fate_native_activity_run_v1';
 export interface NativeActivityIdentity {
  source:ActivitySource;worker:string;turn_id:string;node_id?:number;main_seg?:number;
 }
-export interface NativeActivityReference {runtime_id:string;key:string;source_hash:string;}
+export interface NativeActivityReference {runtime_id:string;key:string;source_hash:string;call_key?:string;}
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 export const nativeStreamID=(runtime:string,sequence:number)=>hash([runtime,sequence,'stream']);
 
@@ -22,7 +22,7 @@ export function withNativeActivity(a:RunnerActivity,runtime:string,sequence:numb
   case 'tool_end':part='tool-result:'+a.toolCallId;value=[a.toolName,a.isError,a.text??null];break;
   default:return a;
  }
- return {...a,native_event:{runtime_id:runtime,key:hash([sequence,part]),source_hash:hash(value)}};
+ return {...a,native_event:{runtime_id:runtime,key:hash([sequence,part]),source_hash:hash(value),...((a.kind==='tool_start'||a.kind==='tool_end')?{call_key:hash([runtime,sequence,a.toolCallId])}:{})}};
 }
 
 /** Same visible text conventions as the runner; images/structured metadata

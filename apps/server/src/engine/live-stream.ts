@@ -16,7 +16,7 @@ export function runnerActivityMetadata(a: RunnerActivity) {
   if(a.kind==='settled')return {event_type:'runner_settled',stop_reason:a.stopReason};
   if(a.kind==='run_metadata')return {event_type:'turn_start',runtime_id:a.runtimeID,role:a.role,mode:a.mode,started_at:a.startedAt};
   if(a.kind==='assistant_message_end')return {...native,final_answer:a.final,stream_id:a.streamID,channel:a.isThinking?'thinking':'text',...(a.response?{response:a.response}:{})};
-  return native;
+  return {...native,...(a.resource_call?{resource_call:a.resource_call}:{})};
 }
 
 /** Shared snapshots are presentation state. Acknowledged originals live in

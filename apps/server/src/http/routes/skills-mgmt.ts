@@ -1,3 +1,4 @@
+import {resourceUsageDetail} from '../../db/resource-usage.js';
 // 批次 C2：skills 管理面（文件树读写/上传解包/目录/用量/缺口）+ 可见性（MCP 资源 + Skill）。
 // 对齐前端 web/src/lib/api.ts 的 skills 方法族：skillFiles/readSkillFile/writeSkillFile/
 // deleteSkillPath/createSkillDir/uploadSkill/skillUsage/missingSkills/deleteSkill/updateSkillMeta/
@@ -324,21 +325,7 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
     const name = (req.params as { name: string }).name;
     const q = req.query as Record<string, string>;
     const limit = Math.min(Math.max(Number(q["limit"]) || 50, 1), 500);
-    const res = await db().query(
-      `SELECT ts, COALESCE(agent_key,'') AS agent_key, COALESCE(task_id,0) AS task_id,
-              COALESCE(session_id,'') AS session_id, args_len
-       FROM skill_usage WHERE skill=$1 AND found=true ORDER BY ts DESC LIMIT $2`,
-      [name, limit],
-    );
-    return {
-      calls: res.rows.map((r) => ({
-        ts: r["ts"] instanceof Date ? (r["ts"] as Date).toISOString() : String(r["ts"] ?? ""),
-        agent_key: String(r["agent_key"]),
-        task_id: Number(r["task_id"] ?? 0),
-        session_id: String(r["session_id"]),
-        args_len: Number(r["args_len"] ?? 0),
-      })),
-    };
+    return resourceUsageDetail(db(),'skill',name,limit);
   });
 
   app.get("/api/skills/missing", async (req) => {
