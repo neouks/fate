@@ -18,6 +18,7 @@ import {
 import path from "node:path";
 import zlib from "node:zlib";
 import type { FastifyInstance } from "fastify";
+import {skillNameOK,skillFilePath,parseSkillDocument as parseFrontmatter,buildSkillDocument as buildSkillMd} from "../../agent/skill-files.js";
 
 // ─── 路径安全 ────────────────────────────────────────────────────────────────
 
@@ -52,31 +53,6 @@ function listFiles(dir: string, root: string, depth = 0, out: string[] = []): st
 }
 
 // ─── SKILL.md frontmatter ────────────────────────────────────────────────────
-
-function parseFrontmatter(md: string): { fm: Record<string, string>; body: string } {
-  const m = md.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!m) return { fm: {}, body: md };
-  const fm: Record<string, string> = {};
-  for (const line of m[1]!.split(/\r?\n/)) {
-    const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (kv) fm[kv[1]!] = kv[2]!.trim();
-  }
-  return { fm, body: md.slice(m[0].length) };
-}
-
-function buildSkillMd(fm: Record<string, string>, body: string): string {
-  const lines = ["---"];
-  for (const [k, v] of Object.entries(fm)) {
-    if (v === "") continue;
-    lines.push(`${k}: ${v.includes("\n") ? JSON.stringify(v) : v}`);
-  }
-  lines.push("---", "", body.trim() === "" ? `# ${fm["name"] ?? "skill"}` : body.trim(), "");
-  return lines.join("\n");
-}
-
-function skillNameOK(name: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name) && name !== "." && name !== "..";
-}
 
 // ─── ZIP（最小读取器：EOCD → 中央目录 → 本地头；stored + deflate）───────────
 
@@ -149,16 +125,13 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
 
   /** skill 目录内读写目标（name + rel 双层校验）。 */
   function skillPath(name: string, rel: string): { ok: true; abs: string } | { ok: false; error: string } {
-    if (!skillNameOK(name)) return { ok: false, error: "非法 skill 名称" };
-    const r = resolveWithin(path.join(root(), name), rel);
-    if (!r.ok) return r;
-    if (r.abs === path.resolve(path.join(root(), name))) return { ok: false, error: "不能操作 skill 根目录本身" };
-    return r;
+    try { return {ok:true,abs:skillFilePath(root(),name,rel)}; }
+    catch(error){ return {ok:false,error:error instanceof Error?error.message:String(error)}; }
   }
 
   function skillExists(name: string): boolean {
     try {
-      return statSync(path.join(root(), name)).isDirectory();
+      return statSync(skillFilePath(root(), name, "", true)).isDirectory();
     } catch {
       return false;
     }
@@ -172,12 +145,12 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
     const description = typeof b["description"] === "string" ? b["description"].trim() : "";
     if (!skillNameOK(name)) return reply.code(400).send({ error: "name 仅限字母数字/./_/- 且不以符号开头" });
     if (description === "") return reply.code(400).send({ error: "description 不能为空" });
-    if (skillExists(name)) return reply.code(409).send({ error: `skill ${name} 已存在` });
-    const fm: Record<string, string> = { name, description };
+    if (existsSync(path.join(root(),name))) return reply.code(409).send({ error: `skill ${name} 已存在` });
+    const fm: Record<string, unknown> = { name, description };
     if (typeof b["license"] === "string" && b["license"] !== "") fm["license"] = b["license"];
     if (typeof b["compatibility"] === "string" && b["compatibility"] !== "") fm["compatibility"] = b["compatibility"];
     const mcps = Array.isArray(b["mcps"]) ? b["mcps"].map(String).filter((s) => s !== "") : [];
-    if (mcps.length > 0) fm["mcps"] = JSON.stringify(mcps);
+    if (mcps.length > 0) fm["mcps"] = mcps;
     const dir = path.join(root(), name);
     mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, "SKILL.md"), buildSkillMd(fm, typeof b["instructions"] === "string" ? b["instructions"] : ""));
@@ -198,19 +171,23 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
     const name = (req.params as { name: string }).name;
     const b = (req.body ?? {}) as Record<string, unknown>;
     if (!skillExists(name)) return reply.code(404).send({ error: `skill ${name} 不存在` });
-    const skillMd = path.join(root(), name, "SKILL.md");
+    const target=skillPath(name,"SKILL.md");
+    if(!target.ok)return reply.code(400).send({error:target.error});
+    const skillMd = target.abs;
     let md = "";
     try {
       md = readFileSync(skillMd, "utf8");
     } catch {
       return reply.code(404).send({ error: "缺少 SKILL.md" });
     }
-    const { fm, body } = parseFrontmatter(md);
+    let parsed;
+    try{parsed=parseFrontmatter(md);}catch{return reply.code(400).send({error:"SKILL.md frontmatter 无效，请先修复文件"});}
+    const {fm,body}=parsed;
     fm["name"] = fm["name"] ?? name;
     if (typeof b["description"] === "string" && b["description"].trim() !== "") fm["description"] = b["description"].trim();
     if (typeof b["license"] === "string") fm["license"] = b["license"].trim();
     if (typeof b["compatibility"] === "string") fm["compatibility"] = b["compatibility"].trim();
-    if (Array.isArray(b["mcps"])) fm["mcps"] = JSON.stringify(b["mcps"].map(String).filter((s) => s !== ""));
+    if (Array.isArray(b["mcps"])) fm["mcps"] = b["mcps"].map(String).filter((s) => s !== "");
     writeFileSync(skillMd, buildSkillMd(fm, body));
     return { ok: true };
   });
@@ -260,7 +237,8 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
     if (!skillNameOK(skillName)) {
       return reply.code(400).send({ error: `skill 名称非法: ${skillName}（仅字母数字/./_/-）` });
     }
-    const target = path.join(root(), skillName);
+    let target:string;
+    try{target=skillFilePath(root(),skillName,"",true);}catch(error){return reply.code(400).send({error:String(error)});}
     if (existsSync(target) && !overwrite) return reply.code(409).send({ error: `skill ${skillName} 已存在` });
 
     let written = 0;
@@ -268,7 +246,7 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
     for (const [n, e] of cleaned) {
       const rel = strip > 0 ? n.split("/").slice(strip).join("/") : n;
       if (rel === "") continue;
-      const r = resolveWithin(target, rel);
+      const r = skillPath(skillName, rel);
       if (!r.ok) return reply.code(400).send({ error: `zip 条目路径越界: ${e.name}` });
       mkdirSync(path.dirname(r.abs), { recursive: true });
       let data: Buffer;

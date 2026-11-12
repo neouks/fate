@@ -36,7 +36,7 @@ import { roleResources } from "./resources.js";
 
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { AgentRunner, type RunnerActivity, type ToolGuard } from "../pi/runner.js";
+import { AgentRunner, type RunnerActivity, type ToolGuard, type ToolGuardContext } from "../pi/runner.js";
 import { createBashToolDefinition, type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Database } from "../db/index.js";
 import type { Node } from "../db/exploration.js";
@@ -110,6 +110,13 @@ const GUARD_SKIP_TOOLS = new Set([
   "graph_overview", "node_detail", "search_worker_traces", "get_worker_trace",
   "asset_search", "asset_get", "list_findings", "list_assets", "list_untested_assets", "todo_write",
 ]);
+
+export function workerIntentToolRestriction(allowedTools: readonly string[] | undefined, g: ToolGuardContext) {
+  if (!allowedTools || allowedTools.includes(g.toolName) || GUARD_SKIP_TOOLS.has(g.toolName) ||
+      (g.toolName === 'read' && g.skillDocument) ||
+      ['read_tool_output','read_attachment','traffic_body','expand_index','expand_digest','list_facts'].includes(g.toolName)) return;
+  return {block:true,reason:'工具不在当前意图 allowed_tools 内'};
+}
 
 /** Closing reads existing evidence; it cannot launch commands, MCP or custom exploration. */
 const WORKER_SETTLEMENT_TOOLS = [
@@ -338,7 +345,8 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
       const current = await db.exploration(expID).getNode(intent.id);
       if (!current || current.state !== 'running' || current.owner!==workerName || current.payload.cancelled_by_user) return {block:true,reason:'当前意图已停止或归属已改变，禁止继续执行'};
       if (current.payload.execution_result) return {block:true,reason:'结果已提交，请结束当前会话'};
-      if (contract.allowed_tools && !GUARD_SKIP_TOOLS.has(g.toolName) && !['read_tool_output','read_attachment','traffic_body','expand_index','expand_digest','list_facts'].includes(g.toolName) && !contract.allowed_tools.includes(g.toolName)) return {block:true,reason:'工具不在当前意图 allowed_tools 内'};
+      const restriction=workerIntentToolRestriction(contract.allowed_tools,g);
+      if(restriction)return restriction;
       // 执行租约和调用方生命周期校验。
       if (input.extraGuard) {
         const d = await input.extraGuard(g);

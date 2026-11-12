@@ -1,3 +1,5 @@
+import {skillFilePath,parseSkillDocument,loadBoundSkills} from '../../agent/skill-files.js';
+import {validateServerTransport} from '../../pi/mcpTransport.js';
 import {configuredRuntimeResources,resourcePolicy,invalidateRuntimeResources,validateRuntimeResources} from '../../engine/runtime-resources.js';
 import {catalogTools} from '../../agent/tool-catalog.js';
 import {roleContextPolicy,CONTEXT_DEFAULTS} from '../../agent/context-policy.js';
@@ -416,8 +418,12 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     };
   });
 
-  app.post("/api/mcp", async (req) => {
+  app.post("/api/mcp", async (req, reply) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      if(typeof b.name!=='string'||!b.name.trim())throw new Error('MCP name 不能为空');
+      validateServerTransport({...b,transport:b.transport??'stdio'});
+    } catch(error) { return reply.code(400).send({error:error instanceof Error?error.message:String(error)}); }
     const id = await platform().saveMCP({
       id: b["id"] === undefined || b["id"] === null ? undefined : Number(b["id"]),
       name: String(b["name"] ?? ""),
@@ -447,7 +453,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     try {
       entries = readdirSync(root).filter((n) => {
         try {
-          return statSync(path.join(root, n)).isDirectory();
+          return statSync(skillFilePath(root,n,"",true)).isDirectory();
         } catch {
           return false;
         }
@@ -457,14 +463,17 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     }
     for (const name of entries) {
       const dir = path.join(root, name);
-      let description = "";
-      try {
-        description = skillDescription(readFileSync(path.join(dir, "SKILL.md"), "utf8"));
-      } catch {
-        continue; // 无 SKILL.md 的目录不是 skill
-      }
+      let metadata:Record<string,unknown>={},parseError:string|undefined;
+      try {metadata=parseSkillDocument(readFileSync(skillFilePath(root,name,'SKILL.md'),'utf8')).fm;}
+      catch(error) {parseError=error instanceof Error?error.message:String(error);}
+      const loaded=loadBoundSkills(root,[name]);
+      let mcps=metadata.mcps;
+      if(typeof mcps==='string')try{mcps=JSON.parse(mcps);}catch{mcps=[];}
       const files = listFiles(dir, dir).map((f) => f.split(path.sep).join("/"));
-      skills.push({ name, description, files });
+      skills.push({name,description:typeof metadata.description==='string'?metadata.description:'',
+        license:typeof metadata.license==='string'?metadata.license:undefined,compatibility:typeof metadata.compatibility==='string'?metadata.compatibility:undefined,mcps:Array.isArray(mcps)?mcps.filter(m=>typeof m==='string'):[],files,
+        loadable:loaded.skills.length>0,model_visible:loaded.skills.some(s=>!s.disableModelInvocation),
+        diagnostics:[...(parseError?[parseError]:[]),...loaded.diagnostics.map(d=>d.message)]});
     }
     return { skills };
   });
@@ -477,10 +486,8 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     if (name === "" || file === "" || name.includes("..") || file.includes("..")) {
       return reply.code(400).send({ error: "name/file 不能为空且不允许路径穿越" });
     }
-    const target = path.resolve(app.skillsRoot, name, file);
-    if (!target.startsWith(path.resolve(app.skillsRoot) + path.sep)) {
-      return reply.code(400).send({ error: "路径越界" });
-    }
+    let target:string;
+    try{target=skillFilePath(app.skillsRoot,name,file);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:String(error)});}
     if (b["content"] === undefined) {
       try {
         return { name, file, content: readFileSync(target, "utf8") };
@@ -511,18 +518,4 @@ function listFiles(dir: string, root: string, depth = 0, out: string[] = []): st
     else if (e.isFile()) out.push(path.relative(root, p));
   }
   return out;
-}
-
-/** 从 SKILL.md 提取描述：优先 YAML frontmatter 的 description，回退首个非标题行。 */
-function skillDescription(md: string): string {
-  const fm = md.match(/^---\n([\s\S]*?)\n---/);
-  if (fm) {
-    const m = fm[1]!.match(/^description:\s*(.+)$/m);
-    if (m) return m[1]!.trim().replace(/^["']|["']$/g, "");
-  }
-  for (const line of md.split("\n")) {
-    const t = line.trim();
-    if (t !== "" && !t.startsWith("#")) return t.slice(0, 200);
-  }
-  return "";
 }

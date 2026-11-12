@@ -1,7 +1,7 @@
+import {skillFilePath} from './skill-files.js';
 import {readFile} from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
 import {createInterface} from 'node:readline';
-import path from 'node:path';
 import {applyToolBindings} from './tool-bindings.js';
 import {TOOL_POLICY_VERSION,TOOL_ALIASES,isCoreTool,toolIdentity,RETIRED_TOOLS} from './tool-registry.js';
 import type {AgentRunnerOptions} from '../pi/runner.js';
@@ -16,7 +16,7 @@ export function compactToolSchema(tool:ToolDefinition):ToolDefinition {
  }
  if(tool.name==='add_intent'){
   const descriptions:Record<string,string>={summary:'必填非空方向与终点',parent_ids:'当前任务已读 fact/finding ID；来源任务用 contract.basis',parent_id:'当前任务单个依据 ID',asset_ids:'资产 ID',priority:'省略/0→5',
-   contract:'可选约定及去重',basis:'直接来源任务的证据放这里；使用已读 fact/finding ID 及实际内容版本，不使用回执版本',allowed_tools:'精确执行工具名；不限制写回',intents:'仅传此数组，1–4 条，各项必填非空 summary；任一项无效整批不提交'};
+   contract:'可选约定及去重',basis:'直接来源任务的证据放这里；使用已读 fact/finding ID 及实际内容版本，不使用回执版本',allowed_tools:'精确执行工具名；不限制写回和已绑定 Skill 文档的读取',intents:'仅传此数组，1–4 条，各项必填非空 summary；任一项无效整批不提交'};
   const visit=(value:any)=>{if(!value||typeof value!=='object')return;for(const [name,property] of Object.entries(value.properties??{}) as [string,any][]){if(descriptions[name])property.description=descriptions[name];visit(property);}if(value.items)visit(value.items);};visit(schema);
  }
  return {...tool,description:tool.name==='add_intent'?tool.description+' 父节点不可用 goal/intent；省略则连接任务根事实。':tool.description,parameters:schema};
@@ -60,7 +60,7 @@ export async function prepareToolLoading(db:Database,role:string,options:ToolLoa
  const sources=[options.systemPrompt??'',options.taskContext??''];
  if(options.skillsDir)for(const skill of options.allowedSkills??[]){
   if(skill.includes('/')||skill.includes('\\')||skill==='..')continue;
-  try{sources.push(await readFile(path.join(options.skillsDir,skill,'SKILL.md'),'utf8'));}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+  try{sources.push(await readFile(skillFilePath(options.skillsDir,skill,'SKILL.md'),'utf8'));}catch{/* Invalid/missing Skill is diagnosed by the native loader; don't break all role tools. */}
  }
  // A tool explicitly required by the role, a bound Skill or this intent must be
  // executable immediately. This only changes activation within the permitted

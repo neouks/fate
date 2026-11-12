@@ -1,3 +1,4 @@
+import {loadBoundSkills} from '../agent/skill-files.js';
 import {ActivityDelivery} from './activity-delivery.js';
 import {nativeStreamID,withNativeActivity,type NativeActivityIdentity,type NativeActivityReference} from './native-activity.js';
 import type {ToolLoading} from '../agent/tool-loading.js';
@@ -30,7 +31,6 @@ import path from 'node:path';
 import {
 	createAgentSession,
 	DefaultResourceLoader,
-	loadSkillsFromDir,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -64,6 +64,8 @@ export interface ToolGuardContext {
 	toolCallId: string;
 	toolName: string;
 	args: Record<string, unknown>;
+	/** Host-checked bound Skill document. */
+	skillDocument?: boolean;
 }
 
 /** 外部 guard：每次工具调用前询问（同步或异步） */
@@ -490,11 +492,11 @@ export class AgentRunner {
         const wrapped=opts.wrapExecutionTool?.(tool)??tool;
         return opts.toolLoading?.deferred.includes(tool.name)?{...wrapped,exposure:'deferred'}:wrapped;
       })),
-			noSkills: !opts.skillsDir,
+			noSkills: true, // Only explicitly bound platform Skills; no automatic discovery.
 			skillsOverride: opts.skillsDir
 				? (base) => {
-						const loaded = loadSkillsFromDir({ dir: opts.skillsDir!, source: 'series' });
-                        return { skills: loaded.skills.filter((skill) => !opts.allowedSkills || opts.allowedSkills.includes(skill.name)).sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0), diagnostics: [...base.diagnostics, ...loaded.diagnostics] };
+						const loaded = loadBoundSkills(opts.skillsDir!, opts.allowedSkills);
+                        return { skills: loaded.skills, diagnostics: [...base.diagnostics, ...loaded.diagnostics] };
 					}
 				: undefined,
 			noPromptTemplates: true,

@@ -2,6 +2,7 @@ import {acquireRuntimeResources,resourceScope,type RuntimeResourceLease} from '.
 import {prepareToolLoading} from '../agent/tool-loading.js';
 import {assertToolBinding} from '../agent/tool-registry.js';
 import {domainState} from '../agent/domain-state.js';
+import {skillReadAccess} from '../agent/resources.js';
 import {platformPolicy,validatePlatformRunner} from '../pi/platform-policy.js';
 import {resolveRolePrompt,hostProtocol} from '../agent/prompts.js';
 import {createHash,randomUUID} from 'node:crypto';
@@ -80,20 +81,16 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
   },
   guard:async g=>{
    if(!(await db.query('SELECT id FROM runtime_role_configs WHERE id=$1 AND finished_at IS NULL AND expires_at>clock_timestamp()',[id])).rowCount){controller.abort('执行器已过期');return {block:true,reason:'执行器已过期'};}
-   const agent=(await db.query('SELECT enabled,id,interactive_shell FROM agents WHERE key=$1',[role])).rows[0];
+   const agent=(await db.query<{enabled:boolean;id:string;interactive_shell:boolean}>('SELECT enabled,id,interactive_shell FROM agents WHERE key=$1',[role])).rows[0];
    if(g.toolName.startsWith('shell_')&&agent?.interactive_shell!==true)return {block:true,reason:'交互终端已禁用'};
    if(agent?.enabled===false)return {block:true,reason:'角色已禁用'};
    try{await assertToolBinding(db,role,g.toolName);}catch{return {block:true,reason:'工具或规范入口已禁用或解除角色绑定'};}
    const tool=(await db.query('SELECT enabled,agents FROM tools WHERE key=$1',[g.toolName])).rows[0];
    if(tool&&(tool.enabled===false||!Array.isArray(tool.agents)||!tool.agents.includes(role)))return {block:true,reason:'工具已禁用或解除角色绑定'};
-   if(g.toolName==='read'&&options.skillsDir&&typeof g.args.path==='string'){
-    const relative=path.relative(path.resolve(options.skillsDir),path.resolve(options.cwd,g.args.path));
-    if(relative&&!relative.startsWith('..')&&!path.isAbsolute(relative)){
-     const skill=relative.split(path.sep)[0];
-     if(!(await db.query('SELECT 1 FROM agent_skill_visibility WHERE agent_id=$1 AND skill_name=$2 AND enabled',[agent?.id,skill])).rowCount)return {block:true,reason:'Skill 已禁用或解除角色绑定'};
-    }
-   }
-   return guard?.(g);
+   const skillAccess=g.toolName==='read'&&typeof g.args.path==='string'
+    ? await skillReadAccess(db,agent?.id,options,g.args.path) : undefined;
+   if(skillAccess==='disabled')return {block:true,reason:'Skill 已禁用或解除角色绑定'};
+   return guard?.({...g,skillDocument:skillAccess==='document'});
   },
   discoveryGuard:async name=>{
    if(name.startsWith('shell_')&&!(await db.query('SELECT 1 FROM agents WHERE key=$1 AND enabled AND interactive_shell',[role])).rowCount)

@@ -2,6 +2,34 @@ import {platformPolicy} from '../pi/platform-policy.js';
 import {MCP_RESOURCE_TOOLS} from '../pi/platform-mcp.js';
 import type { Database } from "../db/index.js";
 import type { AgentRunnerOptions } from "../pi/runner.js";
+import {realpath, stat} from 'node:fs/promises';
+import path from 'node:path';
+import {skillFilePath} from './skill-files.js';
+
+export async function skillReadAccess(db: Database, agentID: string | undefined, options: Pick<AgentRunnerOptions, 'cwd' | 'skillsDir' | 'allowedSkills'>, requested: string) {
+  if (!options.skillsDir) return;
+  const root = path.resolve(options.skillsDir);
+  const file = path.resolve(options.cwd, requested);
+  const relative = path.relative(root, file);
+  if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return;
+
+  const [skill, ...parts] = relative.split(path.sep);
+  try{skillFilePath(root,skill!,parts.join(path.sep));}catch{return 'disabled';}
+  if (!agentID) return 'disabled';
+  const binding = await db.query('SELECT 1 FROM agent_skill_visibility WHERE agent_id=$1 AND skill_name=$2 AND enabled', [agentID, skill]);
+  if (!binding.rowCount) return 'disabled';
+  // The exception is for documents in a Skill bound to this session. pi
+  // gives the model absolute paths, so keep its shorthand path syntax outside
+  // this exception and verify the normal path resolves to a regular file here.
+  if (!skill || !options.allowedSkills?.includes(skill) || !parts.length || path.extname(file) !== '.md' ||
+      requested !== file || /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/u.test(requested)) return;
+  try {
+    const [rootPath, filePath] = await Promise.all([realpath(root), realpath(file)]);
+    if (filePath === path.join(rootPath, relative) && (await stat(filePath)).isFile()) return 'document';
+  } catch {
+    // Missing and unreadable files cannot receive the document exception.
+  }
+}
 
 /** Reload role visibility for every session. The server configuration is the resource authority. */
 export async function roleResources(db: Database, role: string, skillsDir?: string): Promise<Pick<AgentRunnerOptions, "skillsDir" | "allowedSkills" | "mcpEntries" | "mcpResourceTools">> {

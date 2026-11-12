@@ -1,5 +1,5 @@
 import { McpClient } from "@earendil-works/pi-mcp";
-import { createServerTransport } from "../../pi/mcpTransport.js";
+import { createServerTransport, validateServerTransport } from "../../pi/mcpTransport.js";
 // Management probes and pi sessions share the same native MCP client transports.
 import type { FastifyInstance } from "fastify";
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -22,8 +22,8 @@ interface ServerConfig {
 async function connectMcpOnce(cfg: ServerConfig): Promise<DiscoveredMcpTool[]> {
   const client=new McpClient({name:'series-management',version:'1',requestTimeoutMs:CONNECT_TIMEOUT_MS});
   try {
-    await client.connect(createServerTransport({...cfg,headers:cfg.env},process.cwd()));
-    return (await client.listTools()).map(t=>({name:t.name,description:t.description ?? '',inputSchema:t.inputSchema}));
+    await client.connect(createServerTransport(cfg as unknown as Record<string,unknown>,process.cwd()));
+    return (client.serverCapabilities?.tools ? await client.listTools() : []).map(t=>({name:t.name,description:t.description ?? '',inputSchema:t.inputSchema}));
   } finally { await client.close(); }
 
 }
@@ -31,6 +31,7 @@ async function connectMcpOnce(cfg: ServerConfig): Promise<DiscoveredMcpTool[]> {
 // ─── 路由 ────────────────────────────────────────────────────────────────────
 
 function serverRowToConfig(row: Record<string, unknown>): ServerConfig {
+  validateServerTransport(row);
   return {
     transport: String(row["transport"] ?? "stdio"),
     command: String(row["command"] ?? ""),
@@ -136,6 +137,7 @@ export function registerMcpMgmtRoutes(app: FastifyInstance): void {
       insecure: b["insecure"] === true,
     };
     try {
+      validateServerTransport({...b,transport:b.transport??"stdio"});
       const tools = await connectMcpOnce(cfg);
       return {
         ok: true,
