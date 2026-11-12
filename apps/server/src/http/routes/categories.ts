@@ -70,10 +70,11 @@ export function registerCategoryRoutes(app: FastifyInstance): void {
     const dup = await db().query<{ id: string }>(`SELECT id FROM task_categories WHERE nkey=$1`, [nkeyOf(name)]);
     if (dup.rows.length > 0) return reply.code(409).send({ error: `分类「${name}」已存在` });
     const res = await db().query<{ id: string }>(
-      `INSERT INTO task_categories(name, nkey) VALUES ($1, $2) RETURNING id`,
+      `INSERT INTO task_categories(name, nkey) VALUES ($1, $2) ON CONFLICT (nkey) DO NOTHING RETURNING id`,
       [name, nkeyOf(name)],
     );
-    const row = await categoryByID(Number(res.rows[0]!.id));
+    if (!res.rows[0]) return reply.code(409).send({ error: `分类「${name}」已存在` });
+    const row = await categoryByID(Number(res.rows[0].id));
     return reply.code(201).send(row);
   });
 
@@ -87,7 +88,13 @@ export function registerCategoryRoutes(app: FastifyInstance): void {
       [nkeyOf(name), id],
     );
     if (dup.rows.length > 0) return reply.code(409).send({ error: `分类「${name}」已存在` });
-    const res = await db().query(`UPDATE task_categories SET name=$2 WHERE id=$1`, [id, name]);
+    let res;
+    try {
+      res = await db().query(`UPDATE task_categories SET name=$2,nkey=$3 WHERE id=$1`, [id, name, nkeyOf(name)]);
+    } catch (error) {
+      if ((error as {code?:string}).code === '23505') return reply.code(409).send({ error: `分类「${name}」已存在` });
+      throw error;
+    }
     if ((res.rowCount ?? 0) === 0) return reply.code(404).send({ error: "分类不存在" });
     return categoryByID(id);
   });
