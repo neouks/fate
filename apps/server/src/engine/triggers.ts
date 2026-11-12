@@ -56,7 +56,7 @@ export class TriggerScheduler {
       await tx.query("SELECT COALESCE(max(id),0) n FROM exploration_nodes WHERE kind='finding'"),
       await tx.query('SELECT COALESCE(max(id),0) n FROM tasks'),
       await tx.query("SELECT COALESCE(max(id),0) n FROM activity WHERE kind='tool_result'"),
-      await tx.query("SELECT COALESCE(json_agg(id),'[]'::json) ids FROM exploration_nodes WHERE kind='goal' AND state='met'"),
+      await tx.query("SELECT COALESCE(json_agg(id),'[]'::json) ids FROM exploration_nodes WHERE kind='goal' AND goal_display_state(id)='met'"),
       await tx.query("SELECT COALESCE(json_agg(id),'[]'::json) ids FROM tasks WHERE status='timeout' AND deleted_at IS NULL"),
     ];
     for (const [key, value] of [
@@ -107,7 +107,7 @@ export class TriggerScheduler {
   private async collectGoals(tx: Database, triggers: TriggerRow[]) {
     const fired = new Set<number>(JSON.parse(await this.state(tx,'pi_trigger_fired_goals')) as number[]);
     const rows = await tx.query(`SELECT n.id,t.id task_id,t.description,t.goal,n.payload FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id
-      WHERE n.kind='goal' AND n.state='met' AND t.deleted_at IS NULL AND NOT (n.id=ANY($2::bigint[])) ORDER BY n.id LIMIT $1`, [PAGE,[...fired]]);
+      WHERE n.kind='goal' AND goal_display_state(n.id)='met' AND t.deleted_at IS NULL AND NOT (n.id=ANY($2::bigint[])) ORDER BY n.id LIMIT $1`, [PAGE,[...fired]]);
     for(const r of rows.rows){const id=Number(r.id);if(fired.has(id))continue;fired.add(id);const p=(r.payload??{}) as Record<string,unknown>;const text=String(p.text??p.summary??'');
       await this.fire(tx,triggers,'on_goal_met',`goal:${id}`,'goal',Number(r.task_id),{goal_id:id,description:r.description,goal:r.goal,summary:text,
         context:`【本次由任务达成目标触发】\n任务 #${r.task_id}：${r.description}\n目标：${text}`},'goal_message');}

@@ -56,7 +56,8 @@ CREATE OR REPLACE FUNCTION goal_acceptance_valid(p_id BIGINT) RETURNS BOOLEAN LA
   AND p.evidence_hash=goal_evidence_hash(p.evidence_id)
   AND g.kind='goal' AND g.state='met' AND g.exploration_id=t.exploration_id AND t.deleted_at IS NULL
   AND e.kind IN('fact','finding') AND e.state='confirmed'
-  AND COALESCE(e.payload->>'observation_type','observed') NOT IN('negative','inferred','unknown')
+  AND COALESCE(e.payload->>'observation_type','observed') NOT IN('inferred','unknown')
+  AND (p.method='coverage' OR COALESCE(e.payload->>'observation_type','observed')<>'negative')
   AND COALESCE(e.payload->>'acceptance_status','')<>'unverified'
   AND exploration_node_readable(t.exploration_id,e.id)
   AND (e.exploration_id=t.exploration_id OR EXISTS(SELECT 1 FROM task_relations r JOIN tasks s ON s.id=r.source_task_id

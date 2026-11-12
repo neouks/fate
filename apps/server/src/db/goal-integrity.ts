@@ -15,14 +15,14 @@ export async function proposeGoalAcceptance(db:Database,taskID:number,goalID:num
  return db.transaction(async tx=>{
   await assertOwnership?.(tx);
   const {task,goal}=await lockGoal(tx,taskID,goalID);
+  const text=String((goal.payload as Record<string,unknown>).text??'');
+  const method=isCoverageGoal(text)?'coverage':'manual';
   const {node}=await resolveGraphNode(tx,taskID,Number(task.exploration_id),evidenceID);
-  if(!['fact','finding'].includes(node.kind)||node.state!=='confirmed'||node.payload.acceptance_status==='unverified'||['negative','inferred','unknown'].includes(String(node.payload.observation_type)))throw conflict('需要已确认的实际证据，不能用推测或负面结论代替目标达成');
+  if(!['fact','finding'].includes(node.kind)||node.state!=='confirmed'||node.payload.acceptance_status==='unverified'||['inferred','unknown'].includes(String(node.payload.observation_type))||(method!=='coverage'&&node.payload.observation_type==='negative'))throw conflict('需要已确认的实际证据，不能用推测或负面结论代替目标达成');
   const finding=node.kind==='finding'?(await tx.query('SELECT evidence,status FROM findings WHERE node_id=$1',[evidenceID])).rows[0]:undefined;
   const observed=finding?.evidence??node.payload.evidence;
   if(typeof observed!=='string'||!observed.trim()||finding?.status==='false_positive')throw conflict('证据缺少有效观察内容');
   const evidenceHash=(await tx.query('SELECT goal_evidence_hash($1) hash',[evidenceID])).rows[0]!.hash;
-  const text=String((goal.payload as Record<string,unknown>).text??'');
-  const method=isCoverageGoal(text)?'coverage':'manual';
   const coverage=method==='coverage'?(await tx.query('SELECT goal_coverage_snapshot($1) value',[taskID])).rows[0]!.value as {enabled:boolean;denominator:number;tested:number}:null;
   if(coverage&&(!coverage.enabled||coverage.denominator===0||coverage.tested!==coverage.denominator))throw conflict(`覆盖度未达成：${coverage.tested}/${coverage.denominator}，不能确认 100%`);
   const previous=(await tx.query('SELECT * FROM goal_acceptance WHERE task_id=$1 AND goal_id=$2 ORDER BY id DESC LIMIT 1',[taskID,goalID])).rows[0];

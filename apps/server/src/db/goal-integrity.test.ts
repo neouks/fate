@@ -74,6 +74,7 @@ test('versioned acceptance, task states and authenticated human review', {skip:!
  await db.query('INSERT INTO task_asset_links(task_id,asset_id) VALUES($1,$2)',[c.task,asset]);
  await db.query('INSERT INTO exploration_anchors(node_id,asset_id) VALUES($1,$2)',[c.evidence,asset]);
  await db.query(`UPDATE exploration_nodes SET payload=payload||'{"scope":{"tested":"合成资产观察"},"writeback":{"coverage_eligible":true}}'::jsonb WHERE id=$1`,[c.evidence]);
+ await db.query("UPDATE exploration_nodes SET payload=payload||'{\"observation_type\":\"negative\"}'::jsonb WHERE id=$1",[c.evidence]);
  const cov=await proposeGoalAcceptance(db,c.task,c.goal,c.evidence);assert.equal(cov.met,true);
  assert.equal(await db.tasks().setTaskStatusGuarded(c.task,'done'),true);
  const asset2=Number((await db.query("INSERT INTO assets(type,domain) VALUES('subdomain','second.invalid') RETURNING id")).rows[0]!.id);
