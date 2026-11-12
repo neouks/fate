@@ -1162,6 +1162,7 @@ export interface Agent {
   description?: string;
   role: string;
   builtin: boolean;
+  deletable?: boolean;
   enabled: boolean;
   llm_profile_id?: number | null; // 绑定的 LLM 配置；null/absent = 跟随任务/会话/全局
   max_turns?: number; // 0 = 无限制

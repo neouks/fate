@@ -6,6 +6,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import { Bot, PlusIcon, Trash2Icon } from "lucide-react";
 
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,13 +53,20 @@ function AgentGridCard({
   onOpen: () => void;
   onDeleted: () => void;
 }) {
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
   async function del() {
+    if (deleting) return;
+    setDeleting(true);
     try {
       await api.deleteAgent(agent.key);
       toast.success(`已删除 Agent「${agent.name}」`);
+      setConfirmOpen(false);
       onDeleted();
     } catch (e) {
       toast.error("删除失败：" + (e as Error).message);
+    } finally {
+      setDeleting(false);
     }
   }
   return (
@@ -92,13 +100,14 @@ function AgentGridCard({
           <span className="rounded border px-1.5 py-0.5">工具 {agent.tool_count ?? 0}</span>
         </div>
       </button>
-      {!agent.builtin && (
-        <AlertDialog>
+      {!agent.builtin && agent.deletable !== false && (
+        <AlertDialog open={confirmOpen} onOpenChange={open => { if (!deleting) setConfirmOpen(open); }}>
           <AlertDialogTrigger asChild>
             <Button
               variant="ghost"
               size="icon-sm"
-              className="text-muted-foreground hover:text-destructive absolute top-2 right-2 opacity-0 transition-opacity group-hover:opacity-100"
+              aria-label={`删除 Agent「${agent.name}」`}
+              className="text-muted-foreground hover:text-destructive absolute top-2 right-2"
             >
               <Trash2Icon className="size-3.5" />
             </Button>
@@ -107,12 +116,12 @@ function AgentGridCard({
             <AlertDialogHeader>
               <AlertDialogTitle>删除 Agent「{agent.name}」？</AlertDialogTitle>
               <AlertDialogDescription>
-                将一并删除它的提示词、变量、可见性与工具绑定。此操作不可撤销。
+                将删除配置、提示词、触发器与资源绑定；历史会话和调用统计保留，历史会话仅供读取。有排队或运行中会话时无法删除。
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel>取消</AlertDialogCancel>
-              <AlertDialogAction onClick={del}>删除</AlertDialogAction>
+              <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+              <AlertDialogAction disabled={deleting} onClick={e => { e.preventDefault(); void del(); }}>{deleting ? "删除中…" : "删除"}</AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
@@ -145,8 +154,8 @@ function CreateAgentDialog({ onCreated }: { onCreated: (key: string) => void }) 
     }
   }
 
-  const keyOk = /^[a-z][a-z0-9_]*$/.test(key.trim());
-  const canCreate = keyOk && name.trim().length > 0 && !busy;
+  const keyOk = /^[a-z][a-z0-9_]{0,63}$/.test(key.trim());
+  const canCreate = keyOk && name.trim().length > 0 && Array.from(name.trim()).length <= 120 && !busy;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -167,19 +176,21 @@ function CreateAgentDialog({ onCreated }: { onCreated: (key: string) => void }) 
             <Label htmlFor="agent-key">Key</Label>
             <Input
               id="agent-key"
+              maxLength={64}
               placeholder="如 research_helper"
               value={key}
               onChange={(e) => setKey(e.target.value)}
               className="font-mono"
             />
             {key.length > 0 && !keyOk && (
-              <span className="text-destructive text-xs">小写字母开头，仅含小写字母/数字/下划线</span>
+              <span className="text-destructive text-xs">小写字母开头，仅含小写字母/数字/下划线，最多 64 字符</span>
             )}
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="agent-name">名称</Label>
             <Input
               id="agent-name"
+              maxLength={120}
               placeholder="如 研究助手"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -210,8 +221,12 @@ export default function AgentsPage({initialAgentKey}:{initialAgentKey?:string} =
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [editKey, setEditKey] = React.useState<string | null>(null);
 
+  const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
   const reload = React.useCallback(() => {
-    api.agents().then(setAgents).catch(() => setAgents([]));
+    setLoading(true);
+    setLoadError(null);
+    api.agents().then(setAgents).catch(e => setLoadError((e as Error).message)).finally(() => setLoading(false));
   }, []);
   React.useEffect(() => {
     reload();
@@ -235,10 +250,10 @@ export default function AgentsPage({initialAgentKey}:{initialAgentKey?:string} =
       <Card>
         <CardHeader>
           <CardTitle>Agent 清单</CardTitle>
-          <CardDescription>共 {agents.length} 个</CardDescription>
+          <CardDescription>{loading ? "正在加载…" : loadError ? "加载失败" : `共 ${agents.length} 个`}</CardDescription>
         </CardHeader>
         <CardContent>
-          {agents.length === 0 ? (
+          {loadError ? (<Alert variant="destructive"><AlertDescription>{loadError}<Button variant="outline" size="sm" onClick={reload}>重试</Button></AlertDescription></Alert>) : loading ? (<p role="status">正在加载 Agent…</p>) : agents.length === 0 ? (
             <p className="text-muted-foreground py-6 text-center text-sm">（暂无 Agent）</p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

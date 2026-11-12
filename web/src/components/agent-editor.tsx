@@ -43,6 +43,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const [skills, setSkills] = React.useState<SkillItem[]>([]);
   const [tools, setTools] = React.useState<Tool[]>([]);
   const [loaded, setLoaded] = React.useState(false);
+  const [loadError, setLoadError] = React.useState("");
   const [viewVer, setViewVer] = React.useState<PromptVersion | null>(null);
   const [diffVer, setDiffVer] = React.useState<PromptVersion | null>(null);
 
@@ -80,6 +81,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const webSearchGlobalOn = !!settings?.web_search_enabled;
 
   const reload = React.useCallback(() => {
+    setLoaded(false);
+    setLoadError("");
     api
       .getAgent(agentKey)
       .then((d) => {
@@ -105,7 +108,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         setTtTurns(String(d.task_timeout_wrapup_max_turns ?? 0));
         setTtTurnsDefault(d.task_timeout_wrapup_max_turns_default ?? 5);
       })
-      .catch(() => setDetail(null))
+      .catch(e => { setDetail(null); setLoadError((e as Error).message); })
       .finally(() => setLoaded(true));
   }, [agentKey]);
   React.useEffect(() => {
@@ -252,7 +255,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   }
 
   if (loaded && !detail) {
-    return <div className="text-muted-foreground p-6 text-center text-sm">未找到 Agent：{agentKey}</div>;
+    return <div role="alert" className="flex flex-col items-center gap-3 p-6 text-center text-sm"><p>{loadError || `无法加载 Agent：${agentKey}`}</p><Button variant="outline" onClick={reload}>重试</Button></div>;
   }
   // config is meaningless for the conversational main agent and the fixed-budget
   // goals decomposer; every other agent (workers, custom assistants) honors it.
