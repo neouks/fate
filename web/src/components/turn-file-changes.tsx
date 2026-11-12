@@ -102,6 +102,8 @@ export function TurnFileChanges({ summary, turn, taskId, conversationId }: {
   }
 
   return <section aria-label="本轮文件改动" className="mt-2 min-w-0 space-y-2">
+    <p className="text-sm font-medium">本轮文件改动 · {summary.total} 个文件</p>
+    <p className="text-xs text-muted-foreground">仅记录原生 write / edit 写入；命令和下载产生的文件不包含在此处。</p>
     <ul className="space-y-2">{items.map(file => <FileCard key={file.id} file={file} scope={scope} turn={turn}/>)}</ul>
     {cursor && (extra || summary.total > items.length) && <Button variant="ghost" size="sm" disabled={loading} onClick={() => void loadMore()}>
       {loading ? "加载中…" : error ? "重试" : extra ? "加载更多" : `查看全部 ${summary.total} 个文件`}

@@ -318,7 +318,7 @@ function TaskDetailInner() {
           </TabsList>
         </Tabs>
         <div className="task-header-actions flex shrink-0 items-center justify-end gap-1">
-          <span className="hidden sm:inline-flex">
+          <span className="inline-flex">
             <StatusBadge domain="task" value={task.status} dot />
           </span>
           <Button

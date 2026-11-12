@@ -1,5 +1,6 @@
 "use client";
 
+import {terminalDiagnostic} from '@/lib/terminal-diagnostic';
 import * as React from "react";
 import {ActivityBody,ActivityContentProvider} from "@/components/activity-body";
 import {
@@ -266,7 +267,9 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
   const running=live&&!result&&!stopped;
   const state=stopped?'stopped':result?(result.is_error?'failed':'completed'):running?'running':'unknown';
   const raw=use&&use.summary.startsWith(toolName)?use.summary.slice(toolName.length).trimStart():use?.summary??'';
-  const cmd=toolInputText(toolName,raw),status={running:'执行中…',unknown:'结果未记录',completed:'已完成',failed:'失败',stopped:'已停止'}[state];
+  const cmd=toolInputText(toolName,raw);
+  const diagnostic=isTerminal&&result?.is_error?terminalDiagnostic(use?.detail&&!use.detail_truncated?toolInputText(toolName,use.detail):undefined,outcomeText):undefined;
+  const status={running:'执行中…',unknown:'结果未记录',completed:'已完成',failed:'失败',stopped:'已停止'}[state];
   const statusClass=state==='completed'?'text-[var(--status-success)]':state==='failed'?'text-destructive':'text-muted-foreground';
   const StatusIcon=state==='completed'?CheckIcon:state==='failed'?XIcon:state==='stopped'?CircleStopIcon:CircleHelpIcon;
   const parts=[...(use?[{step:use,label:'命令'}]:[]),...(result?[{step:result,label:result.is_error?'输出 ✕':'输出 ✓'}]:[])];
@@ -279,6 +282,7 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
       {cmd&&<span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{isTerminal?'$ ':''}{cmd}</span>}
       <span className={cn('ml-auto shrink-0 font-medium',statusClass)}>{status}</span>
     </button>
+    {diagnostic&&<p role="status" className="text-sm text-muted-foreground">{diagnostic.label} · 退出码 {diagnostic.code}{open&&` — ${diagnostic.detail}`}</p>}
     {open&&<div id={panelId} data-search-body className="execution-tool-detail"><div className="execution-terminal-surface" data-terminal={isTerminal}>
       {parts.map(({step,label})=><section key={step.seq} data-search-activity={step.seq} className="execution-terminal-part" aria-label={label}>
         <div className="execution-terminal-label">{label}</div>
@@ -564,8 +568,8 @@ function ScrollingExecutionTurn(props:React.ComponentProps<typeof ExecutionTurn>
 }
 function ExecView(props:ExecutionProps) {
   const turns=conversationTurns(props.activity);
-  const summaries=useTurnSummaries(props.taskId,props.conversationId,props.activity.map(turnID).filter((id):id is string=>!!id));
-  return <>{turns.map((turn,index)=>{
+  const {items:summaries,error:summaryError,retry:retrySummaries}=useTurnSummaries(props.taskId,props.conversationId,props.activity.map(turnID).filter((id):id is string=>!!id));
+  return <>{summaryError&&<Alert><AlertDescription>执行摘要及文件改动暂时读取失败，不能据此判断没有文件。<Button variant="outline" size="sm" onClick={retrySummaries}>重试</Button></AlertDescription></Alert>}{turns.map((turn,index)=>{
     const id=turn.steps.map(turnID).find(Boolean);
     const Turn=props.scrollItems?ScrollingExecutionTurn:ExecutionTurn;
     const body=<Turn {...props} turn={turn} summary={id?summaries[id]:undefined} latest={index===turns.length-1}/>;
