@@ -478,10 +478,10 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
     boundaryContext:async()=>{
       await input.hooks.assertOwnership?.(db);
-      const task=await db.tasks().getTask(taskID);
-      if(!task||task.exploration_id!==expID)throw new Error('Planner 任务已删除或归属变化');
+      const task=(await db.query('SELECT *,task_display_status(id) AS display_status FROM tasks WHERE id=$1 AND deleted_at IS NULL',[taskID])).rows[0];
+      if(!task||Number(task.exploration_id)!==expID)throw new Error('Planner 任务已删除或归属变化');
       const state=plannerCurrentState(await buildGraphOverview(ctx,{currentOnly:true}),todos.get(expID));
-      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.status,paused:task.paused,...state,grounding:plannerGroundingContext(await plannerGrounding(ctx,sessionEntries()))})+'\n'+await contextNeedBoundary(ctx);
+      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.display_status,paused:task.display_status==='paused',...state,grounding:plannerGroundingContext(await plannerGrounding(ctx,sessionEntries()))})+'\n'+await contextNeedBoundary(ctx);
     },
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
@@ -614,10 +614,10 @@ async function runMainSession(input:MainChatInput,active:NativeRunSession):Promi
     boundaryContext:async()=>{
       // A restored Main transcript can contain an old overview. Supply current
       // lifecycle state through PI's existing context hook, without another turn.
-      const task=await db.tasks().getTask(taskID);
-      const goals=await db.query("SELECT id,state FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 10",[expID]);
+      const task=(await db.query('SELECT task_display_status(id) AS status,task_display_reason(id) AS reason FROM tasks WHERE id=$1 AND deleted_at IS NULL',[taskID])).rows[0];
+      const goals=await db.query("SELECT id,goal_display_state(id) state FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 10",[expID]);
       return hostProtocol("mainagent")+constraintBlock(await loadConstraints(db,expID))+
-        '\n【当前任务实时状态；历史会话中的旧状态不能覆盖此状态】\n'+JSON.stringify({task_status:task?.status,paused:task?.paused,goals:goals.rows});
+        '\n【当前任务实时状态；历史会话中的旧状态不能覆盖此状态】\n'+JSON.stringify({task_status:task?.status,status_reason:task?.reason,paused:task?.status==='paused',goals:goals.rows});
     },
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
     cwd: workDir,

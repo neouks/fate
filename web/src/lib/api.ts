@@ -372,12 +372,14 @@ export const api = {
   usageStats: (days = 365) => get<UsageStats>(`/tokens/usage?days=${days}`),
   // ---- 目标管理（总览）----
   // 本任务全部目标（text/vulnclass/state）。
+  goalAcceptance: (id:string,goal:string) => get<{acceptance:import('@/components/goal-acceptance').GoalAcceptance|null}>(`/tasks/${id}/goals/${goal}/acceptance`),
+  reviewGoalAcceptance: (id:string,goal:string,body:{action:'approve'|'reject';acceptance_id:string;goal_hash:string;evidence_hash:string}) => post<{ok:boolean}>(`/tasks/${id}/goals/${goal}/acceptance`,body),
   taskGoals: (id: string) =>
     get<{ goals: TaskGoal[] | null }>(`/tasks/${id}/goals`).then((response) => ({ goals: arr(response.goals) })),
-  // 人工新增目标：写入图谱并通知 planner、复活任务。
+  // 人工新增目标：旧完成状态失效，不自动恢复执行。
   addGoal: (id: string, text: string, vulnclass?: string) =>
     post<TaskGoal>(`/tasks/${id}/goals`, { text, vulnclass: vulnclass ?? "" }),
-  // 人工修改目标文本（及 vulnclass）：通知 planner「由 old 变为 new」、复活任务。
+  // 人工修改目标文本（及 vulnclass）：旧证明失效，不自动恢复执行。
   updateGoal: (id: string, goalId: string, text: string, vulnclass?: string) =>
     patch<TaskGoal>(`/tasks/${id}/goals/${goalId}`, { text, vulnclass: vulnclass ?? "" }),
   // 人工删除目标（硬删除）：通知 planner，删除不复活任务。

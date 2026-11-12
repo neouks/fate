@@ -131,7 +131,7 @@ const INTENT_DISPATCH_PREDICATE =
   `(SELECT 1 FROM tasks dispatch_task WHERE dispatch_task.exploration_id=exploration_nodes.exploration_id ` +
   `AND dispatch_task.deleted_at IS NULL AND dispatch_task.execution_mode='manual'))`;
 
-const NODE_COLS = `id, kind, payload, priority, state, COALESCE(origin,'') AS origin, COALESCE(owner,'') AS owner, COALESCE(blocked_reason,'') AS blocked_reason, created_at, content_version, report_revision`;
+const NODE_COLS = `id, kind, payload, priority, CASE WHEN kind='goal' THEN goal_display_state(id) ELSE state END AS state, COALESCE(origin,'') AS origin, COALESCE(owner,'') AS owner, COALESCE(blocked_reason,'') AS blocked_reason, created_at, content_version, report_revision`;
 
 // ─── 队列事务（worker_queue.go beginQueue：探索级 advisory xact lock）────────
 
@@ -263,7 +263,10 @@ export class ExplorationStore {
   }
 
   async addGoal(payload: Record<string, unknown>, origin: string): Promise<number> {
-    return this.addNode(KindGoal, payload, 0, "open", origin, []);
+    return this.db.transaction(async db => {
+      await db.query('SELECT id FROM tasks WHERE exploration_id=$1 ORDER BY id FOR UPDATE', [this.expID]);
+      return db.exploration(this.expID).addNode(KindGoal, payload, 0, "open", origin, []);
+    });
   }
 
   async originFactID(): Promise<number> {
@@ -469,15 +472,31 @@ export class ExplorationStore {
   async updateGoalPayload(id: number, text: string, vulnclass: string): Promise<void> {
     const payload: Record<string, unknown> = { text };
     if (vulnclass !== "") payload["vulnclass"] = vulnclass;
-    const n = await this.queueExec(
-      `UPDATE exploration_nodes SET payload=$1::jsonb WHERE id=$2 AND exploration_id=$3 AND kind='goal'`,
-      jsonbClean(JSON.stringify(payload)), id, this.expID,
+    const n = await this.db.transaction(async db => {
+      await db.query('SELECT id FROM tasks WHERE exploration_id=$1 ORDER BY id FOR UPDATE', [this.expID]);
+      return db.exploration(this.expID).queueExec(
+      `WITH edited AS (
+        UPDATE exploration_nodes n SET payload=(n.payload-'text'-'vulnclass')||$1::jsonb,
+          state=CASE WHEN n.payload->>'text' IS DISTINCT FROM $1::jsonb->>'text' THEN 'open' ELSE n.state END
+        FROM exploration_nodes previous
+        WHERE n.id=$2 AND n.exploration_id=$3 AND n.kind='goal' AND previous.id=n.id
+        RETURNING n.id,previous.payload->>'text' IS DISTINCT FROM $1::jsonb->>'text' AS changed
+       ), cleared AS (
+         DELETE FROM exploration_edges e USING edited
+         WHERE edited.changed AND e.exploration_id=$3 AND e.dst_id=edited.id AND e.rel=$4
+       )
+       SELECT id FROM edited`,
+      jsonbClean(JSON.stringify(payload)), id, this.expID, RelProves,
     );
+    });
     if (n === 0) throw new Error("目标不存在");
   }
 
   async deleteGoal(id: number): Promise<void> {
-    const n = await this.queueExec(`DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='goal'`, id, this.expID);
+    const n = await this.db.transaction(async db => {
+      await db.query('SELECT id FROM tasks WHERE exploration_id=$1 ORDER BY id FOR UPDATE', [this.expID]);
+      return db.exploration(this.expID).queueExec(`DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='goal'`, id, this.expID);
+    });
     if (n === 0) throw new Error("目标不存在");
   }
 
@@ -604,16 +623,15 @@ export class ExplorationStore {
     return res.rows[0]?.ok === true;
   }
 
-  async executionCounts(): Promise<{ running: number; goals: number; met: number }> {
-    const res = await this.db.query<{ running: string; goals: string; met: string }>(
-      `SELECT count(*) FILTER (WHERE kind='intent' AND state='running') AS running,
-              count(*) FILTER (WHERE kind='goal') AS goals,
-              count(*) FILTER (WHERE kind='goal' AND state='met') AS met
-       FROM exploration_nodes WHERE exploration_id=$1 AND kind IN ('intent','goal')`,
+  async executionCounts(): Promise<{ running: number; goals: number; met: number; goalsReady: boolean }> {
+    const res = await this.db.query<{ running: string; goals: string; met: string; ready: boolean }>(
+      `SELECT (SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='running') running,
+              total AS goals,met,ready FROM task_goal_progress($1)`,
       [this.expID],
     );
     const row = res.rows[0];
-    return { running: Number(row?.running ?? 0), goals: Number(row?.goals ?? 0), met: Number(row?.met ?? 0) };
+    return { running: Number(row?.running ?? 0), goals: Number(row?.goals ?? 0), met: Number(row?.met ?? 0),
+      goalsReady:row?.ready===true };
   }
 
   // ─── Worker 队列（worker_queue.go）────────────────────────────────────────
@@ -691,8 +709,7 @@ export class ExplorationStore {
     const { tx, release } = await this.beginQueue();
     try {
       const meta=(await tx.query<{manual:boolean;mode:string;met:boolean}>(`SELECT e.worker_queue_manual manual,
-        EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=e.id AND kind='goal') AND
-        NOT EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=e.id AND kind='goal' AND state<>'met') met,
+        EXISTS(SELECT 1 FROM task_goal_progress(e.id) WHERE ready AND total>0 AND total=met) met,
         COALESCE((SELECT execution_mode FROM tasks WHERE exploration_id=e.id AND deleted_at IS NULL),'managed') mode
         FROM explorations e WHERE e.id=$1`,[this.expID])).rows[0];
       if(!meta){await tx.commit();return null;}
@@ -732,7 +749,7 @@ export class ExplorationStore {
         if(q.executionMode!==EXECUTION_MANUAL&&n.origin==='planner'&&n.payload.resume_requested!==true&&n.payload.dispatch_source!=='mainagent'){
           // Serialize the final goal proof with the actual claim, not only the
           // earlier reservation. No new automatic work after goal completion.
-          const met=await tx.query("SELECT 1 WHERE EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal') AND NOT EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND state<>'met')",[this.expID]);
+          const met=await tx.query("SELECT 1 FROM task_goal_progress($1) WHERE ready AND total>0 AND total=met",[this.expID]);
           if(met.rowCount)continue;
         }
         const res = await tx.query(

@@ -30,6 +30,7 @@ export function roleToolDescription(name:string,resolved:{description:string;sou
 
 /** Shared by the tool catalog and role-specific declarations. */
 export function describeToolContract(name: string, description: string): string {
+  if (name === 'prove_goal') return description + ' 每次只提交一项目标的证据。仅明确的资产测试覆盖度 100% 由宿主核验，其他目标返回 awaiting_confirmation 等待人工确认；不得把提交申请描述为目标已完成。all_goals_met=false 时仍有目标待验收，不重复提交同一申请。';
   if (name === 'add_intent') return description + ' 单条传顶层非空 summary；批量仅传 1–4 项 intents，每项各填 summary。parent_ids 仅限本任务；直接来源任务用 contract.basis 的 node_id 和实际内容版本。';
   if (name === 'dispatch_intents') return description + ' 提交非空 intent_ids；仅用户明确要求批量下发时传 all_open: true。';
   if (name === 'record_fact') return description.replace('缺项仍保存但不计覆盖','缺少资产或 scope 时仍保存但不计覆盖')

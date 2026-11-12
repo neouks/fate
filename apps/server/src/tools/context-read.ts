@@ -58,7 +58,7 @@ export async function searchContext(c:ToolRunContext,args:Search) {
     if(parsed.order!==undefined&&parsed.order!=='desc')throw new Error('无效上下文游标');
     after=parsed.after;upper=parsed.upper;order=parsed.order??'asc';
   }
-  const result=await c.db.query(`SELECT n.id,n.kind,n.state,left(COALESCE(n.payload->>'summary',n.payload->>'text',''),300) summary,n.content_version,n.owner,n.payload->>'observation_type' observation_type,n.payload->'writeback' writeback,
+  const result=await c.db.query(`SELECT n.id,n.kind,CASE WHEN n.kind='goal' THEN goal_display_state(n.id) ELSE n.state END state,left(COALESCE(n.payload->>'summary',n.payload->>'text',''),300) summary,n.content_version,n.owner,n.payload->>'observation_type' observation_type,n.payload->'writeback' writeback,
       hit.field,hit.snippet,hit.match_offset
     FROM exploration_nodes n
     LEFT JOIN LATERAL (
@@ -74,7 +74,7 @@ export async function searchContext(c:ToolRunContext,args:Search) {
     WHERE n.exploration_id=$1 AND ${order==='desc'?'($2::bigint=0 OR n.id<$2)':'n.id>$2'} AND n.id<=$3 AND n.kind=ANY($4::text[])
       AND ($5='' OR position(lower($5) in lower(n.payload::text))>0 OR EXISTS(
         SELECT 1 FROM findings f WHERE f.node_id=n.id AND position(lower($5) in lower(f.evidence||' '||f.report))>0))
-      AND ($6='' OR n.state=$6)
+      AND ($6='' OR (CASE WHEN n.kind='goal' THEN goal_display_state(n.id) ELSE n.state END)=$6)
       AND ($7::bigint=0 OR EXISTS(SELECT 1 FROM exploration_anchors a WHERE a.node_id=n.id AND a.asset_id=$7))
       AND ($8::bigint=0 OR n.id=$8 OR EXISTS(SELECT 1 FROM exploration_edges e WHERE e.exploration_id=$1 AND e.src_id=$8 AND e.dst_id=n.id AND e.rel='yields'))
       AND exploration_node_readable($1,n.id) ORDER BY n.id ${order==='desc'?'DESC':'ASC'} LIMIT $9`,[source.expID,after,upper,types,args.q??'',args.state??'',args.asset_id??0,args.intent_id??0,limit+1]);
@@ -143,7 +143,7 @@ async function searchActivitiesAndNodes(c:ToolRunContext,args:Search){
     cursor.nodes=Number(r.nodes);cursor.activities=Number(r.activities);
   }
   const rows=(await c.db.query(`WITH candidates AS (
-    SELECT n.id,'node'::text category,n.kind,n.state,n.payload->>'summary' summary,(n.payload::text||COALESCE((SELECT f.evidence||f.report FROM findings f WHERE f.node_id=n.id),'')) body,n.id node_id,n.content_version version,n.owner worker,false is_error,n.created_at
+    SELECT n.id,'node'::text category,n.kind,CASE WHEN n.kind='goal' THEN goal_display_state(n.id) ELSE n.state END state,n.payload->>'summary' summary,(n.payload::text||COALESCE((SELECT f.evidence||f.report FROM findings f WHERE f.node_id=n.id),'')) body,n.id node_id,n.content_version version,n.owner worker,false is_error,n.created_at
       FROM exploration_nodes n WHERE n.exploration_id=$1 AND n.id<=$2 AND n.kind=ANY($4::text[])
     UNION ALL
     SELECT a.id,'activity',a.kind,n.state,a.summary,COALESCE(a.detail,a.summary),a.node_id,n.content_version,a.worker,a.is_error,a.created_at

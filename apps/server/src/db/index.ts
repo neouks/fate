@@ -1,3 +1,4 @@
+import {goalIntegritySQL} from './goal-integrity-migration.js';
 import {migrateReproduction,migrateReporterConcisePrompt} from '../agent/reproduction-migration.js';
 // PostgreSQL 数据源：连接、幂等 schema 迁移（advisory lock 钉专用连接）、简单查询协议多语句执行。
 // 平移自 Go 版 db/db.go 的 Open/withSchemaMigrationLock/applySchemaWithRetry；
@@ -218,7 +219,7 @@ export async function openDatabase(): Promise<Database> {
     try {
       await prepareToolOutputAccessMigration(client);
       // 无参数的 query 走简单查询协议，支持单次执行整份多语句 schema。
-      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+taskFileCleanupsSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL;
+      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+taskFileCleanupsSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL+'\n'+goalIntegritySQL;
       for (let attempt = 0; ; attempt++) {
         try {
           await client.query(ddl);

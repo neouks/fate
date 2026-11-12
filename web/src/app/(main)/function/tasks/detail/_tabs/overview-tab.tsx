@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import {GoalAcceptanceReview} from "@/components/goal-acceptance";
 import {ConstraintSource} from "@/components/constraint-source";
 import {Badge} from "@/components/ui/badge";
 
@@ -427,6 +428,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {task?.status_reason && <p role="status" className="rounded-lg border p-3 text-sm text-muted-foreground">{task.status_reason}</p>}
       {/* 原始任务描述与目标(创建时填写的),置顶便于随时回看。 */}
       <Card>
         <CardHeader>
@@ -452,7 +454,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           <CardTitle className="flex items-center gap-2 text-base">
             <ListChecksIcon className="size-4 text-primary" /> 目标管理
             <span className="text-muted-foreground text-xs font-normal">
-              （最终可核验的目标，共 {goals.length} 条；新增/修改会通知规划者并复活任务）
+              （最终可核验的目标，共 {goals.length} 条；目标变更后重新核验，不自动恢复执行）
             </span>
           </CardTitle>
         </CardHeader>
@@ -534,6 +536,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 ) : (
                   <div key={g.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
                     <StatusBadge domain="goal" value={g.state} />
+                    <GoalAcceptanceReview task={taskId} goal={g.id} onReviewed={()=>void loadGoals()}/>
                     <span className="min-w-0 flex-1 break-words">{g.text}</span>
                     {g.vulnclass && (
                       <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs">

@@ -143,7 +143,7 @@ function mapTask(row: Record<string, unknown>, sourceTaskIDs: number[] = []): Ta
   };
 }
 
-export const TASK_DISPLAY_STATUS=`CASE WHEN status IN ('done','failed','timeout') THEN status WHEN paused THEN 'paused' WHEN queued THEN 'queued' ELSE status END`;
+export const TASK_DISPLAY_STATUS=`task_display_status(tasks.id)`;
 
 // ─── Store ───────────────────────────────────────────────────────────────────
 
@@ -348,7 +348,7 @@ export class TaskStore {
     if(options.status)where.push(`${TASK_DISPLAY_STATUS}=ANY(${bind(options.status.split(','))}::text[])`);
     if(options.category&&options.category!=='all')where.push(options.category==='uncategorized'?'category_id IS NULL':`category_id=${bind(Number(options.category))}`);
     const direction=options.direction==='asc'?'ASC':'DESC';
-    const sort=options.sort==='created'?'created_at':options.sort==='activity'?'COALESCE((SELECT max(created_at) FROM activity WHERE exploration_id=tasks.exploration_id),tasks.created_at)':options.sort==='status'?`array_position(ARRAY['created','queued','running','paused','done','failed','timeout'],${TASK_DISPLAY_STATUS})`:options.sort==='duration'?`GREATEST(0,EXTRACT(EPOCH FROM (CASE WHEN ${TASK_DISPLAY_STATUS}='running' THEN now() ELSE COALESCE(completed_at,(SELECT max(created_at) FROM activity WHERE exploration_id=tasks.exploration_id),tasks.created_at) END-tasks.created_at)))`:'id';
+    const sort=options.sort==='created'?'created_at':options.sort==='activity'?'COALESCE((SELECT max(created_at) FROM activity WHERE exploration_id=tasks.exploration_id),tasks.created_at)':options.sort==='status'?`array_position(ARRAY['created','queued','running','pausing','paused','needs_attention','done','failed','timeout'],${TASK_DISPLAY_STATUS})`:options.sort==='duration'?`GREATEST(0,EXTRACT(EPOCH FROM (CASE WHEN ${TASK_DISPLAY_STATUS}='running' THEN now() ELSE COALESCE(completed_at,(SELECT max(created_at) FROM activity WHERE exploration_id=tasks.exploration_id),tasks.created_at) END-tasks.created_at)))`:'id';
     const filter=where.join(' AND ');
     const total=Number((await this.db.query(`SELECT count(*) n FROM tasks WHERE ${filter}`,args)).rows[0]?.n??0);
     const page=Math.max(1,Math.min(options.page,Math.max(1,Math.ceil(total/options.pageSize))));
@@ -412,15 +412,37 @@ export class TaskStore {
    * 已被其他终态钉住时返回 won=false（非错误），调用方应放弃改写。
    * 非终态迁移/重跑仍走 setTaskStatus。
    */
-  async setTaskStatusGuarded(id: number, status: string): Promise<boolean> {
+  async setTaskStatusGuarded(id: number, status: string, allowGoalless = false): Promise<boolean> {
     const res = await this.db.query(
       `UPDATE tasks
          SET status = $1,
-             completed_at = COALESCE(completed_at, now())
-       WHERE id = $2 AND status NOT IN ('done','failed','timeout')`,
-      [status, id],
+             completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, now()) ELSE NULL END,
+             status_reason=CASE WHEN $1='needs_attention' THEN '目标尚未全部核验，等待处理' ELSE '' END
+       WHERE id = $2 AND deleted_at IS NULL AND status NOT IN ('done','failed','timeout')
+         AND ($1<>'done' OR EXISTS (
+           SELECT 1 FROM task_goal_progress(tasks.exploration_id) WHERE ready AND total=met AND (total>0 OR $3)
+         ))`,
+      [status, id, allowGoalless],
     );
     return (res.rowCount ?? 0) > 0;
+  }
+
+  /** Explicit stop is allowed with pending goals, but only a full proof is success. */
+  async finishManually(id: number): Promise<string | undefined> {
+    return this.db.transaction(async db => {
+      const task = (await db.query<{status:string;exploration_id:string}>(
+        'SELECT status,exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [id],
+      )).rows[0];
+      if (!task || ['done','failed','timeout'].includes(task.status)) return task?.status;
+      if ((await db.query("SELECT 1 FROM engine_task_leases WHERE task_id=$1 AND expires_at>now() UNION ALL SELECT 1 FROM runtime_session_leases WHERE key LIKE $2 AND expires_at>now() LIMIT 1", [id,`main:${id}:%`])).rowCount) throw Object.assign(new Error('执行器尚未退出，请先暂停并等待确认后结束任务'),{statusCode:409});
+      const expID = Number(task.exploration_id);
+      await db.query('SELECT pg_advisory_xact_lock($1)', [-expID]);
+      const counts = await db.exploration(expID).executionCounts();
+      const status = counts.goalsReady && counts.goals > 0 && counts.met === counts.goals ? 'done' : 'needs_attention';
+      await db.tasks().setTaskStatusGuarded(id, status);
+      await db.query('UPDATE tasks SET paused=false,queued=false WHERE id=$1',[id]);
+      return status;
+    });
   }
 
   /**

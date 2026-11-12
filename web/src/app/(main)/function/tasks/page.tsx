@@ -233,6 +233,8 @@ const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
   { value: "queued", label: "排队中" },
   { value: "running", label: "运行中" },
   { value: "paused", label: "已暂停" },
+  { value: "pausing", label: "暂停中" },
+  { value: "needs_attention", label: "待处理" },
   { value: "done", label: "已完成" },
   { value: "failed", label: "失败" },
   { value: "timeout", label: "已超时" },
@@ -249,7 +251,7 @@ const PAUSABLE_STATUSES = new Set<TaskStatus>(["created", "queued", "running"]);
 const ARCHIVABLE_STATUSES = new Set<TaskStatus>(["paused", "done", "failed", "timeout"]);
 
 function taskControlAction(status: TaskStatus): "pause" | "resume" | null {
-  if (status === "paused") return "resume";
+  if (status === "paused" || status === "needs_attention") return "resume";
   if (PAUSABLE_STATUSES.has(status)) return "pause";
   return null;
 }
@@ -518,7 +520,7 @@ export default function TasksPage() {
       try {
         const result = await api.controlTask(id, action);
         toast.success(
-          action === "pause" ? `任务 #${id} ${result.status==="waiting_for_executor"?"正在暂停":"已暂停"}` : `任务 #${id} 已继续${result.queued ? "，已进入队列" : ""}`,
+          action === "pause" ? `任务 #${id} ${result.status==="pausing"?"正在暂停":"已暂停"}` : `任务 #${id} 已继续${result.queued ? "，已进入队列" : ""}`,
         );
       } catch (e) {
         toast.error(`${action === "pause" ? "暂停" : "继续"}失败：${(e as Error).message}`);
@@ -686,7 +688,7 @@ export default function TasksPage() {
         if (succeeded.length > 0) {
           toast.success(
             action === "pause"
-              ? `已暂停 ${succeeded.length} 个任务`
+              ? `已受理 ${succeeded.length} 个暂停请求，状态以执行器确认为准`
               : `已继续 ${succeeded.length} 个任务${succeeded.some((item) => item.queued) ? "，部分任务已进入队列" : ""}`,
           );
         }

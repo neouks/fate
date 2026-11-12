@@ -80,7 +80,7 @@ function mergeTaskStats(task: Task, stats: Stats | null): Task {
     goals_total: active.goals_total ?? task.goals_total,
     goals_met: active.goals_met ?? task.goals_met,
     engine_mode: stats?.engine_mode ?? active.engine_mode,
-    paused: active.paused ?? task.paused,
+    // Lifecycle comes exclusively from the task DTO, never a late stats response.
   };
 }
 
@@ -183,8 +183,7 @@ function TaskDetailInner() {
         if (statsLoadInFlight.current !== request) return;
         latestStats.current = value;
         setTask((current) => (current ? mergeTaskStats(current, value) : current));
-        if (String(value.active_task?.id) === id && value.active_task?.paused !== undefined)
-          setPaused(value.active_task.paused);
+
       })
       .catch(() => {
         // Keep the last live state during a transient statistics failure.
@@ -217,7 +216,7 @@ function TaskDetailInner() {
     if (task && ["done", "failed", "timeout"].includes(task.status)) return;
     if (controlling) return;
     setControlling(true);
-    const next = !paused;
+    const next = task?.status !== 'paused' && task?.status !== 'needs_attention';
     try {
       await api.controlTask(id, next ? "pause" : "resume");
       load();
@@ -273,7 +272,7 @@ function TaskDetailInner() {
     controlVariant = "secondary";
     controlIcon = <CheckIcon data-icon="inline-start" />;
     controlLabel = completed ? "已完成" : "已结束";
-  } else if (paused) {
+  } else if (task.status==='paused'||task.status==='needs_attention') {
     controlVariant = "default";
     controlIcon = <PlayIcon data-icon="inline-start" />;
     controlLabel = "恢复";
@@ -320,7 +319,7 @@ function TaskDetailInner() {
         </Tabs>
         <div className="task-header-actions flex shrink-0 items-center justify-end gap-1">
           <span className="hidden sm:inline-flex">
-            <StatusBadge domain={terminal ? "task" : "engine"} value={terminal ? task.status : engineMode} dot />
+            <StatusBadge domain="task" value={task.status} dot />
           </span>
           <Button
             size="sm"

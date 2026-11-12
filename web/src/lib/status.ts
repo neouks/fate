@@ -45,6 +45,8 @@ const intent: Record<string, StatusMeta> = {
 };
 
 const task: Record<string, StatusMeta> = {
+  pausing: { label: "暂停中", tone: "amber" },
+  needs_attention: { label: "待处理", tone: "amber" },
   created: { label: "已创建", tone: "slate" },
   queued: { label: "排队中", tone: "amber" },
   running: { label: "运行中", tone: "blue" },
@@ -81,6 +83,7 @@ const engine: Record<string, StatusMeta> = {
 };
 
 const goal: Record<string, StatusMeta> = {
+  pending_confirmation: { label: "待确认", tone: "amber" },
   open: { label: "进行中", tone: "blue" },
   met: { label: "已达成", tone: "green" },
   abandoned: { label: "已放弃", tone: "slate" },

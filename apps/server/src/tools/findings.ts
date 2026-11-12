@@ -1,3 +1,4 @@
+import {proposeGoalAcceptance} from '../db/goal-integrity.js';
 import {prepareReproduction,attachStepTraffic,reproductionSchema} from '../evidence/reproduction.js';
 import {findingPublished} from '../db/worker-drafts.js';
 import {writeOrigin,writeAnchors,assertDirectWrite,sourceFields,sameSource} from './write-origin.js';
@@ -179,9 +180,9 @@ export function proveGoalTool(ctx: ToolRunContext) {
     {
       name: "prove_goal",
       description:
-        "证明一个目标已达成：把证据节点（fact/finding）连到目标并置 met。当最后一个开放目标被证明时任务自动完成。" +
+        "提交 goal_id 的证据供验收。明确的资产覆盖度 100% 由宿主核验；其他目标返回 awaiting_confirmation，等待人工确认，不能宣称已达成或重复提交催促。" +
         "调用前必须核对覆盖度与漏洞总数（量化验收），不允许在明显未测完时提前收官。",
-      promptSnippet: "证明目标达成并收官",
+      promptSnippet: "提交目标证据供宿主或人工验收",
       parameters: {
         type: "object",
         properties: {
@@ -193,30 +194,9 @@ export function proveGoalTool(ctx: ToolRunContext) {
       },
       transactional: false,
       async run(args, c) {
-        await c.db.transaction(async db => {
-          await c.hooks.assertOwnership?.(db);
-          await db.query('SELECT pg_advisory_xact_lock($1)', [-c.expID]);
-          const s = db.exploration(c.expID);
-          const goal = await s.getNode(args.goal_id);
-          if (!goal || goal.kind !== 'goal') throw new Error('目标不存在');
-          const { node: evidence } = await resolveGraphNode(db, c.taskID, c.expID, args.evidence_node_id);
-          if (!['fact','finding'].includes(evidence.kind) || evidence.state !== 'confirmed' || evidence.payload.acceptance_status==='unverified')
-            throw new Error('证据必须为仍获授权的 confirmed 事实或漏洞；任务原文、线索及撤回记录不能证明目标');
-          const finding = evidence.kind === 'finding'
-            ? (await db.query('SELECT evidence,status FROM findings WHERE node_id=$1',[evidence.id])).rows[0] : undefined;
-          const observation = finding?.evidence ?? evidence.payload.evidence;
-          if (typeof observation !== 'string' || !observation.trim()) throw new Error('目标证据缺少实际观察内容，请读取或补充证据后再证明');
-          if(evidence.payload.observation_type==='negative')throw new Error('负面报告缺少宿主核验的目标测试范围，不能泛化为目标达成或未测方向已否定');
-          if (['inferred','unknown'].includes(String(evidence.payload.observation_type)) || finding?.status === 'false_positive')
-            throw new Error('推测、未知观察或已判定误报不能作为目标达成证据');
-          await s.link(evidence.id, RelProves, goal.id);
-          await s.setNodeState(goal.id, 'met');
-        });
-        const s = c.db.exploration(c.expID);
-        const counts = await s.executionCounts();
-        const allMet = counts.goals > 0 && counts.met >= counts.goals;
-        if (allMet) c.hooks.notifyGoalMet?.(c.expID, args.goal_id);
-        return { goal_id: args.goal_id, met: true, all_goals_met: allMet, goals: counts.goals, met_count: counts.met };
+        const result=await proposeGoalAcceptance(c.db,c.taskID,args.goal_id,args.evidence_node_id,args.note,c.toolCallID,c.hooks.assertOwnership);
+        if(result.all_goals_met)c.hooks.notifyGoalMet?.(c.expID,args.goal_id);
+        return result;
       },
     },
     ctx,

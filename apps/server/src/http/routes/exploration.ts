@@ -36,10 +36,10 @@ export function registerExplorationRoutes(app: FastifyInstance): void {
     const state = typeof q["state"] === "string" && q["state"] !== "" ? q["state"] : null;
     const limit = Math.min(2000, Math.max(1, num(q["limit"], 500)));
     const res = await db().query(
-      `SELECT id, kind, payload, priority, state, COALESCE(origin,'') AS origin, COALESCE(owner,'') AS owner,
+      `SELECT id, kind, payload, priority, CASE WHEN kind='goal' THEN goal_display_state(id) ELSE state END AS state, COALESCE(origin,'') AS origin, COALESCE(owner,'') AS owner,
               COALESCE(blocked_reason,'') AS blocked_reason, created_at
        FROM exploration_nodes
-       WHERE exploration_id=$1 AND exploration_node_readable($1,id) AND ($2::text IS NULL OR kind=$2) AND ($3::text IS NULL OR state=$3)
+       WHERE exploration_id=$1 AND exploration_node_readable($1,id) AND ($2::text IS NULL OR kind=$2) AND ($3::text IS NULL OR (CASE WHEN kind='goal' THEN goal_display_state(id) ELSE state END)=$3)
        ORDER BY id DESC LIMIT $4`,
       [expID, kind, state, limit],
     );

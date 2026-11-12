@@ -1,5 +1,5 @@
 
-export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout";
+export type TaskStatus = "created" | "queued" | "running" | "pausing" | "paused" | "needs_attention" | "done" | "failed" | "timeout";
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
 export interface Task {
@@ -20,6 +20,7 @@ export interface Task {
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)
   paused?: boolean;
   pause_pending?: boolean;
+  status_reason?: string;
   execution_status?: string;
   queued?: boolean;
   active?: boolean;

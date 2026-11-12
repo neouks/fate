@@ -125,7 +125,7 @@ export async function plannerReceipt(ctx:ToolRunContext,entries:readonly Session
   }
   const intents=indexed?.ids??(ids.size?(await ctx.db.query("SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND id=ANY($2::bigint[]) ORDER BY id",[ctx.expID,[...ids]])).rows.map(n=>Number(n.id)):[]);
   const submittedTotal=indexed?.total??intents.length;
-  const goalRows=(await ctx.db.query("SELECT id,state,count(*) OVER() total FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 100",[ctx.expID])).rows;
+  const goalRows=(await ctx.db.query("SELECT id,goal_display_state(id) state,count(*) OVER() total FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 100",[ctx.expID])).rows;
   const goals=goalRows.map(n=>({id:Number(n.id),state:String(n.state)})),goalsTotal=Number(goalRows[0]?.total??0);
   const raw=delivered.findLast(e=>e.type==='message'&&e.message.role==='assistant');
   const partial=grounding.reads.filter(r=>!r.fully_delivered);

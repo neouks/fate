@@ -263,7 +263,7 @@ export class Engine {
     const rt = await this.loadRuntime(taskID);
     let persisted = await this.db.tasks().getTask(taskID);
     if(persisted?.status==='created'){await this.db.transaction(tx=>this.coordinator.admit(tx,taskID,!!opts.decompose));persisted=await this.db.tasks().getTask(taskID);}
-    if (!persisted || persisted.paused || persisted.queued || ['done','failed','timeout'].includes(persisted.status)) return;
+    if (!persisted || persisted.paused || persisted.queued || persisted.status !== 'running') return;
     if(!opts.decompose && (persisted.queue_mode==='bootstrap'||['constraints','objectives'].includes((await goalsBootstrap(this.db,taskID))?.phase??'')))opts={decompose:{description:persisted.description}};
     if (rt.started && !rt.stopped) { this.notify(taskID); return; }
     if (rt.stopped) await Promise.allSettled(rt.loops);
@@ -513,17 +513,17 @@ export class Engine {
 
       // Proofs are durable. A crash after prove_goal must not require another
       // model response (or an available model profile) just to commit task done.
-      if (counts.goals > 0 && counts.met >= counts.goals) {
+      if (counts.goalsReady && counts.goals > 0 && counts.met === counts.goals) {
         // Preserve B's direct-dispatch semantics: work explicitly queued after
         // proof (or still being recovered) drains before the task closes.
         if (await this.finishTask(rt, "done", "全部目标已证明达成")) break;
         continue;
       }
 
-      // goalless 任务：无开放目标 → planner 不进模型，frontier 抽干即完成。
+      // No goals is not success. Preserve the idle task for human review.
       if (counts.goals === 0) {
         if (!(await s.hasActiveIntent())) {
-          if (await this.finishTask(rt, "done", "无目标任务的 frontier 已抽干")) break;
+          if (await this.holdUnfinishedTask(rt)) break;
         }
         continue;
       }
@@ -619,9 +619,9 @@ export class Engine {
       if (rt.stopped || rt.paused || rt.settling) continue;
       // 收官检查：全部目标 met → done 并取消在跑。
       const after = await s.executionCounts();
-      if (after.goals > 0 && after.met >= after.goals) {
+      if (after.goalsReady && after.goals > 0 && after.met === after.goals) {
         if (await this.finishTask(rt, "done", "全部目标已证明达成")) break;
-      }
+      } else if(await this.holdUnfinishedTask(rt)) break;
     }
   }
 
@@ -1161,7 +1161,27 @@ export class Engine {
     await Promise.allSettled(rt.executions);
   }
 
-  private async finishTask(rt: TaskRuntime, status: "done" | "timeout", note: string): Promise<boolean> {
+  private async holdUnfinishedTask(rt:TaskRuntime):Promise<boolean>{
+    const changed=await this.db.transaction(async db=>{
+      await this.coordinator.assert(rt.taskID,rt.lease!,db);
+      const task=(await db.query('SELECT status,paused,queued FROM tasks WHERE id=$1 FOR UPDATE',[rt.taskID])).rows[0];
+      if(!task||task.status!=='running'||task.paused||task.queued)return false;
+      await db.query('SELECT pg_advisory_xact_lock($1)',[-rt.expID]);
+      if(rt.work.size||rt.executions.size||await db.exploration(rt.expID).hasActiveIntent())return false;
+      if((await db.query("SELECT 1 FROM engine_worker_slots WHERE task_id=$1 UNION ALL SELECT 1 FROM runtime_worker_resumes WHERE task_id=$1 AND status='pending' LIMIT 1",[rt.taskID])).rowCount)return false;
+      if((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1 AND acknowledged_at IS NULL LIMIT 1",[rt.expID])).rowCount)return false;
+      const row=await db.query("UPDATE tasks SET status='needs_attention',status_reason='目标尚未全部核验，当前没有可执行工作',completed_at=NULL WHERE id=$1 AND status='running' AND NOT paused AND NOT queued RETURNING id",[rt.taskID]);
+      return !!row.rowCount;
+    });
+    if(!changed)return false;
+    rt.stopped=true;rt.started=false;this.graphMaintenance.cancel(rt.taskID);
+    this.emitActivity(rt.taskID,{kind:'status',worker:'system',summary:'任务待处理：目标尚未全部核验，未自动恢复执行'});
+    this.notify(rt.taskID);this.wakeWorkers(rt);
+    if(rt.lease)await this.coordinator.release(rt.taskID,rt.lease);
+    return true;
+  }
+
+  private async finishTask(rt: TaskRuntime, status: "done" | "timeout", note: string, allowGoalless = false): Promise<boolean> {
     // Commit under the execution lease before publishing success or stopping
     // the runtime. A failed write remains retryable; pause/delete and a newer
     // owner cannot be overwritten by a stale Planner finishing its last turn.
@@ -1171,11 +1191,17 @@ export class Engine {
       if (!task || task.deleted_at || task.paused || task.queued) return null;
       if (['done','failed','timeout'].includes(String(task.status))) return {won:false};
       if(status==='done'){
+        await db.query('SELECT pg_advisory_xact_lock($1)', [-rt.expID]);
+        const graph = db.exploration(rt.expID);
+        const counts = await graph.executionCounts();
+        if (!counts.goalsReady || counts.met !== counts.goals) return null;
+        if (allowGoalless ? counts.goals !== 0 || await graph.hasActiveIntent() : counts.goals === 0) return null;
         if(rt.work.size || (await db.query("SELECT 1 FROM engine_worker_slots WHERE task_id=$1 AND phase='running'",[rt.taskID])).rowCount)return null;
         if((await db.query("SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='open' AND payload->>'dispatch_requested'='true' AND origin<>'planner'",[rt.expID])).rowCount)return null;
         await db.query("UPDATE exploration_nodes SET state='stopped',completed_at=now(),payload=payload||'{\"close_reason\":\"goal_satisfied\"}'::jsonb WHERE exploration_id=$1 AND kind='intent' AND state='open'",[rt.expID]);
       }
-      return {won:await db.tasks().setTaskStatusGuarded(rt.taskID, status)};
+      const won = await db.tasks().setTaskStatusGuarded(rt.taskID, status, allowGoalless);
+      return won ? {won} : null;
     });
     if (!committed) return false;
     // 注意：本函数可能从 plannerLoop/deadlineLoop 内部调用——绝不能 await rt.loops
@@ -1260,7 +1286,7 @@ export class Engine {
     if (rt.stopped || rt.paused) return;
     }catch(error){if(plannerController.signal.aborted)return;throw error;}finally{resourceLease?.release();await this.releasePlanner(rt);}
     const counts = await s.executionCounts();
-    const status = counts.goals > 0 && counts.met >= counts.goals ? "done" : "timeout";
+    const status = counts.goalsReady && counts.goals > 0 && counts.met === counts.goals ? "done" : "timeout";
     try {
       await this.finishTask(rt, status, status === "done" ? "任务超时前全部目标已证明" : "任务超时结束");
     } finally {

@@ -23,7 +23,7 @@ const OWNERS=`owners AS MATERIALIZED (
  WHERE exploration_node_readable(n.exploration_id,n.id)
 )`;
 const title=`COALESCE(NULLIF(n.payload->>'name',''),NULLIF(n.payload->>'summary',''),NULLIF(n.payload->>'text',''),n.payload->>'body','')`;
-const NODE=`n.id::text,n.kind type,n.state,n.priority,left(COALESCE(n.origin,''),256) origin,n.created_at ts,
+const NODE=`n.id::text,n.kind type,CASE WHEN n.kind='goal' THEN goal_display_state(n.id) ELSE n.state END AS state,n.priority,left(COALESCE(n.origin,''),256) origin,n.created_at ts,
  o.task_id::text source_task_id,o.task_id<>$1 inherited,n.content_version::text version,
  left(${title},768) summary,char_length(${title})>768 summary_truncated`;
 function node(row:Record<string,any>):Record<string,any>&{id:string}{return {...row,id:String(row.id),payload:JSON.stringify({summary:row.summary}),payload_preview:true};}
@@ -137,7 +137,7 @@ export async function readBroadcastPage(db:Database,taskID:number,q:Record<strin
   const revision=await graphProjectionRevision(tx,taskID,expID);
   if(expected&&expected!==revision)throw fail('图谱已变化，请刷新第一页',409);
   const params:unknown[]=[taskID,selectedKinds,states,`%${search.replace(/[\\%_]/g,'\\$&')}%`];
-  const filter=`(cardinality($2::text[])=0 OR n.kind=ANY($2)) AND (cardinality($3::text[])=0 OR n.state=ANY($3))
+  const filter=`(cardinality($2::text[])=0 OR n.kind=ANY($2)) AND (cardinality($3::text[])=0 OR (CASE WHEN n.kind='goal' THEN goal_display_state(n.id) ELSE n.state END)=ANY($3))
    AND ($4::text='%%' OR n.payload::text ILIKE $4 OR n.origin ILIKE $4 OR n.id::text ILIKE $4)`;
   const total=Number((await tx.query(`WITH ${OWNERS} SELECT count(*) n FROM exploration_nodes n JOIN owners o USING(exploration_id)
    WHERE exploration_node_readable(n.exploration_id,n.id) AND ${filter}`,params)).rows[0]!.n);

@@ -1,3 +1,4 @@
+import {registerGoalAcceptanceRoutes} from './goal-acceptance.js';
 import {aggregateUsage} from '../../db/usage-ledger.js';
 import {requireTaskGoal} from "../../agent/task-goal.js";
 import {assetContextCTE} from '../../db/asset-query.js';
@@ -30,19 +31,21 @@ async function engineNoop(p: unknown): Promise<void> {
 
 export function registerTaskRoutes(app: FastifyInstance): void {
   registerOperationRoutes(app);
+  registerGoalAcceptanceRoutes(app);
   const tasks = () => app.db.tasks();
-  const serializeTask = async (task: Task, batch?:{pending:Set<number>;snapshot:Awaited<ReturnType<typeof executionSnapshots>>}) => {
+  const serializeTask = async (task: Task, batch?:{states:Map<number,Record<string,unknown>>;snapshot:Awaited<ReturnType<typeof executionSnapshots>>}) => {
     const dto = taskDTO(task);
-    if (!isTerminalTaskStatus(task.status)) {
-      const pending = task.paused && (batch?batch.pending.has(task.id):!!(await app.db.query("SELECT 1 FROM runtime_task_commands WHERE task_id=$1 AND command='pause' AND status='pending' LIMIT 1", [task.id])).rowCount);
-      dto.status = task.paused ? (pending ? task.status : 'paused') : task.queued ? 'queued' : task.status;
-      dto.execution_status = pending ? 'waiting_for_executor' : dto.status;
-      dto.pause_pending = pending;
-    }
+    const statusRow=batch?batch.states.get(task.id):(await app.db.query('SELECT task_display_status($1) status,task_display_reason($1) status_reason FROM tasks WHERE id=$1',[task.id])).rows[0];
+    dto.status=statusRow?.status??task.status;
+    dto.status_reason=statusRow?.status_reason??'';
+    dto.execution_status=dto.status;
+    dto.pause_pending=dto.status==='pausing';
+    dto.paused=dto.status==='paused';
+    dto.queued=dto.status==='queued';
     dto.scheduling=batch?batch.snapshot(task.id):await executionSnapshot(app.db,task.id);
     dto.in_flight=(dto.scheduling as {task_active:number}).task_active;
     const occupancy=dto.scheduling as {task_active:number;ready:number;planning:number};
-    dto.engine_mode=task.paused?'paused':occupancy.task_active+occupancy.ready+occupancy.planning>0?'exploring':'idle';
+    dto.engine_mode=dto.status==='paused'||dto.status==='pausing'?'paused':occupancy.task_active+occupancy.ready+occupancy.planning>0?'exploring':'idle';
     return dto;
   };
 
@@ -57,15 +60,14 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     const result=paged?await tasks().listTasksPage({page:Math.max(1,Number(q.page)||1),pageSize:Math.min(100,Math.max(1,Number(q.page_size)||20)),q:q.q,status:q.status,category:q.category,sort:q.sort,direction:q.direction,recent:q.recent==='true'}):{tasks:await tasks().listTasks()};
     const list=result.tasks,ids=list.map(t=>t.id);
     const snapshot=await executionSnapshots(app.db);
-    const pending=new Set((await app.db.query("SELECT task_id FROM runtime_task_commands WHERE task_id=ANY($1::bigint[]) AND command='pause' AND status='pending'",[ids])).rows.map(r=>Number(r.task_id)));
+    const states=new Map((await app.db.query('SELECT id,task_display_status(id) status,task_display_reason(id) status_reason FROM tasks WHERE id=ANY($1::bigint[])',[ids])).rows.map(r=>[Number(r.id),r]));
     const active = (await app.db.platform().getSetting("active_task")) ?? "";
     // 派生位聚合：findings 四档 / goals 进度 / 在跑 / 最近活动 / 任务级 token。
     const agg = await app.db.query(
       `SELECT t.id,
               COALESCE((SELECT json_build_object('critical',count(*) FILTER (WHERE f.severity='critical'),'high',count(*) FILTER (WHERE f.severity='high'),'medium',count(*) FILTER (WHERE f.severity='medium'),'low',count(*) FILTER (WHERE f.severity='low'))
                  FROM findings f WHERE f.task_id=t.id),'{"critical":0,"high":0,"medium":0,"low":0}'::json) findings,
-              COALESCE((SELECT json_build_object('total',count(*),'met',count(*) FILTER (WHERE state='met'))
-                 FROM exploration_nodes n WHERE n.exploration_id=t.exploration_id AND n.kind='goal'),'{"total":0,"met":0}'::json) goals,
+              (SELECT json_build_object('total',total,'met',met) FROM task_goal_progress(t.exploration_id)) goals,
               COALESCE((SELECT count(*) FROM engine_worker_slots s JOIN engine_task_leases l ON l.task_id=s.task_id AND l.token=s.token WHERE s.task_id=t.id AND s.phase='running' AND l.expires_at>now()),0) in_flight,
               EXTRACT(EPOCH FROM COALESCE((SELECT max(a.created_at) FROM activity a WHERE a.exploration_id=t.exploration_id), t.created_at))::bigint last_activity_unix
        FROM tasks t WHERE t.id=ANY($1::bigint[])`,[ids]) as never;
@@ -74,7 +76,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     for (const r of (agg as unknown as { rows: Array<Record<string, unknown>> }).rows) aggRows.set(Number(r["id"]), r);
     const items=[];
     for(const t of list){
-        const dto = await serializeTask(t,{snapshot,pending});
+        const dto = await serializeTask(t,{snapshot,states});
         const a = aggRows.get(Number(t.id));
         if (a) {
           dto["findings"] = a["findings"];
@@ -131,15 +133,15 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     if (!task) return reply.code(404).send({ error: "task not found" });
     const s = app.db.exploration(task.exploration_id);
     const [goals, counts, coverage, modelChain] = await Promise.all([
-      s.listByKind("goal", 500).catch(() => []),
-      s.executionCounts().catch(() => ({ running: 0, goals: 0, met: 0 })),
+      app.db.query("SELECT id,payload,goal_display_state(id) state FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 500",[task.exploration_id]).then(r=>r.rows),
+      s.executionCounts(),
       app.db.taskScope().taskCoverage(id, task.exploration_id).catch(() => null),
       app.db.query('SELECT profile_id FROM task_llm_profiles WHERE task_id=$1 ORDER BY position', [id]),
     ]);
     return {
       ...await serializeTask(task),
       llm_profile_ids: modelChain.rows.map((row) => Number(row.profile_id)),
-      goals: goals.map((g) => ({ id: g.id, text: g.payload["text"] ?? "", vulnclass: g.payload["vulnclass"] ?? "", state: g.state })),
+      goals: goals.map((g) => ({ id: g.id, text: (g.payload as Record<string,unknown>)["text"] ?? "", vulnclass: (g.payload as Record<string,unknown>)["vulnclass"] ?? "", state: g.state })),
       counts,goals_total:counts.goals,goals_met:counts.met,
       coverage: coverage ?? { enabled: false, scope_rows: 0, denominator: 0, tested: 0, pct: null, by_type: [] },
     };
@@ -167,7 +169,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     if (!task) throw Object.assign(new Error("task not found"), { statusCode: 404 });
     await app.engine.admitTask(id);
     const after=await tasks().getTask(id);
-    return { id, status: after?.paused ? "paused" : after?.queued ? "queued" : after?.status, paused:after?.paused===true, queued: after?.queued === true };
+    return after?serializeTask(after):{id};
   }
 
   async function pauseTask(id: number): Promise<Record<string, unknown>> {
@@ -177,24 +179,24 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), { statusCode: 409 });
     }
     const result=await app.engine.pause(id);
-    return { id, paused: result.status==='paused', status: result.status, command_id: result.command_id };
+    const after=await tasks().getTask(id);
+    return {...(after?await serializeTask(after):{id}),command_id:result.command_id};
   }
 
   async function resumeTask(id: number): Promise<Record<string, unknown>> {
     await app.engine.admitTask(id);
     const after=await tasks().getTask(id);
-    return { id, paused: after?.paused===true, queued: after?.queued === true, status: after?.paused ? "paused" : after?.queued ? "queued" : after?.status };
+    return after?serializeTask(after):{id};
   }
 
   async function stopTask(id: number): Promise<Record<string, unknown>> {
     const task = await tasks().getTask(id);
     if (!task) throw Object.assign(new Error("task not found"), { statusCode: 404 });
-    await engineNoop(app.engine.stop(id)); // abort 在跑 + 等循环退出（无运行时则 no-op）
-    // 手动收官：全部目标已证明 → done，否则 failed（对齐 Go finish 的终态语义简化）。
-    const counts = await app.db.exploration(task.exploration_id).executionCounts().catch(() => ({ running: 0, goals: 0, met: 0 }));
-    const status = counts.goals > 0 && counts.met >= counts.goals ? "done" : "failed";
-    await tasks().setTaskStatusGuarded(id, status);
-    return { id, status };
+    await app.engine.stop(id); // only acknowledge local exit; remote ownership is checked below
+    // Explicit finish is success only with valid proofs; otherwise it stays pending human handling.
+    const status = await tasks().finishManually(id);
+    if (!status) throw Object.assign(new Error("task not found"), { statusCode: 404 });
+    return serializeTask((await tasks().getTask(id))!);
   }
 
   app.post("/api/tasks/:id/start", async (req) => startTask(Number((req.params as { id: string }).id)));
@@ -214,9 +216,7 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     else if (action === "resume") lifecycle=await resumeTask(id);
     else await stopTask(id);
     const t = await tasks().getTask(id);
-    return { id, paused: t?.paused === true, queued: t?.queued === true,
-      status: lifecycle?.status ?? (t?.queued ? "queued" : t?.status ?? "created"),
-      ...(lifecycle?.command_id === undefined ? {} : { command_id:lifecycle.command_id }) };
+    return {...(t?await serializeTask(t):{id}),...(lifecycle?.command_id===undefined?{}:{command_id:lifecycle.command_id})};
   });
 
   app.delete("/api/tasks/:id", async (req) => {

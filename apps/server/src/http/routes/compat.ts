@@ -108,7 +108,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     return res.rows[0];
   }
 
-  const NODE_COLS = `id, kind, payload, priority, state, COALESCE(origin,'') AS origin, created_at`;
+  const NODE_COLS = `id, kind, payload, priority, CASE WHEN kind='goal' THEN goal_display_state(id) ELSE state END AS state, COALESCE(origin,'') AS origin, created_at`;
 
   function q2n(v: unknown, dflt: number): number {
     const n = Number(v);
@@ -570,7 +570,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const p = req.params as Record<string, string>;
     const expID = await expOf(Number(p["id"]));
     const rows = await db().query(
-      `SELECT id, payload, state, COALESCE(origin,''), created_at FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id`,
+      `SELECT id, payload, goal_display_state(id) state, COALESCE(origin,'') origin, created_at FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id`,
       [expID],
     );
     return {
@@ -757,9 +757,11 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     let activeTask: Record<string, unknown> | undefined;
     if (activeID && Number(activeID) > 0) activeTask = await taskRow(Number(activeID));
     if(activeTask){
+      const display=(await db().query('SELECT task_display_status($1) status,task_display_reason($1) status_reason FROM tasks WHERE id=$1',[Number(activeTask.id)])).rows[0];
+      Object.assign(activeTask,{...display,paused:display?.status==='paused',queued:display?.status==='queued',pause_pending:display?.status==='pausing'});
       const scheduling=await executionSnapshot(db(),Number(activeTask.id));
       const counts=await db().exploration(Number(activeTask.exploration_id)).executionCounts();
-      Object.assign(activeTask,{in_flight:scheduling.task_active,scheduling,goals_total:counts.goals,goals_met:counts.met,engine_mode:activeTask.paused?'paused':scheduling.task_active+scheduling.planning+scheduling.ready>0?'exploring':'idle'});
+      Object.assign(activeTask,{in_flight:scheduling.task_active,scheduling,goals_total:counts.goals,goals_met:counts.met,engine_mode:activeTask.paused||activeTask.pause_pending?'paused':scheduling.task_active+scheduling.planning+scheduling.ready>0?'exploring':'idle'});
     }
     const llm = await db().platform().activeProfile().catch(() => null);
     return {
