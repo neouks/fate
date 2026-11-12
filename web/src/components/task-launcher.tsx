@@ -544,7 +544,6 @@ export function TaskLauncher() {
         <header>
           <h1>开始一项新的安全任务</h1>
           <p>描述测试对象与背景，接下来确认目标和执行配置。</p>
-          <div className="mt-4"><TaskTemplateLibrary /></div>
         </header>
         <form
           className="task-launcher-form"
@@ -728,6 +727,16 @@ export function TaskLauncher() {
             )}
           </fieldset>
         </form>
+        <TaskTemplateLibrary
+          draftDescription={attachments.length ? description.split(UPLOAD_MARKER, 1)[0] : description}
+          draftGoal={goal}
+          disabled={creating || uploading}
+          onApply={(template) => {
+            setDescription(attachments.length ? appendUploads(template.description, attachments) : template.description);
+            setGoal(template.goal);
+            document.getElementById("description")?.focus({ preventScroll: true });
+          }}
+        />
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
             onOpenAutoFocus={(e) => {
