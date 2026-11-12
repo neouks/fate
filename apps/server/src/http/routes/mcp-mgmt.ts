@@ -1,4 +1,5 @@
 import {resourceUsageDetail,resourceUsageRows} from '../../db/resource-usage.js';
+import {registerMcpImportRoutes} from './mcp-import.js';
 import { McpClient } from "@earendil-works/pi-mcp";
 import { createServerTransport, validateServerTransport } from "../../pi/mcpTransport.js";
 // Management probes and pi sessions share the same native MCP client transports.
@@ -46,6 +47,7 @@ function serverRowToConfig(row: Record<string, unknown>): ServerConfig {
 }
 
 export function registerMcpMgmtRoutes(app: FastifyInstance): void {
+  registerMcpImportRoutes(app);
   const db = () => app.db;
 
   async function mcpRow(id: number): Promise<Record<string, unknown> | null> {
