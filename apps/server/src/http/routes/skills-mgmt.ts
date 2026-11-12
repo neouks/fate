@@ -392,6 +392,8 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
     const client = await db().pool.connect();
     try {
       await client.query("BEGIN");
+      const owner=await client.query("SELECT id FROM agents WHERE id=$1 FOR UPDATE",[agent.id]);
+      if(!owner.rowCount)throw Object.assign(new Error("Agent 不存在或已删除"),{statusCode:404});
       await client.query(`DELETE FROM agent_visibility WHERE agent_id=$1 AND resource_kind='mcp' AND mcp_tool_name=''`, [agent.id]);
       await client.query(`DELETE FROM agent_skill_visibility WHERE agent_id=$1`, [agent.id]);
       for (const id of mcp) {

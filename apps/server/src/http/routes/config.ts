@@ -1,3 +1,4 @@
+import {registerAgentManagementRoutes} from './agents-management.js';
 import {resourceUsageList,emptyResourceUsage} from '../../db/resource-usage.js';
 import {skillFilePath,parseSkillDocument,loadBoundSkills} from '../../agent/skill-files.js';
 import {validateServerTransport} from '../../pi/mcpTransport.js';
@@ -262,56 +263,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   app.post("/api/settings", async (req, reply) => setSettings(req, reply));
   app.put("/api/settings", async (req, reply) => setSettings(req, reply));
 
-  // ─── agents ────────────────────────────────────────────────────────────────
-
-  app.get("/api/agents", async () => {
-    const agents = await platform().listAgents();
-    return { agents: agents.map(agentDTO) };
-  });
-
-  // POST /api/agents — 新建自定义 agent（key 唯一）。
-  app.post("/api/agents", async (req, reply) => {
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const key = typeof b["key"] === "string" ? b["key"].trim() : "";
-    const name = typeof b["name"] === "string" ? b["name"].trim() : "";
-    const description = typeof b["description"] === "string" ? b["description"] : "";
-    assertActiveRole(key);
-    if (!/^[a-z0-9_-]{1,64}$/i.test(key) || name === "") {
-      return reply.code(400).send({ error: "key 仅限字母数字/_/-（<=64），name 不能为空" });
-    }
-    if (await platform().getAgentByKey(key)) return reply.code(409).send({ error: `agent key ${key} 已存在` });
-    const res = await app.db.query(
-      `INSERT INTO agents(key, name, description, role, builtin, enabled) VALUES ($1,$2,NULLIF($3,''),'assistant',false,true) RETURNING id`,
-      [key, name, description],
-    );
-    const agent = await platform().getAgentByKey(key);
-    return reply.code(201).send(agentDTO(agent ?? ({ id: Number(res.rows[0]!.id) } as unknown as Agent)));
-  });
-
-  app.get("/api/agents/:key", async (req, reply) => {
-    const key = (req.params as { key: string }).key;
-    const agent = await platform().getAgentByKey(key);
-    if (!agent) return reply.code(404).send({ error: `agent ${key} 不存在` });
-    const [prompt, variables] = await Promise.all([platform().currentPrompt(agent.id), platform().promptVars(agent.id)]);
-    const effective = await resolveRolePrompt(app.db, key);
-    return { ...agentDTO(agent), prompt: prompt || effective.template, variables,
-      prompt_source: effective.source, effective_prompt: effective.template, builtin_version: PROMPT_VERSION,
-      prompt_candidate: effective.candidate, host_protocol: hostProtocol(key) };
-  });
-
-  // PUT /api/agents/:key/prompt — 保存提示词新版本并切换 current。
-  app.put("/api/agents/:key/prompt", async (req, reply) => {
-    const key = (req.params as { key: string }).key;
-    const agent = await platform().getAgentByKey(key);
-    if (!agent) return reply.code(404).send({ error: `agent ${key} 不存在` });
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    if (typeof b["template"] !== "string" || b["template"].trim() === "") {
-      return reply.code(400).send({ error: "template 不能为空" });
-    }
-    const note = typeof b["note"] === "string" ? b["note"] : "";
-    const version = await platform().savePrompt(agent.id, b["template"], note, "user");
-    return { version };
-  });
+  registerAgentManagementRoutes(app);
 
   // ─── LLM profiles ──────────────────────────────────────────────────────────
 

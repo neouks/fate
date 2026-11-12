@@ -403,6 +403,8 @@ export class PlatformStore {
     const client = await this.db.pool.connect();
     try {
       await client.query("BEGIN");
+      const owner = await client.query('SELECT id FROM agents WHERE id=$1 FOR UPDATE', [agentID]);
+      if (!owner.rowCount) throw Object.assign(new Error('Agent 不存在或已删除'), {statusCode:404});
       const verRes = await client.query<{ ver: string }>(
         `SELECT COALESCE(max(version),0)+1 AS ver FROM agent_prompts WHERE agent_id=$1`,
         [agentID],

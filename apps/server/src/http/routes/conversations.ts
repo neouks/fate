@@ -7,7 +7,7 @@ const activity = activityDTO;
 function conversationDTO(row: Record<string, unknown>) {
   return { ...row, id: Number(row.id), task_id: row.task_id == null ? null : Number(row.task_id),
     llm_profile_id: row.llm_profile_id == null ? null : Number(row.llm_profile_id),
-    read_only: row.agent_key === 'retester', retired: row.agent_key === 'retester', pinned: row.pinned_at != null, running: row.running === true };
+    read_only: row.read_only === true || row.agent_key === 'retester', retired: row.agent_key === 'retester', pinned: row.pinned_at != null, running: row.running === true };
 }
 
 export function registerConversationRoutes(app: FastifyInstance) {
@@ -22,7 +22,7 @@ export function registerConversationRoutes(app: FastifyInstance) {
       throw Object.assign(new Error('任务不存在'), {statusCode: 404});
     }
     // Retester sessions retain their original finding relation rather than a copied task binding.
-    const rows = await db().query(`SELECT c.*,COALESCE(c.task_id,f.task_id) AS task_id,a.name AS agent_name,
+    const rows = await db().query(`SELECT c.*,COALESCE(c.task_id,f.task_id) AS task_id,a.name AS agent_name,(a.id IS NULL OR NOT a.enabled) AS read_only,
       (EXISTS(SELECT 1 FROM conversation_runs r WHERE r.conversation_id=c.id AND r.status IN ('queued','running'))
        OR rt.status IN ('pending','running')) IS TRUE AS running
       FROM conversations c LEFT JOIN agents a ON a.key=c.agent_key

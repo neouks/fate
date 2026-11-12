@@ -41,13 +41,15 @@ export class ConversationService {
  private closing=false;
  constructor(private db:Database,private resolve:ModelResolver,private dataDir:string,private engine:Engine,private egress?:string){}
  async list(){
-  const rows=await this.db.query(`SELECT c.*,a.name AS agent_name,(EXISTS(
+  const rows=await this.db.query(`SELECT c.*,a.name AS agent_name,(a.id IS NULL OR NOT a.enabled) AS read_only,(EXISTS(
    SELECT 1 FROM conversation_runs r WHERE r.conversation_id=c.id AND r.status IN ('queued','running')
   ) OR EXISTS(SELECT 1 FROM finding_retests f WHERE f.conversation_id=c.id AND f.status IN ('pending','running'))
   ) AS running FROM conversations c LEFT JOIN agents a ON a.key=c.agent_key ORDER BY c.pinned_at DESC NULLS LAST,c.updated_at DESC,c.id DESC LIMIT 500`);
   return rows.rows;
  }
- async create(key:string,title='',profile?:number|null,taskID?:number,writeDB:Database=this.db){
+ async create(key:string,title='',profile?:number|null,taskID?:number,writeDB:Database=this.db):Promise<Record<string,unknown>>{
+  if(!writeDB.transactionClient)return writeDB.transaction(tx=>this.create(key,title,profile,taskID,tx));
+  await writeDB.query('SELECT pg_advisory_xact_lock(4200000004)');
   assertActiveRole(key);
   const agent=await writeDB.platform().getAgentByKey(key);
   if(!agent||!agent.enabled||ORCHESTRATORS.has(key))throw Object.assign(new Error('该角色不能创建独立对话'),{statusCode:400});
@@ -65,7 +67,12 @@ export class ConversationService {
    WHERE id=$1 RETURNING *`,[id,title??null,patch.pinned??null])).rows[0];
   if(!row)throw Object.assign(new Error('conversation not found'),{statusCode:404});return row;
  }
- async assertWritable(id:number){const row=(await this.db.query('SELECT agent_key FROM conversations WHERE id=$1',[id])).rows[0];if(row)assertActiveRole(String(row.agent_key));}
+ async assertWritable(id:number){
+  const row=(await this.db.query('SELECT c.agent_key,a.id AS agent_id FROM conversations c LEFT JOIN agents a ON a.key=c.agent_key WHERE c.id=$1',[id])).rows[0];
+  if(!row)throw Object.assign(new Error('会话不存在'),{statusCode:404});
+  assertActiveRole(String(row.agent_key));
+  if(!row.agent_id)throw Object.assign(new Error('该 Agent 已删除，历史会话仅供读取'),{statusCode:410});
+ }
  async setProfile(id:number,profile:number|null){
   await this.assertWritable(id);
   if(profile!==null&&!(await this.db.query('SELECT id FROM llm_profiles WHERE id=$1',[profile])).rowCount)throw Object.assign(new Error('指定的 LLM 配置不存在'),{statusCode:400});
@@ -81,11 +88,15 @@ export class ConversationService {
  async enqueue(id:number,message:string,attachments:unknown=[],requestID:string=randomUUID(),writeDB:Database=this.db){
   if((!message.trim()&&(!Array.isArray(attachments)||attachments.length===0))||message.length>100000)throw Object.assign(new Error('消息为空或过长'),{statusCode:400});
   const row=await writeDB.transaction(async tx=>{
+   await tx.query('SELECT pg_advisory_xact_lock(4200000004)');
    const conv=(await tx.query('SELECT * FROM conversations WHERE id=$1 FOR UPDATE',[id])).rows[0];
    if(!conv)throw Object.assign(new Error('conversation not found'),{statusCode:404});
    assertActiveRole(String(conv.agent_key));
    const existing=await tx.query('SELECT id FROM conversation_runs WHERE conversation_id=$1 AND turn_id=$2',[id,requestID]);
    if(existing.rows[0])return existing.rows[0];
+   const agent=await tx.platform().getAgentByKey(String(conv.agent_key));
+   if(!agent)throw Object.assign(new Error('该 Agent 已删除，历史会话仅供读取'),{statusCode:410});
+   if(!agent.enabled)throw Object.assign(new Error('该 Agent 已停用，请先启用后再发送消息'),{statusCode:409});
    if(ORCHESTRATORS.has(String(conv.agent_key)))throw Object.assign(new Error('请通过该角色的专用入口执行'),{statusCode:409});
    if((await tx.query("SELECT id FROM conversation_runs WHERE conversation_id=$1 AND status IN ('queued','running')",[id])).rowCount)throw Object.assign(new Error('当前会话仍有待处理消息'),{statusCode:409});
    const first=(await tx.query('SELECT id FROM conversation_activities WHERE conversation_id=$1 AND worker=\'user\' LIMIT 1',[id])).rowCount===0;

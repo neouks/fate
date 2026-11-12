@@ -96,6 +96,10 @@ function triggerSets(b: Record<string, unknown>): { cols: string[]; params: unkn
 
 export function registerAgentConfigRoutes(app: FastifyInstance): void {
   const db = () => app.db;
+  async function updateExisting(sql:string,params:unknown[]) {
+    const result=await db().query(sql,params);
+    if(!result.rowCount)throw Object.assign(new Error("Agent 不存在或已删除"),{statusCode:404});
+  }
 
   async function agentOr404(reply: { code(c: number): { send(v: unknown): unknown } }, key: string) {
     const agent = await db().platform().getAgentByKey(key);
@@ -158,7 +162,7 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
     }
     if (sets.length === 0) return reply.code(400).send({ error: "无可更新字段" });
     params.push(agent.id);
-    await db().query(`UPDATE agents SET ${sets.join(", ")} WHERE id=$${params.length}`, params);
+    await updateExisting(`UPDATE agents SET ${sets.join(", ")} WHERE id=$${params.length}`, params);
     return { ok: true };
   });
 
@@ -179,7 +183,7 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
       sets.push(`wrapup_max_turns=$${params.length}`);
     }
     params.push(agent.id);
-    await db().query(`UPDATE agents SET ${sets.join(", ")} WHERE id=$${params.length}`, params);
+    await updateExisting(`UPDATE agents SET ${sets.join(", ")} WHERE id=$${params.length}`, params);
     return { ok: true };
   });
 
@@ -187,7 +191,7 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
     const key = (req.params as { key: string }).key;
     const agent = await agentOr404(reply, key);
     if (!agent) return reply;
-    await db().query(`UPDATE agents SET wrapup_prompt='', wrapup_max_turns=0 WHERE id=$1`, [agent.id]);
+    await updateExisting(`UPDATE agents SET wrapup_prompt='', wrapup_max_turns=0 WHERE id=$1`, [agent.id]);
     return { ok: true, wrapup_default: builtinWrapup(key), wrapup_max_turns_default: DEFAULT_WRAPUP_MAX_TURNS };
   });
 
@@ -206,7 +210,7 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
       sets.push(`task_timeout_wrapup_max_turns=$${params.length}`);
     }
     params.push(agent.id);
-    await db().query(`UPDATE agents SET ${sets.join(", ")} WHERE id=$${params.length}`, params);
+    await updateExisting(`UPDATE agents SET ${sets.join(", ")} WHERE id=$${params.length}`, params);
     return { ok: true };
   });
 
@@ -214,7 +218,7 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
     const key = (req.params as { key: string }).key;
     const agent = await agentOr404(reply, key);
     if (!agent) return reply;
-    await db().query(`UPDATE agents SET task_timeout_wrapup_prompt='', task_timeout_wrapup_max_turns=0 WHERE id=$1`, [agent.id]);
+    await updateExisting(`UPDATE agents SET task_timeout_wrapup_prompt='', task_timeout_wrapup_max_turns=0 WHERE id=$1`, [agent.id]);
     return {
       ok: true,
       task_timeout_wrapup_default: builtinTaskTimeoutWrapup(key),
@@ -284,11 +288,17 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
     const r = triggerSets(b);
     if ("error" in r) return reply.code(400).send({ error: r.error });
     if (r.cols.length === 0) return reply.code(400).send({ error: "无可写入字段" });
-    const res = await db().query(
+    const res = await db().transaction(async tx=>{
+      await tx.query('SELECT pg_advisory_xact_lock(4200000004)');
+      const current=await tx.platform().getAgentByKey(key);
+      if(!current)throw Object.assign(new Error('Agent 不存在或已删除'),{statusCode:404});
+      if(current.builtin)throw Object.assign(new Error('内置 Agent 不支持自定义触发器'),{statusCode:400});
+    return tx.query(
       `INSERT INTO agent_triggers(agent_key, ${r.cols.map((c) => c.split("=")[0]).join(", ")})
        VALUES ($1, ${r.params.map((_, i) => `$${i + 2}`).join(", ")}) RETURNING *`,
       [key, ...r.params],
     );
+    });
     return reply.code(201).send(mapTrigger(res.rows[0]!));
   });
 
