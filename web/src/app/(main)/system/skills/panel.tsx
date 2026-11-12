@@ -46,7 +46,7 @@ import { api } from "@/lib/api";
 import type { Agent, SkillItem, MCPServer, SkillCall, MissingSkill } from "@/lib/types";
 
 function fmtTime(ts?: string) {
-  if (!ts) return "从未调用";
+  if (!ts) return "未记录";
   return new Date(ts).toLocaleString("zh-CN", {
     month: "2-digit",
     day: "2-digit",
@@ -154,9 +154,9 @@ function SkillsOverview({
   onSelect: (name: string) => void;
 }) {
   const agg = React.useMemo(() => {
-    const totalCalls = skills.reduce((n, s) => n + s.calls, 0);
-    const used = skills.filter((s) => s.calls > 0);
-    const ranked = [...used].sort((a, b) => b.calls - a.calls);
+    const totalCalls = skills.reduce((n, s) => n + (s.calls ?? 0), 0);
+    const used = skills.filter((s) => (s.calls ?? 0) > 0);
+    const ranked = [...used].sort((a, b) => (b.calls ?? 0) - (a.calls ?? 0));
     const neverUsed = skills.filter((s) => s.calls === 0);
     const recent = skills
       .filter((s) => s.last_used)
@@ -165,6 +165,7 @@ function SkillsOverview({
     const missingCalls = missing.reduce((n, m) => n + m.calls, 0);
     return {
       totalCalls,
+      usageKnown: skills.every(s => typeof s.calls === "number"),
       usedCount: used.length,
       ranked,
       topCalls: ranked[0]?.calls ?? 0,
@@ -183,9 +184,9 @@ function SkillsOverview({
   }
 
   const stats: { label: string; value: React.ReactNode; hint?: string }[] = [
-    { label: "Skill 总数", value: skills.length, hint: `${agg.usedCount} 个被调用过` },
-    { label: "累计调用", value: agg.totalCalls },
-    { label: "未使用", value: agg.neverUsed.length, hint: agg.neverUsed.length > 0 ? "从未被任何 agent 加载" : "全部用过" },
+    { label: "Skill 总数", value: skills.length, hint: `${agg.usedCount} 个有调用记录` },
+    { label: "累计调用", value: agg.usageKnown ? agg.totalCalls : "未记录" },
+    { label: "未记录调用", value: agg.usageKnown ? agg.neverUsed.length : "未记录", hint: "无统计记录不代表没有加载" },
     { label: "未命中调用", value: agg.missingCalls, hint: missing.length > 0 ? `${missing.length} 个不存在的 skill` : "无" },
   ];
 
@@ -227,7 +228,7 @@ function SkillsOverview({
                 <span className="relative h-2 flex-1 overflow-hidden rounded-full bg-muted">
                   <span
                     className="absolute inset-y-0 left-0 rounded-full bg-primary/70"
-                    style={{ width: `${agg.topCalls > 0 ? (s.calls / agg.topCalls) * 100 : 0}%` }}
+                    style={{ width: `${agg.topCalls > 0 ? ((s.calls ?? 0) / agg.topCalls) * 100 : 0}%` }}
                   />
                 </span>
                 <span className="w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
@@ -269,7 +270,7 @@ function SkillsOverview({
             {agg.neverUsed.length > 0 && <span className="ml-1 font-normal">（{agg.neverUsed.length}）</span>}
           </Label>
           {agg.neverUsed.length === 0 ? (
-            <p className="text-muted-foreground text-xs">所有 Skill 都被调用过。</p>
+            <p className="text-muted-foreground text-xs">{agg.usageKnown ? "所有 Skill 都有历史调用记录。" : "当前缺少完整统计，无法判断哪些 Skill 未使用。"}</p>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {agg.neverUsed.map((s) => (
@@ -338,6 +339,7 @@ export default function SkillsPage() {
   // 最近调用明细。missing = 被点名但不存在的 skill（想用但没有）。
   const [usageCalls, setUsageCalls] = React.useState<SkillCall[]>([]);
   const [usageLoading, setUsageLoading] = React.useState(false);
+  const [usageError,setUsageError] = React.useState<string | null>(null);
   const [missing, setMissing] = React.useState<MissingSkill[]>([]);
 
   // ── Data ──────────────────────────────────────────────────────────────────
@@ -399,15 +401,16 @@ export default function SkillsPage() {
     setDetailMcps(sk?.mcps ?? []);
   }, [selected, skills]);
 
-  // Recent calls for the selected skill (detail panel only).
+  // Ignore late responses after selecting a different Skill.
   React.useEffect(() => {
     if (!selected || selected.path !== null) { setUsageCalls([]); return; }
-    const name = selected.skill;
-    setUsageLoading(true);
-    api.skillUsage(name, 20)
-      .then((calls) => setUsageCalls(calls))
-      .catch(() => setUsageCalls([]))
-      .finally(() => setUsageLoading(false));
+    let active=true;
+    setUsageLoading(true);setUsageError(null);setUsageCalls([]);
+    api.skillUsage(selected.skill, 20)
+      .then(calls => {if(active)setUsageCalls(calls);})
+      .catch(error => {if(active)setUsageError((error as Error).message);})
+      .finally(() => {if(active)setUsageLoading(false);});
+    return ()=>{active=false;};
   }, [selected]);
 
   React.useEffect(() => {
@@ -577,9 +580,11 @@ export default function SkillsPage() {
         mcps: newMcps.length ? newMcps : undefined,
         instructions: newInst.trim() || undefined,
       });
-      // apply initial visibility (fire-and-forget per agent; best-effort)
-      await Promise.all(newVisibility.map((id) => api.toggleSkillVisibility(id, name, true)));
-      toast.success("已创建 Skill");
+      // The file is already saved; binding failures must not invite a duplicate create.
+      const bindings = await Promise.allSettled(newVisibility.map(key => api.toggleSkillVisibility(key, name, true)));
+      const failed = newVisibility.filter((_, index) => bindings[index].status === "rejected");
+      if (failed.length) toast.error(`Skill 已创建，但角色绑定失败：${failed.join("、")}。请在可见性配置中重试。`);
+      else toast.success("已创建 Skill");
       setNewOpen(false);
       setNewName(""); setNewDesc(""); setNewLicense(""); setNewCompat(""); setNewInst("");
       setNewMcps([]); setNewVisibility([]);
@@ -709,12 +714,12 @@ export default function SkillsPage() {
             <PopoverTrigger asChild>
               <Button size="sm" variant="outline" className="ml-auto">
                 <AlertTriangleIcon className="size-3.5 text-amber-500" />
-                {missing.length} 个未命中调用
+                {missing.length} 项旧版未命中记录
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-80">
               <p className="mb-2 text-xs text-muted-foreground">
-                Agent 点名调用、但技能库里不存在的 skill。按被点名次数排序。
+                旧版 Skill 调用未命中的历史记录；不代表当前原生读取的全部失败情况。
               </p>
               <div className="space-y-1">
                 {missing.map((m) => (
@@ -731,7 +736,7 @@ export default function SkillsPage() {
       </div>
       <div className="flex flex-1 overflow-hidden">
         {/* ── 左侧文件树 ── */}
-        <div className="flex w-64 shrink-0 flex-col border-r">
+        <div className={cn("w-full shrink-0 flex-col border-r md:flex md:w-64", selected ? "hidden" : "flex")}>
           <div className="flex flex-col gap-2 border-b p-2">
             <Button size="sm" variant="outline" className="w-full" onClick={() => setNewOpen(true)}>
               <PlusIcon className="size-3.5" />新建 Skill
@@ -783,7 +788,7 @@ export default function SkillsPage() {
                         : <FolderIcon className="size-3.5 shrink-0 text-blue-500" />
                       }
                       <span className="min-w-0 flex-1 truncate font-semibold" title={s.name}>{s.name}</span>
-                      {s.calls > 0 && (
+                      {(s.calls ?? 0) > 0 && (
                         <span
                           className="shrink-0 rounded bg-muted px-1 text-[10px] tabular-nums text-muted-foreground"
                           title={`被调用 ${s.calls} 次 · 最近 ${fmtTime(s.last_used)}`}
@@ -830,7 +835,8 @@ export default function SkillsPage() {
         </div>
 
         {/* ── 右侧面板 ── */}
-        <div className="flex flex-1 flex-col overflow-auto p-4">
+        <div className={cn("min-w-0 flex-1 flex-col overflow-auto p-4 md:flex", selected ? "flex" : "hidden")}>
+          {selected && <Button variant="ghost" size="sm" className="mb-3 self-start md:hidden" onClick={() => setSelected(null)}>返回 Skill 列表</Button>}
           {!selected && (
             <SkillsOverview
               skills={skills}
@@ -846,6 +852,11 @@ export default function SkillsPage() {
                 {selectedSkill.description && (
                   <p className="mt-1 text-sm text-muted-foreground">{selectedSkill.description}</p>
                 )}
+                {selectedSkill.loadable === false && <p role="alert" className="mt-2 text-sm text-destructive">此 Skill 当前无法加载，请修复 SKILL.md。</p>}
+                {selectedSkill.loadable && selectedSkill.model_visible === false && <p className="mt-2 text-sm text-muted-foreground">此 Skill 已关闭模型自动发现。</p>}
+                {!!selectedSkill.diagnostics?.length && <ul className="mt-2 list-inside list-disc text-sm text-muted-foreground">
+                  {selectedSkill.diagnostics.map((diagnostic, index) => <li key={index}>{diagnostic}</li>)}
+                </ul>}
                 <div className="mt-2 flex flex-wrap gap-2">
                   {selectedSkill.license && (
                     <Badge variant="outline" className="text-xs font-normal">License: {selectedSkill.license}</Badge>
@@ -863,13 +874,14 @@ export default function SkillsPage() {
                 {/* ── 右侧：调用统计 ── */}
                 <div className="space-y-2 lg:w-80 lg:shrink-0">
                   <Label className="text-xs text-muted-foreground">调用统计</Label>
+                  <p className="text-xs text-muted-foreground">统计原生 read 读取 SKILL.md 的尝试，不含索引加载、辅助文件及 bash 读取。启用前历史可能不完整；失败与未知结果不代表成功加载。</p>
                   <div className="grid grid-cols-3 gap-2">
                     <div className="rounded-md border p-2">
-                      <p className="text-lg font-semibold tabular-nums">{selectedSkill.calls}</p>
+                      <p className="text-lg font-semibold tabular-nums">{selectedSkill.calls ?? "未记录"}</p>
                       <p className="text-xs text-muted-foreground">总调用次数</p>
                     </div>
                     <div className="rounded-md border p-2">
-                      <p className="text-lg font-semibold tabular-nums">{selectedSkill.tasks}</p>
+                      <p className="text-lg font-semibold tabular-nums">{selectedSkill.tasks ?? "未记录"}</p>
                       <p className="text-xs text-muted-foreground">覆盖任务数</p>
                     </div>
                     <div className="rounded-md border p-2">
@@ -879,26 +891,28 @@ export default function SkillsPage() {
                       <p className="text-xs text-muted-foreground">最近调用</p>
                     </div>
                   </div>
-                  {selectedSkill.usage_agents.length > 0 && (
+                  {(selectedSkill.usage_agents ?? []).length > 0 && (
                     <div className="flex flex-wrap items-center gap-1">
                       <span className="text-xs text-muted-foreground">调用方：</span>
-                      {selectedSkill.usage_agents.map((k) => (
+                      {(selectedSkill.usage_agents ?? []).map((k) => (
                         <Badge key={k} variant="secondary" className="text-xs font-normal">{k}</Badge>
                       ))}
                     </div>
                   )}
+                  <p className="text-xs text-muted-foreground">独立会话 {selectedSkill.conversations ?? "未记录"} · 成功 {selectedSkill.succeeded ?? "未记录"} · 失败 {selectedSkill.failed ?? "未记录"} · 进行中 {selectedSkill.pending ?? "未记录"} · 未知 {selectedSkill.unknown ?? "未记录"}</p>
                   {usageLoading ? (
                     <p className="text-xs text-muted-foreground">加载调用明细…</p>
-                  ) : usageCalls.length > 0 ? (
+                  ) : usageError ? (<p role="alert" className="text-xs text-destructive">调用明细读取失败：{usageError}。请重新选择重试。</p>) : usageCalls.length > 0 ? (
                     <div className="rounded-md border">
                       <div className="border-b px-2 py-1 text-xs text-muted-foreground">最近 {usageCalls.length} 次调用</div>
                       <div className="max-h-56 overflow-y-auto">
                         {usageCalls.map((c, i) => (
-                          <div key={`${c.ts}-${i}`} className="flex items-center gap-2 border-b px-2 py-1 text-xs last:border-b-0">
+                          <div key={c.call_id ?? `${c.ts}-${i}`} className="flex flex-wrap items-center gap-2 border-b px-2 py-1 text-xs last:border-b-0">
                             <span className="tabular-nums text-muted-foreground">{fmtTime(c.ts)}</span>
                             <Badge variant="outline" className="font-normal">{c.agent_key || "—"}</Badge>
+                            <span>{({succeeded:"成功",failed:"失败",pending:"进行中",unknown:"结果未知"})[c.outcome ?? "unknown"]}</span>
                             <span className="ml-auto text-muted-foreground">
-                              {c.task_id > 0 ? `任务 #${c.task_id}` : c.session_id ? "对话会话" : "—"}
+                              {c.task_id > 0 ? `任务 #${c.task_id}` : "—"}{c.conversation_id ? ` · 会话 #${c.conversation_id}` : ""}
                             </span>
                           </div>
                         ))}
@@ -914,7 +928,7 @@ export default function SkillsPage() {
                   <div className="space-y-2">
                     <Label className="text-xs text-muted-foreground">
                       关联 MCP
-                      <span className="ml-1 font-normal">（加载 Skill 时才披露/解锁其工具）</span>
+                      <span className="ml-1 font-normal">（依赖说明，需另行向 Agent 绑定对应 MCP）</span>
                     </Label>
                     {mcpOptions.length === 0 ? (
                       <p className="text-xs text-muted-foreground">暂无 MCP，可在「MCP」页添加。</p>
@@ -939,8 +953,8 @@ export default function SkillsPage() {
                       {agents.map((a) => (
                         <label key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">
                           <Checkbox
-                            checked={(visibility[selectedSkill.name] ?? []).includes(a.id)}
-                            onCheckedChange={() => toggleVisibility(selectedSkill.name, a.id, a.name)}
+                            checked={(visibility[selectedSkill.name] ?? []).includes(a.key)}
+                            onCheckedChange={() => toggleVisibility(selectedSkill.name, a.key, a.name)}
                           />
                           {a.name}
                         </label>
@@ -1069,7 +1083,7 @@ export default function SkillsPage() {
 
             {/* 关联 MCP */}
             <TabsContent value="mcp" className="overflow-y-auto px-4 pb-4 pt-4 data-[state=inactive]:hidden">
-              <p className="mb-3 text-xs text-muted-foreground">加载 Skill 时才披露并解锁所选 MCP 的工具。</p>
+              <p className="mb-3 text-xs text-muted-foreground">这里记录 MCP 依赖；使用工具仍需向该 Agent 单独绑定对应 MCP。</p>
               {mcpOptions.length === 0 ? (
                 <p className="text-xs text-muted-foreground">暂无 MCP，可在「MCP」页添加。</p>
               ) : (
@@ -1099,9 +1113,9 @@ export default function SkillsPage() {
                   {agents.map((a) => (
                     <label key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">
                       <Checkbox
-                        checked={newVisibility.includes(a.id)}
+                        checked={newVisibility.includes(a.key)}
                         onCheckedChange={(on) =>
-                          setNewVisibility((cur) => on ? [...cur, a.id] : cur.filter((id) => id !== a.id))
+                          setNewVisibility((cur) => on ? [...cur, a.key] : cur.filter((id) => id !== a.key))
                         }
                       />
                       {a.name}

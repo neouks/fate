@@ -78,6 +78,8 @@ export default function MCPPage() {
   const [usageStats, setUsageStats] = React.useState<MCPUsageStat[]>([]);
   const [recentCalls, setRecentCalls] = React.useState<MCPCall[]>([]);
   const [usageLoading, setUsageLoading] = React.useState(false);
+  const [usageError,setUsageError]=React.useState<string | null>(null);
+  const usageRequest=React.useRef(0);
 
   const load = React.useCallback(() => {
     setLoading(true);
@@ -141,7 +143,7 @@ export default function MCPPage() {
           transport: "stdio",
           insecure: false,
           command: form.command.trim(),
-          args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
+          args: form.args.trim() ? JSON.parse(form.args) : [],
           env: parseEnv(form.env),
           url: "",
           enabled: servers.find((server) => server.id === editing?.id)?.enabled ?? editing?.enabled ?? true,
@@ -151,9 +153,15 @@ export default function MCPPage() {
     if (!form.name.trim()) return "请填写名称";
     if (form.transport === "stdio" && !form.command.trim()) return "请填写命令";
     if (form.transport !== "stdio" && !form.url.trim()) return "请填写远程 URL";
+    if (form.transport === "stdio" && form.args.trim()) {
+      try { const args = JSON.parse(form.args); if (!Array.isArray(args) || args.some(x => typeof x !== "string")) return "参数必须是 JSON 字符串数组"; }
+      catch { return "参数必须是有效 JSON 字符串数组"; }
+    }
+    if (form.env.split("\n").some(line => line.trim() && line.trim().indexOf("=") <= 0)) return "每项环境变量或请求头应为 KEY=value，不能忽略无效行";
     return "";
   }
   function openAdd() {
+    usageRequest.current++;setUsageError(null);
     setEditing(null);
     setForm(emptyForm);
     setTools([]);
@@ -169,7 +177,7 @@ export default function MCPPage() {
       name: s.name,
       transport: s.transport,
       command: s.command ?? "",
-      args: s.args.join(" "),
+      args: JSON.stringify(s.args),
       url: s.url ?? "",
       env: envToText(s.env),
       insecure: s.insecure ?? false,
@@ -193,16 +201,17 @@ export default function MCPPage() {
     }
   }
   async function loadUsage(id: number) {
-    setUsageLoading(true);
+    const request=++usageRequest.current;
+    setUsageLoading(true);setUsageError(null);
     try {
       const result = await api.mcpUsage(id, 50);
+      if(request!==usageRequest.current)return;
       setUsageStats(result.stats ?? []);
       setRecentCalls(result.calls ?? []);
-    } catch {
-      setUsageStats([]);
-      setRecentCalls([]);
+    } catch(error) {
+      if(request===usageRequest.current)setUsageError((error as Error).message);
     } finally {
-      setUsageLoading(false);
+      if(request===usageRequest.current)setUsageLoading(false);
     }
   }
   async function testForm() {
@@ -350,15 +359,15 @@ export default function MCPPage() {
               />
             </Field>
             <Field>
-              <FieldLabel htmlFor="m-args">参数（空格分隔）</FieldLabel>
+              <FieldLabel htmlFor="m-args">参数（JSON 字符串数组）</FieldLabel>
               <Input
                 id="m-args"
                 className="font-mono"
-                placeholder="-y @modelcontextprotocol/server-filesystem /data"
+                placeholder={'["-y", "@modelcontextprotocol/server-filesystem", "/data"]'}
                 value={form.args}
                 onChange={(e) => setF({ args: e.target.value })}
               />
-              <FieldDescription>JSON 导入会保留参数数组；手工输入按空格拆分。</FieldDescription>
+              <FieldDescription>每项作为独立参数传递，保留路径中的空格；没有参数可留空。</FieldDescription>
             </Field>
           </>
         ) : (
@@ -433,8 +442,8 @@ export default function MCPPage() {
                   <label key={agent.key} htmlFor={`mcp-agent-${editing.id}-${agent.id}`} className="flex items-center gap-2 text-sm">
                     <Checkbox
                       id={`mcp-agent-${editing.id}-${agent.id}`}
-                      checked={(visibility[editing.id] ?? []).includes(agent.id)}
-                      onCheckedChange={() => toggleVisibility(editing.id, agent.id, agent.name)}
+                      checked={(visibility[editing.id] ?? []).includes(agent.key)}
+                      onCheckedChange={() => toggleVisibility(editing.id, agent.key, agent.name)}
                     />
                     {agent.name}
                   </label>
@@ -458,7 +467,7 @@ export default function MCPPage() {
             <div key={tool.name} className="py-2.5">
               <div className="flex items-center justify-between gap-2">
                 <code className="font-mono text-sm">{tool.name}</code>
-                <Badge variant="secondary">调用 {tool.calls ?? 0} 次</Badge>
+                <Badge variant="secondary">已记录 {tool.calls ?? "未知"} 次</Badge>
               </div>
               {tool.description && (
                 <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">{tool.description}</p>
@@ -482,18 +491,21 @@ export default function MCPPage() {
 
   function renderUsage() {
     if (usageLoading) return <p className="text-muted-foreground text-sm">加载调用统计中…</p>;
+    if (usageError) return <p role="alert" className="text-sm text-destructive">调用统计读取失败：{usageError} <Button variant="outline" size="sm" onClick={()=>editing&&void loadUsage(editing.id)}>重试</Button></p>;
     if (usageStats.length === 0 && recentCalls.length === 0)
-      return <p className="text-muted-foreground text-sm">暂无调用记录。工具调用后会在此显示统计与最近明细。</p>;
+      return <p className="text-muted-foreground text-sm">暂无已记录调用。统计原生 MCP 工具调用尝试，不含搜索和连接测试；启用前的历史可能不完整。</p>;
     return (
       <div className="flex flex-col gap-4">
         <div className="grid gap-2">
           <h3 className="font-medium text-sm">工具统计</h3>
+          <p className="text-xs text-muted-foreground">按原生调用去重，含失败与被拒绝的尝试；搜索、资源枚举和连接测试不计入。启用前历史不完整，旧记录结果标为未知。</p>
           <div className="flex flex-col divide-y rounded-md border">
             {usageStats.map((stat) => (
               <div key={stat.tool_name} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
                 <code className="min-w-0 flex-1 truncate font-mono">{stat.tool_name}</code>
                 <span className="text-muted-foreground text-xs">
-                  {stat.calls} 次 · {stat.tasks} 个任务
+                  {stat.calls} 次 · {stat.tasks} 个任务 · {stat.conversations ?? 0} 个独立会话
+                  {stat.succeeded !== undefined && ` · 成功 ${stat.succeeded} / 失败 ${stat.failed} / 进行中 ${stat.pending} / 未知 ${stat.unknown}`}
                 </span>
                 {stat.agents.length > 0 && <Badge variant="outline">{stat.agents.join("、")}</Badge>}
                 {stat.last_used && (
@@ -509,16 +521,17 @@ export default function MCPPage() {
           <div className="flex flex-col divide-y rounded-md border">
             {recentCalls.map((call) => (
               <div
-                key={`${call.ts}-${call.tool_name}-${call.task_id}-${call.session_id}`}
+                key={call.call_id ?? `${call.ts}-${call.tool_name}-${call.task_id}-${call.session_id}`}
                 className="grid gap-1 px-3 py-2 text-xs"
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <time className="text-muted-foreground">{new Date(call.ts).toLocaleString()}</time>
                   <code className="font-mono">{call.tool_name}</code>
                   <Badge variant="outline">{call.agent_key || "未知 Agent"}</Badge>
+                  <span>{({succeeded:"成功",failed:"失败",pending:"进行中",unknown:"结果未知"})[call.outcome ?? "unknown"]}</span>
                 </div>
                 <span className="text-muted-foreground">
-                  任务 {call.task_id || "—"} · 会话 {call.session_id || "—"}
+                  任务 {call.task_id || "—"} · 独立会话 {call.conversation_id || "—"} · 意图 {call.intent_id || "—"}
                 </span>
               </div>
             ))}
@@ -597,7 +610,7 @@ export default function MCPPage() {
                     <span className="truncate font-mono text-sm font-medium">{server.name}</span>
                     <Badge variant="outline">{server.transport}</Badge>
                     <Badge variant="secondary" className="ml-auto">
-                      调用 {server.calls ?? 0}
+                      调用 {server.calls ?? "未记录"}
                     </Badge>
                   </div>
                   <p className="text-muted-foreground text-xs">
@@ -606,7 +619,7 @@ export default function MCPPage() {
                   </p>
                   <p className="text-muted-foreground truncate text-xs">
                     {agents
-                      .filter((agent) => (visibility[server.id] ?? []).includes(agent.id))
+                      .filter((agent) => (visibility[server.id] ?? []).includes(agent.key))
                       .map((agent) => agent.name)
                       .join(" · ") || "尚未绑定 Agent"}
                   </p>
@@ -712,7 +725,7 @@ export default function MCPPage() {
                       const existing = servers.find((server) => server.name === item.name);
                       const visibleAgents = existing
                         ? (visibility[existing.id] ?? [])
-                            .map((id) => agents.find((agent) => agent.id === id)?.name ?? id)
+                            .map((id) => agents.find((agent) => agent.key === id)?.name ?? id)
                             .filter(Boolean)
                         : [];
                       return (

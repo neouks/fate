@@ -1160,7 +1160,7 @@ export const api = {
   mcpTools: (id: number) => get<{ tools: MCPTool[] }>(`/mcp/${id}/tools`).then((r) => arr(r.tools)),
   mcpUsage: (id: number, limit = 50) =>
     get<{ stats: MCPUsageStat[]; calls: MCPCall[] }>(`/mcp/${id}/usage?limit=${limit}`),
-  refreshMcpServer: (id: number) => post<{ tools: MCPTool[] }>(`/mcp/${id}/refresh`, {}).then((r) => arr(r.tools)),
+  refreshMcpServer: (id: number) => post<{ tools: MCPTool[]; error?: string }>(`/mcp/${id}/refresh`, {}).then((r) => { if (r.error) throw new Error(r.error); return arr(r.tools); }),
   testMcpServer: (m: Partial<MCPServer>) => post<MCPTestResult>("/mcp/test", m),
   importMcpServers: (
     servers: Array<{

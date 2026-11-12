@@ -1236,7 +1236,15 @@ export interface MCPTool {
   calls?: number;
 }
 
-export interface MCPUsageStat {
+export interface ResourceUsageCounts {
+  succeeded?: number; failed?: number; pending?: number; unknown?: number; conversations?: number;
+}
+export interface ResourceUsageCall {
+  call_id?: string; outcome?: 'pending' | 'succeeded' | 'failed' | 'unknown';
+  source?: 'native-v1' | 'legacy'; conversation_id?: number; intent_id?: number; turn_id?: string;
+}
+
+export interface MCPUsageStat extends ResourceUsageCounts {
   server_id: number;
   server_name: string;
   tool_name: string;
@@ -1246,7 +1254,7 @@ export interface MCPUsageStat {
   last_used?: string;
 }
 
-export interface MCPCall {
+export interface MCPCall extends ResourceUsageCall {
   ts: string;
   tool_name: string;
   agent_key: string;
@@ -1271,27 +1279,30 @@ export interface MCPImportResult {
 // ---- Skills ----
 // Fields align with the agentskills.io open specification.
 // description covers both "what the skill does" and "when to use it".
-export interface SkillItem {
+export interface SkillItem extends ResourceUsageCounts {
   name: string; // unique key = directory name
   description?: string; // required per spec; covers what + when to use
   license?: string; // optional: SPDX identifier or free text
   compatibility?: string; // optional: environment requirements
-  mcps?: string[]; // MCP server names this skill unlocks on load
+  mcps?: string[]; // MCP dependencies; role bindings remain authoritative
+  loadable?: boolean;
+  model_visible?: boolean;
+  diagnostics?: string[];
   files: string[]; // files in the skill directory
-  // 调用统计（skill_usage 账本）。从未被调用过的 skill：calls=0、last_used 缺省。
-  calls: number;
-  tasks: number; // 加载过它的任务数（chat 会话不计入）
-  usage_agents: string[]; // 加载过它的 agent key
+  // 已记录的原生及旧版调用尝试；启用计量前的历史可能不完整。
+  calls?: number;
+  tasks?: number; // 加载过它的任务数（chat 会话不计入）
+  usage_agents?: string[]; // 加载过它的 agent key
   last_used?: string;
 }
 
-// SkillCall 是一次 Skill() 调用（单个 skill 的最近调用列表）。
-export interface SkillCall {
+// 原生 read 读取 SKILL.md 的调用尝试；历史记录的结果可能未知。
+export interface SkillCall extends ResourceUsageCall {
   ts: string;
   agent_key: string;
   task_id: number; // 0 = 非任务场景（对话会话）
   session_id: string;
-  args_len: number;
+  args_len: number | null;
 }
 
 // MissingSkill 是被点名但不存在的 skill —— "想用但没有"的缺口。
