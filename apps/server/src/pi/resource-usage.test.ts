@@ -49,7 +49,7 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
  const exp=await db.createExploration('synthetic resource metering','local fixture'),task=Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,paused,status) VALUES('synthetic','local',$1,true,'paused') RETURNING id",[exp])).rows[0]!.id);
  const serverID=Number((await db.query("INSERT INTO mcp_servers(name,transport,command) VALUES('usage_fixture','stdio','node') RETURNING id")).rows[0]!.id);
  const captured:Activity[]=[];let executions=0, nextIntent=100;
- async function run(role:string,opts:{conversation?:boolean;bound?:boolean;mcp?:boolean;dropEnd?:boolean;resume?:string}={}){
+ async function run(role:string,opts:{conversation?:boolean;bound?:boolean;mcp?:boolean;dropEnd?:boolean;resume?:string;denySkill?:boolean}={}){
   const id=randomUUID(),turnID=randomUUID(),sessionFile=opts.resume??path.join(dir,id+'.jsonl');
   const taskID=opts.conversation&&!opts.bound?null:task; const intentID=role==='worker'?++nextIntent:undefined;
   let identity:NativeActivityIdentity={source:{scope:'task',scopeID:exp,taskID:task},worker:role,turn_id:turnID};
@@ -67,6 +67,7 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
   const activities:Activity[]=[];
   const runner=await AgentRunner.create({cwd:dir,agentDir:dir,resumeSessionPath:sessionFile,modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Read local fixtures only.',toolAllowlist:opts.mcp?['mcp__*']:['read'],skillsDir:skills,allowedSkills:['fixture'],nativeActivityRuntime:id,
    resourceServers:new Map([['usage_fixture',serverID]]),...(opts.mcp?{mcpEntries:[{name:'usage_fixture',config:{transport:'stdio',command:process.execPath,args:[serverFile],exposure:'deferred'}}]}:{}),
+   ...(opts.denySkill?{guard:async()=>({block:true,reason:'synthetic Skill revoked'})}:{}),
    onActivity:async a=>{
     if(!['tool_start','tool_end'].includes(a.kind))return;
     const event=a as Extract<RunnerActivity,{kind:'tool_start'|'tool_end'}>;
@@ -141,5 +142,14 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
  assert.equal((await db.query('SELECT outcome FROM resource_usage WHERE runtime_id=$1',[crash.id])).rows[0]!.outcome,'succeeded');
  assert.equal((await resourceUsageList(db,'skill')).get('fixture')!.calls,10);
  assert.equal((await resourceUsageList(db,'skill')).get('fixture')!.succeeded,10);
+ const blocked=await run('worker',{denySkill:true});
+ assert.equal((await db.query('SELECT outcome FROM resource_usage WHERE runtime_id=$1',[blocked.id])).rows[0]!.outcome,'failed');
+ assert.equal((await resourceUsageList(db,'skill')).get('fixture')!.calls,11);
+ assert.equal((await resourceUsageList(db,'skill')).get('fixture')!.succeeded,10);
+ const independent=await run('pentest',{conversation:true,bound:true,mcp:true});
+ const bound=await db.query('SELECT task_id,conversation_id,count(*)::int calls FROM resource_usage WHERE runtime_id=$1 GROUP BY task_id,conversation_id',[independent.id]);
+ assert.deepEqual(bound.rows,[{task_id:String(task),conversation_id:String(independent.conversation),calls:2}]);
+ assert.equal((await resourceUsageList(db,'mcp')).get(String(serverID))!.calls,4);
+
 
 });
