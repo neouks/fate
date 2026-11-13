@@ -127,9 +127,9 @@ export async function stepSource(db:Database,owner:{taskID:number;intentID?:numb
  if(/^tool-output:[a-f0-9-]+$/i.test(ref))return loadToolOutput(db,ref.slice(12),{taskID:owner.taskID,agent:!!owner.intentID,intentID:owner.intentID});
  throw invalid('无效的原始证据引用');
 }
-export async function attachStepTraffic(db:Database,findingID:number,taskID:number,repro:Reproduction|null){
+export async function attachStepTraffic(db:Database,findingID:number,taskID:number,repro:Reproduction|null,options:{bumpVersion?:boolean}={}){
  const ids=[...new Set(repro?.steps.flatMap(s=>s.traffic_id?[s.traffic_id]:[])??[])];
- if(ids.length)await bindEvidence(db,findingID,ids.map(traffic_id=>({traffic_id,role:'proof'})),taskID);
+ if(ids.length)await bindEvidence(db,findingID,ids.map(traffic_id=>({traffic_id,role:'proof'})),taskID,options);
 }
 export async function archiveReport(db:Database,f:Record<string,unknown>){
  await db.query(`INSERT INTO finding_report_versions(finding_id,revision,evidence_version,report,sections,reproduction) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,[f.id,f.report_revision, f.report_evidence_version??f.evidence_version,f.report??'',f.report_sections??null,f.reproduction??null]);

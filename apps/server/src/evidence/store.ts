@@ -36,7 +36,7 @@ export async function findingEvidence(db:Database,findingID:number){
  const rows=await db.query('SELECT b.*,row_to_json(s) AS snapshot FROM finding_traffic_bindings b JOIN traffic_evidence_snapshots s ON s.id=b.snapshot_id WHERE b.finding_id=$1 ORDER BY position,id',[findingID]);
  return {finding_id:String(findingID),version:Number(f.evidence_version),report_version:Number(f.report_evidence_version),bindings:await (async()=>{const visible=[];for(const row of rows.rows){try{await authorizeEvidence(db,row.snapshot as EvidenceOwner);visible.push(row);}catch{/* revoked evidence is absent from every report projection */}}return visible;})()};
 }
-export async function bindEvidence(db:Database,findingID:number,refs:Array<{traffic_id:string;role?:string;note?:string}>,taskID:number){
+export async function bindEvidence(db:Database,findingID:number,refs:Array<{traffic_id:string;role?:string;note?:string}>,taskID:number,options:{bumpVersion?:boolean}={}){
  await db.query('SELECT id FROM findings WHERE id=$1 FOR UPDATE',[findingID]);
  for(const ref of refs){
   if(!['baseline','proof','verification','supporting'].includes(ref.role??'supporting'))throw Object.assign(new Error('无效证据角色'),{statusCode:400});
@@ -45,6 +45,6 @@ export async function bindEvidence(db:Database,findingID:number,refs:Array<{traf
   await authorizeEvidence(db,permitted.rows[0] as EvidenceOwner,taskID);
   await db.query(`INSERT INTO finding_traffic_bindings(finding_id,snapshot_id,role,note,position) VALUES($1,$2,$3,$4,COALESCE((SELECT max(position)+1 FROM finding_traffic_bindings WHERE finding_id=$1),0)) ON CONFLICT(finding_id,snapshot_id) DO NOTHING`,[findingID,ref.traffic_id,ref.role??'supporting',ref.note??'']);
  }
- await db.query('UPDATE findings SET evidence_version=evidence_version+1 WHERE id=$1',[findingID]);
+ if(options.bumpVersion!==false)await db.query('UPDATE findings SET evidence_version=evidence_version+1 WHERE id=$1',[findingID]);
  return findingEvidence(db,findingID);
 }

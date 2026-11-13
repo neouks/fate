@@ -41,6 +41,7 @@ export class TriggerScheduler {
         const triggers = (await tx.query(`SELECT t.*,a.enabled AS agent_enabled,a.builtin,a.trigger_run_mode,a.trigger_merge_mode,a.trigger_max_parallel
           FROM agent_triggers t JOIN agents a ON a.key=t.agent_key WHERE t.agent_key<>'retester' AND t.enabled AND a.enabled AND NOT a.builtin ORDER BY t.id`)).rows as TriggerRow[];
         await this.collectFindings(tx, triggers);
+        await this.collectFindingAmendments(tx, triggers);
         await this.collectGoals(tx, triggers);
         await this.collectTimeouts(tx, triggers);
         await this.collectTaskCreates(tx, triggers);
@@ -67,6 +68,7 @@ export class TriggerScheduler {
       ['pi_trigger_fired_timeouts', JSON.stringify((timeouts.rows[0]?.ids as unknown[]) ?? [])],
     ]) await tx.query('INSERT INTO scheduler_state(key,value) VALUES($1,$2) ON CONFLICT(key) DO NOTHING', [key, value]);
     await tx.query("INSERT INTO scheduler_seen_sources(kind,source_id) SELECT 'finding',n.id FROM exploration_nodes n JOIN findings f ON f.node_id=n.id ON CONFLICT DO NOTHING");
+    await tx.query("INSERT INTO scheduler_seen_sources(kind,source_id) SELECT 'finding_update',id FROM finding_evidence_amendments ON CONFLICT DO NOTHING");
     await tx.query("INSERT INTO scheduler_seen_sources(kind,source_id) SELECT 'task',id FROM tasks ON CONFLICT DO NOTHING");
     await tx.query("INSERT INTO scheduler_seen_sources(kind,source_id) SELECT 'tool',id FROM activity WHERE kind='tool_result' ON CONFLICT DO NOTHING");
     await this.saveState(tx,'pi_trigger_seen_v2','ready');
@@ -104,6 +106,21 @@ export class TriggerScheduler {
     if(max>last)await this.saveState(tx,'pi_trigger_last_finding',String(max));
   }
 
+  private async collectFindingAmendments(tx:Database,triggers:TriggerRow[]){
+    const rows=(await tx.query(`SELECT a.id,a.finding_id,a.task_id,a.evidence_version,f.node_id
+      FROM finding_evidence_amendments a JOIN findings f ON f.id=a.finding_id
+      JOIN tasks t ON t.id=a.task_id
+      WHERE t.deleted_at IS NULL AND finding_readable(f.id)
+        AND NOT EXISTS(SELECT 1 FROM scheduler_seen_sources s WHERE s.kind='finding_update' AND s.source_id=a.id)
+      ORDER BY a.id LIMIT $1`,[PAGE])).rows;
+    for(const row of rows){
+      await this.fire(tx,triggers,'on_finding',`finding:${row.node_id}:evidence:${row.evidence_version}`,'finding',Number(row.task_id),{
+        finding_id:Number(row.finding_id),finding_node_id:Number(row.node_id),evidence_version:Number(row.evidence_version),
+      },'finding_message');
+      await tx.query("INSERT INTO scheduler_seen_sources(kind,source_id) VALUES('finding_update',$1) ON CONFLICT DO NOTHING",[row.id]);
+    }
+  }
+
   private async collectGoals(tx: Database, triggers: TriggerRow[]) {
     const fired = new Set<number>(JSON.parse(await this.state(tx,'pi_trigger_fired_goals')) as number[]);
     const rows = await tx.query(`SELECT n.id,t.id task_id,t.description,t.goal,n.payload FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id
@@ -136,7 +153,7 @@ export class TriggerScheduler {
     const rows=await tx.query(`SELECT r.id,t.id task_id,t.description,t.goal,r.tool,r.detail,r.is_error,u.detail input FROM activity r
       JOIN tasks t ON t.exploration_id=r.exploration_id LEFT JOIN activity u ON u.exploration_id=r.exploration_id AND u.tool_use_id=r.tool_use_id AND u.kind='tool_use'
       WHERE r.kind='tool_result' AND NOT EXISTS(SELECT 1 FROM scheduler_seen_sources ss WHERE ss.kind='tool' AND ss.source_id=r.id) AND r.tool<>'' AND t.deleted_at IS NULL ORDER BY r.id LIMIT $1`,[PAGE]);let max=last;
-    for(const r of rows.rows){const id=Number(r.id);max=Math.max(max,id);const tool=String(r.tool);if(r.is_error&&tool==='report_finding')continue;
+    for(const r of rows.rows){const id=Number(r.id);max=Math.max(max,id);const tool=String(r.tool);if(tool==='report_finding'&&(r.is_error||!findingWriteChanged(r.detail)))continue;
       const interested=triggers.filter(t=>{
         if(t.on_tool_call!==true)return false;
         try{return (JSON.parse(String(t.tool_names??'[]')) as string[]).some(name=>name.toLowerCase()===tool.toLowerCase());}catch{return false;}
@@ -177,4 +194,13 @@ export class TriggerScheduler {
       }
     }
   }
+}
+
+/** Explicit no-op receipts must not trigger report regeneration; old receipts stay compatible. */
+export function findingWriteChanged(detail:unknown):boolean {
+  try {
+    const result=typeof detail==='string'?JSON.parse(detail):detail;
+    if(!result||typeof result!=='object')return true;
+    return !(result.replayed===true||result.duplicate===true||result.created===false&&result.updated!==true);
+  }catch{return true;}
 }
