@@ -1,4 +1,5 @@
 import {createMcpExtension,createToolSearchExtension,type ExtensionAPI,type ExtensionFactory} from '@earendil-works/pi-coding-agent';
+import {roleAllowsTool,roleToolRejection} from '../agent/planner-capabilities.js';
 import {createServerTransport} from './mcpTransport.js';
 import type {AgentRunnerOptions} from './runner.js';
 
@@ -89,9 +90,15 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
               // The native MCP tool_call readiness hook has run before execute.
               const unavailable=[...states].filter(([,state])=>state!=='ready').map(([name])=>name);
               const query=String((args[1] as {query?:string}).query??'');
+              // An exact forbidden name is a role denial, not a discovery miss.
+              if(/^(http_request|bash|write|edit|shell_\w+|mcp__\w+)$/.test(query.trim())){
+                const rejection=roleToolRejection(opts.platform?.role,query.trim());
+                if(rejection)throw new Error(rejection);
+              }
               if(!/[a-z0-9]/i.test(query))throw new Error('原生搜索暂不支持中文分词；请用英文工具名或关键词重试，例如 asset search、shell terminal、traffic。');
               const next=new Set<string>();
               for(const t of target.getAllTools()){
+                if(!roleAllowsTool(opts.platform?.role,t.name))continue;
                 const owner=owners.get(t.name);
                 try{
                   if(owner){if(states.get(owner.server)!=='ready')continue;await opts.mcpGuard?.(owner.server,'tools/call',owner.tool);}

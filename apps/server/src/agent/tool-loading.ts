@@ -1,3 +1,4 @@
+import {roleAllowsTool} from './planner-capabilities.js';
 import {skillFilePath} from './skill-files.js';
 import {readFile} from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
@@ -43,7 +44,7 @@ export async function legacyToolSession(file:string):Promise<boolean>{
 }
 /** Pure loadout shared with preview. Filtering never introduces a tool absent from the bound set. */
 export function toolLoadout(role:string,options:Pick<AgentRunnerOptions,'customTools'|'toolAllowlist'>,settings:{direct?:boolean;legacy?:boolean;legacyParameters?:string[];referenced?:string[];custom?:string[];fallback?:string}={}) {
- const allowed=[...new Set(options.toolAllowlist??[])].filter(n=>!RETIRED_TOOLS.has(n));
+ const allowed=[...new Set(options.toolAllowlist??[])].filter(n=>roleAllowsTool(role,n)&&!RETIRED_TOOLS.has(n));
  const compatibility=allowed.filter(n=>TOOL_ALIASES[n]&&(settings.legacy||settings.referenced?.includes(n)||!allowed.includes(TOOL_ALIASES[n]!)));
  const names=allowed.filter(n=>!TOOL_ALIASES[n]||compatibility.includes(n));
  const customTools=(options.customTools??[]).filter(t=>names.includes(t.name)).map(t=>settings.legacy||settings.legacyParameters?.includes(t.name)?t:compactToolSchema(t));

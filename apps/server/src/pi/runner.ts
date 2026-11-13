@@ -1,3 +1,4 @@
+import {roleAllowsTool,roleToolRejection,PLANNER_CAPABILITY_PROTOCOL} from '../agent/planner-capabilities.js';
 import {classifyResourceCall,type ResourceCall,type McpOwner} from './resource-usage.js';
 import {loadBoundSkills} from '../agent/skill-files.js';
 import {ActivityDelivery} from './activity-delivery.js';
@@ -96,6 +97,8 @@ function closingToolError(name: string, text: string | undefined, closing: Closi
     ? `${CLOSING_RULE}\n原始工具错误：${text}` : text;
 }
 function toolAvailabilityError(name:string,text:string|undefined,closing:ClosingState,opts:AgentRunnerOptions){
+  const rejection=roleToolRejection(opts.platform?.role,name);
+  if(rejection&&text===`Tool ${name} not found`)return `${rejection}\n原始工具错误：${text}`;
   const result=closingToolError(name,text,closing,opts.settlementTools);
   if(result!==text||text!==`Tool ${name} not found`||!opts.toolLoading?.deferred.includes(name))return result;
   return `工具 ${name} 尚未在当前声明中激活；先用 tool_search(query=${JSON.stringify(name)}) 检索，成功加载后再调用。若已禁用或撤销则停止，不能绕过。\n原始工具错误：${text}`;
@@ -259,6 +262,15 @@ export class AgentRunner {
 	// -------------------------------------------------------------------------
 
 	static async create(opts: AgentRunnerOptions): Promise<AgentRunner> {
+    if(opts.platform?.role==='planner'){
+      const allowed=(name:string)=>roleAllowsTool('planner',name);
+      const filter=(names:string[]|undefined)=>names?.filter(allowed)??[];
+      opts={...opts,toolAllowlist:filter(opts.toolAllowlist),
+        customTools:opts.customTools?.filter(t=>allowed(t.name)),mcpEntries:[],mcpResourceTools:[],
+        systemPrompt:(opts.systemPrompt??'').includes(PLANNER_CAPABILITY_PROTOCOL)?opts.systemPrompt:(opts.systemPrompt??'')+'\n'+PLANNER_CAPABILITY_PROTOCOL,
+        toolLoading:opts.toolLoading?{...opts.toolLoading,initialActive:filter(opts.toolLoading.initialActive),
+          deferred:filter(opts.toolLoading.deferred),compatibility:filter(opts.toolLoading.compatibility),referencedActive:filter(opts.toolLoading.referencedActive)}:undefined};
+    }
     const closing: ClosingState = { active: false };
     const domainCompletion = {done:false};
     let turns = 0;
@@ -347,7 +359,7 @@ export class AgentRunner {
       });
     };
     const declared=[...new Set([...(opts.toolAllowlist??[]),...(hasDeferredMcp(opts)||opts.toolLoading?.deferred.length?['tool_search']:[]),...(opts.mcpEntries?.length&&opts.toolAllowlist?.includes('mcp__*')?(opts.mcpResourceTools??MCP_RESOURCE_TOOLS):[])])];
-    const permitted=(name:string)=>declared.includes(name)||name.startsWith('mcp__')&&declared.includes('mcp__*');
+    const permitted=(name:string)=>roleAllowsTool(opts.platform?.role,name)&&(declared.includes(name)||name.startsWith('mcp__')&&declared.includes('mcp__*'));
 
 		const settings = SettingsManager.inMemory({
       ...(opts.toolLoading?{defaultTools:declared.filter(n=>!opts.toolLoading!.deferred.includes(n)&&!n.includes('*'))}:{}),
@@ -368,9 +380,11 @@ export class AgentRunner {
 			});
 		};
 
-		const guardExtension: ExtensionFactory | undefined = opts.guard || opts.settlementTools || opts.stopWhen
+		const guardExtension: ExtensionFactory | undefined = opts.platform?.role==='planner' || opts.guard || opts.settlementTools || opts.stopWhen
 			? (pi) => {
 					pi.on('tool_call', async (event, context): Promise<ToolCallEventResult | undefined> => {
+            const rejection=roleToolRejection(opts.platform?.role,event.toolName);
+            if(rejection)return {block:true,reason:rejection,terminate:false};
             if(await opts.stopWhen?.())return {block:true,reason:'本角色的最终结果已提交，不能继续操作',terminate:false};
             if (closing.active && opts.settlementTools && !opts.settlementTools.includes(event.toolName))
               return {block:true,reason:CLOSING_RULE,terminate:false};
@@ -492,7 +506,7 @@ export class AgentRunner {
 			noExtensions: true,
 			extensionFactories: [activityExtension, diagnosticsExtension, modelPolicyExtension, compactionExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory,...(opts.extensionFactories??[])].filter(
 				(e): e is ExtensionFactory => typeof e === 'function',
-			).map(factory=>wrapRegisteredTools(opts.toolLoading?restrictRegisteredTools(factory,permitted):factory,tool=>{
+			).map(factory=>wrapRegisteredTools(opts.toolLoading||opts.platform?.role==='planner'?restrictRegisteredTools(factory,permitted):factory,tool=>{
         const wrapped=opts.wrapExecutionTool?.(tool)??tool;
         return opts.toolLoading?.deferred.includes(tool.name)?{...wrapped,exposure:'deferred'}:wrapped;
       })),
@@ -555,17 +569,17 @@ export class AgentRunner {
     runner.compactionHealth=compactionHealth;
 		try {
 			await session.bindExtensions({}); // Fires session_start: native MCP connects here.
-      if(opts.toolLoading){
+      if(opts.toolLoading||opts.platform?.role==='planner'){
         // Native recovery restores the previous declaration, which can be an old
         // or budget-closing loadout. Add today's permitted resident tools while
         // retaining discovered tools; never reactivate an unregistered binding.
         const registered=new Set(session.getAllTools().map(tool=>tool.name));
         session.setActiveToolsByName([...new Set([
           ...session.getActiveToolNames(),
-          ...declared.filter(name=>!opts.toolLoading!.deferred.includes(name)),
+          ...declared.filter(name=>!opts.toolLoading?.deferred.includes(name)),
         ])].filter(name=>permitted(name)&&registered.has(name)));
         const entries=sessionManager.getEntries();
-        if(!entries.some(e=>e.type==='message'))sessionManager.appendCustomEntry(opts.toolLoading.version,{initial_active:session.getActiveToolNames()});
+        if(opts.toolLoading&&!entries.some(e=>e.type==='message'))sessionManager.appendCustomEntry(opts.toolLoading.version,{initial_active:session.getActiveToolNames()});
         // pi restores its transcript loadout and pending MCP names. No host replay of tools or messages.
       }
 			return runner;

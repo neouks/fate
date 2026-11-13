@@ -49,12 +49,12 @@ export function builtinDefinitions(db:Database){
 export async function previewRoleTools(db:Database,role:string,taskBound=true){
  const agent=await db.platform().getAgentByKey(role);if(!agent)throw Object.assign(new Error('Agent 不存在'),{statusCode:404});
  const ctx=runContext(db,taskBound?1:0,taskBound?1:0,role as never);
- const nativeNames=['worker','planner','mainagent'].includes(role)||role==='pentest'&&taskBound?['read','bash','write','edit']:['auto','reporter','pentest'].includes(role)?['read']:[];
+ const nativeNames=['worker','mainagent'].includes(role)||role==='pentest'&&taskBound?['read','bash','write','edit']:['planner','auto','reporter','pentest'].includes(role)?['read']:[];
  const disabled=await disabledBuiltinTools(db,role);
  const domain=await applyToolBindings(db,role,role==='goals'?goalsTools({...ctx,goalsPhase:'combined'}).filter(t=>[...GOALS_STAGE_TOOLS.constraints,...GOALS_STAGE_TOOLS.objectives].includes(t.name as never)):roleDefinitions(db,role,taskBound));
- const custom=role==='goals'||role==='pentest'&&!taskBound?[]:await customWorkerTools(ctx,previewCwd);
- const candidate=[...domain,...native().filter(t=>nativeNames.includes(t.name)&&!disabled.has(t.name)),...(agent.interactiveShell&&['worker','planner','mainagent'].includes(role)?terminalToolDefinitions():[]),...custom];
- if(['worker','planner','mainagent'].includes(role)){const bash=candidate.find(t=>t.name==='bash');if(bash)bash.description=await platformBashDescription(ctx,bash.description,agent.interactiveShell);}
+ const custom=role==='planner'||role==='goals'||role==='pentest'&&!taskBound?[]:await customWorkerTools(ctx,previewCwd);
+ const candidate=[...domain,...native().filter(t=>nativeNames.includes(t.name)&&!disabled.has(t.name)),...(agent.interactiveShell&&['worker','mainagent'].includes(role)?terminalToolDefinitions():[]),...custom];
+ if(['worker','mainagent'].includes(role)){const bash=candidate.find(t=>t.name==='bash');if(bash)bash.description=await platformBashDescription(ctx,bash.description,agent.interactiveShell);}
  const permitted=new Set((await applyToolBindings(db,role,candidate.map(t=>({name:t.name})))).map(t=>t.name));
  const bound=candidate.filter(t=>permitted.has(t.name)),policy=await platformPolicy(db,role),prompt=await resolveRolePrompt(db,role),resources=role==='goals'?{}:await roleResources(db,role,skillDir());
  const loadout=await prepareToolLoading(db,role,{customTools:bound,legacyTools:taskBound&&role!=='goals'?legacyReadCandidates(ctx):[],toolAllowlist:bound.map(t=>t.name),systemPrompt:prompt.template+(role==='planner'?'\n'+PLANNER_READING_RULES:''),...resources},policy.builtinLoading==='direct',policy.fallback);

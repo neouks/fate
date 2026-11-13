@@ -36,9 +36,9 @@ export function workerTools(ctx: ToolRunContext): ToolDefinition[] {
   ];
 }
 
-/** Planner：有限开局探测、派单、监督及目标证明。 */
+/** Planner：读取已有证据、派单、监督及目标证明，不执行目标请求。 */
 export function plannerTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [httpRequestTool(ctx),trafficBodyTool(ctx),
+  return [trafficBodyTool(ctx),
     ...sharedReadTools(ctx),
     addIntentTool(ctx),
     proveGoalTool(ctx),

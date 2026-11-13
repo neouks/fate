@@ -1,3 +1,4 @@
+import {roleToolRejection} from './planner-capabilities.js';
 /** Catalog identity and exposure policy. Execution implementations remain native pi/domain tools. */
 export const TOOL_POLICY_VERSION = 'lean-tools-v1';
 export const ACTIVE_ROLES = ['goals','planner','mainagent','worker','auto','pentest','reporter'] as const;
@@ -41,6 +42,7 @@ export function toolIdentity(name:string,kind='builtin') {
 
 /** Sub-capabilities keep their old switches after entrypoints are merged. */
 export async function assertToolBinding(db:import('../db/index.js').Database,role:string,key:string) {
+  const rejection=roleToolRejection(role,key);if(rejection)throw new Error(rejection);
   if(RETIRED_TOOLS.has(key))throw new Error(`工具 ${key} 已移除`);
   if(TOOL_ALIASES[key])await assertToolBinding(db,role,TOOL_ALIASES[key]!);
   const row=(await db.query('SELECT enabled,agents FROM tools WHERE key=$1',[key])).rows[0];

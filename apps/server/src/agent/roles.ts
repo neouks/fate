@@ -1,3 +1,4 @@
+import {roleToolRejection} from './planner-capabilities.js';
 import {withRuntimeResources,type RuntimeResourceLease} from '../engine/runtime-resources.js';
 import {ConstraintBoundary} from './constraint-boundary.js';
 import {PLANNER_TITLE_PROTOCOL} from './planner-title.js';
@@ -230,18 +231,14 @@ async function executionTools(ctx:ToolRunContext,cwd:string,input:{egressAddr?:s
 }
 /** Main and Planner use the same execution lifecycle boundary as Worker. */
 function roleExecutionGuard(ctx:ToolRunContext,extra?:ToolGuard):ToolGuard{
-  let probes=0;
   return async g=>{
+    const rejection=roleToolRejection(ctx.role,g.toolName);if(rejection)return {block:true,reason:rejection};
     await ctx.hooks.assertOwnership?.(ctx.db);
     const decision=await extra?.(g);if(decision?.block)return decision;
     if(GUARD_SKIP_TOOLS.has(g.toolName)||['read','read_tool_output','read_attachment','traffic_body','shell_read','shell_list','shell_close'].includes(g.toolName))return;
     const task=await ctx.db.tasks().getTask(ctx.taskID);
     if(!task||task.paused||task.queued||['done','failed','timeout','stopped'].includes(task.status))return {block:true,reason:'任务已暂停或结束，不能执行新操作'};
-    if(ctx.role==='planner'){
-      if(probes>=3)return {block:true,reason:'Planner 每轮最多三次开局探测；实际测试请派给 Worker'};
-      probes++;
-      if((await ctx.db.query("SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind IN ('fact','finding') AND payload ? 'from_intent' AND state='confirmed' LIMIT 1",[ctx.expID])).rowCount)return {block:true,reason:'Planner 开局探测已结束；实际测试请通过 add_intent 派给 Worker'};
-    }
+
   };
 }
 
@@ -470,8 +467,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
 
   const workDir = path.resolve(dataDir, "tasks", String(taskID));
   mkdirSync(workDir, { recursive: true });
-  const execution=await executionTools(ctx,workDir,input);
-  if(!input.terminalOnly)tools.push(...execution.tools);
+  // Planner never initializes terminal, custom executable or MCP capabilities.
   const plannerCounter = withUsageCounter(input.onActivity);
   let sessionEntries:()=>readonly import('@earendil-works/pi-coding-agent').SessionEntry[]=()=>[];
   let finalActivity:Extract<RunnerActivity,{kind:'assistant_message_end'}>|undefined;
@@ -480,7 +476,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     turnID:input.planningRoundID,
     contextLayout: CONTEXT_LAYOUT_VERSION,
     cwd: workDir,
-    extensionFactories:input.terminalOnly?[]:execution.extensions,
+    extensionFactories:[],
     projectMessages:messages=>projectPlannerReceipts(messages,sessionEntries(),sessionEntries),
     guard:async g=>{await active?.flush();return (await constraints.guard(g.toolName))??await executionGuard(g);},
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
@@ -502,7 +498,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db, "planner", agentEnv.skillsDir),
     signal: input.signal, ...plannerBudget,
-    toolAllowlist: ["read",...(!input.terminalOnly?["write","edit","bash","mcp__*",...execution.names]:[]), ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
+    toolAllowlist: ["read", ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     resumeSessionPath:active?.file??plannerSessionFile(dataDir,expID),
     canonicalSessionPath:plannerSessionFile(dataDir,expID),flushNativeSession:active?.flush,
     onSessionCompacted:async manager=>{await active?.rebase(manager,()=>syncPlannerHistory(db,taskID,expID,plannerSessionFile(dataDir,expID),input.signal));},
