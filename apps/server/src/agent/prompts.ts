@@ -1,3 +1,5 @@
+import {FINDING_PLANNER_GUIDANCE,FINDING_WRITE_GUIDANCE,findingRoleProtocol} from './finding-write-policy.js';
+import {migrateFindingWritePolicy} from './finding-prompt-migration.js';
 import {PLANNER_CAPABILITY_PROTOCOL} from './planner-capabilities.js';
 import {migratePlannerCapabilitiesPrompt} from './planner-prompt-migration.js';
 import {CONSTRAINT_PROTOCOL,GOALS_CONSTRAINT_RULES,renderConstraints} from './constraint-policy.js';
@@ -27,10 +29,12 @@ export const PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规�
 5. 一次 add_intent 最多四个独立方向。summary 简述价值和目的，asset_ids 给已读取的业务入口或资产范围；Worker 自选路径，不列尽接口、参数和请求步骤。同一方向的相关步骤保持一个意图，目标或机理独立才拆分。parent_ids 引用已读取的 fact/finding，初始方向可无依据；批量 intents 每项自带依据。contract 可选，仅补排除范围、工具限制或重要要求，不填逐项验收表。宿主记录引用版本；局部重叠参考 dedup.related_intent_ids 核对，不为避重叠而拆碎。
 
 开局证据不足也不得直接探测目标，先查重，再用 add_intent 将实测方向下发给 Worker。steer_work 纠偏、kill_work 终止，以回执为准；手工模式不自主规划。
+${FINDING_PLANNER_GUIDANCE}
 意图提交即入 frontier；简述判断、派单和等待原因后直接结束，不提交完成工具、不轮询等待 Worker。`;
 
 export const WORKER_PROMPT = `你是 Worker，在当前意图给定的资产范围、探索方向和约束内自主选择路径、方法和验证步骤，然后停止。意图不是逐接口执行脚本；受阻时如实说明原因，不转向无关方向。
 边发现边写回，不必等到结束：新资产用 insert_assets 登记；新的探索结论用 record_fact 直接写入探索图；亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。同一结论的相关观察合并保存，不按每次请求、接口或参数生成事实；独立结论分别写回。asset_ids 只列本结论实际涉及的资产，漏洞只列实际受影响资产，不继承整个意图范围。scope 用简短文字说明实际测试范围、未测部分和适用限制；observation_type 区分实测、推断、负面结果和未知。未测不能当作已否定，背景资产不能当作已验证目标。不编造证据。
+${FINDING_WRITE_GUIDANCE}
 按需 context_search/context_get 读取上下文；来源任务只读。发现的新资产可直接继续探索，中间文件写当前工作目录，不向其他 Agent 发消息。
 结束前补齐已识别但未写回的结果。summary 用一句通俗结论；细节与测试影响放 detail/evidence。最后简述结论、已保存的记录 ID、未完成原因及测试影响。无新增事实可以直接总结，不为结束而制造记录。`;
 
@@ -69,7 +73,7 @@ export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
   goals: '服从宿主初始化策略：新任务在同一会话先提约束和资产，再保存目标；旧任务遵守指定阶段边界。目标栏定义最终验收结果，描述不扩写目标。目标登记要引用目标或描述中的完整原句，并填该原句中的精确目标；不把子域扩大为根域。',
   reporter: REPORTER_SAVE_GUIDANCE,
 };
-export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。'); }
+export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+findingRoleProtocol(role)+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。'); }
 
 export const PLANNER_WRAPUP = '本轮预算将尽，不再查找新方向。保存已有意图和待办后简短总结；没有新工作可以等待。';
 export const WORKER_WRAPUP = '预算将尽，停止新探测。把已识别但尚未保存的新资产、事实和已验证漏洞分别用 insert_assets、record_fact、report_finding 写回；已经保存的不重复提交。最后简短总结关键结论、记录 ID 和未完成原因，无新增事实可以直接结束。';
@@ -96,7 +100,7 @@ export async function resolveRolePrompt(db: Database, role: string, fallback = b
   const legacy = !!stored && isLegacyPrompt(role, stored);
   const custom = !!stored.trim() && !legacy && stored !== fallback;
   return { template: stored.trim() ? stored : fallback, source: custom ? 'custom' : legacy ? 'legacy_default' : 'builtin',
-    version: custom || legacy ? `stored:${promptHash(stored)}` : role==='reporter' ? REPORTER_PROMPT_VERSION : PROMPT_VERSION, candidate: fallback };
+    version: custom || legacy ? `stored:${promptHash(stored)}` : role==='reporter' ? REPORTER_PROMPT_VERSION : ['planner','worker'].includes(role) ? 'finding-supplement-v1' : PROMPT_VERSION, candidate: fallback };
 }
 
 /** Retained template-only interface for compatibility and preview. */
@@ -110,7 +114,10 @@ export function composeRolePrompt(body: string, protocol: string): string {
 export async function systemRolePrompt(db: Database, role: string, vars: Record<string, string> = {}, terminalOnly = false, protocolOverride?: string): Promise<string> {
   const body = await rolePrompt(db, role, builtinPrompt(role) ?? '你是独立测试助手。遵循用户范围和约束，证据不足明确说明；未绑定任务时不得写探索图。', vars);
   const protocol = protocolOverride ?? (terminalOnly && role === 'planner' ? PLANNER_TASK_TIMEOUT_WRAPUP : hostProtocol(role));
-  return composeRolePrompt(body, role==='planner'&&!protocol.includes(PLANNER_CAPABILITY_PROTOCOL)?protocol+'\n'+PLANNER_CAPABILITY_PROTOCOL:protocol);
+  let effective=role==='planner'&&!protocol.includes(PLANNER_CAPABILITY_PROTOCOL)?protocol+'\n'+PLANNER_CAPABILITY_PROTOCOL:protocol;
+  const findingPolicy=findingRoleProtocol(role);
+  if(findingPolicy&&!effective.includes(findingPolicy))effective+='\n'+findingPolicy;
+  return composeRolePrompt(body,effective);
 }
 
 export function constraintBlock(constraints: { kind: string; text: string }[]): string {
@@ -158,6 +165,7 @@ export async function migrateBuiltinPrompts(db: Database): Promise<void> {
     await tx.platform().setSetting('pi_worker_direct_write_v1','done');
   });
   await retireWorkerTablePrompt(db,WORKER_PROMPT);
+  await migrateFindingWritePolicy(db,{planner:PLANNER_PROMPT,worker:WORKER_PROMPT});
 }
 
 const OLD_WORKER_WRAPUP = "预算将尽，停止新探测。现在用 record_fact/report_finding 汇总已有的最终观察，取得节点 ID 后立即 complete_intent 引用并发布；已有暂存稿可直接引用或修订。不能完成的条件用 partial/blocked 和剩余条件说明，没有事实就如实提交 blocked；不要等待验收全部完成才写回，也不要只写检查点或文字总结。";

@@ -1,3 +1,4 @@
+import {FINDING_WRITE_GUIDANCE,isPreviousFindingDescription} from './finding-write-policy.js';
 import {describeToolContract,recognizedHistoricalDescription} from './tool-description-policy.js';
 import {CONSTRAINT_TOOL_DESCRIPTION} from './constraint-policy.js';
 import { LEGACY_TOOL_DESCRIPTIONS } from './prompt-legacy.js';
@@ -16,7 +17,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   asset_search: '检索本任务及直接来源资产摘要。普通检索提供 DSL，untested=true 查无明确范围测试记录的资产，不代表从未测试；legacy_tested 提示历史范围待核实。用 next_offset 续页，详情用 asset_get。',
   asset_get: '按 ids 和字段组读取资产；identity/fingerprint 默认返回，dns/params/auth/extra 按需选择。field 使用 JSON Pointer；next 参数原样续读 Unicode 正文。',
   insert_assets: '边发现边用 assets 数组登记资产。按 Schema 填写各类型字段：record_value 必须为数组，endpoint 使用 url/method/params，HTTP service 使用 url 和指纹，app 使用 app_name。results/errors 逐项返回，成功即入图，探索结论用 record_fact。',
-  report_finding: '提交亲自验证且可复现的漏洞和真实证据，成功立即入图。asset_ids 只列实际受影响资产，缺省不继承意图范围；scope 说明已验证范围和限制。先 context_search 按 finding 查重；疑似结论用 record_fact。',
+  report_finding: '仅提交亲自验证且可复现的漏洞，疑似结论用 record_fact。asset_ids 只列实际受影响资产，scope 说明已测范围及限制；reproduction/traffic_refs 保存真实步骤和报文。'+FINDING_WRITE_GUIDANCE,
   context_search: '按新到旧检索节点及冷图原文，默认 fact/finding/intent；types 显式包含 activity 才查询 Worker 活动。q 是字面短语，不是语义搜索。按 asset_id 核对历史方向，has_more 时用 next_cursor 续页；命中的 read 可直接交给 context_get。来源任务只读。 Planner 可用 source=planner_session 检索本任务历史规划原文；历史不能代替实时图查询。',
   context_get: '按 items 读取引用；summary 索引、detail 详情、output 结果，field 选择字段。续读优先将返回的 next_item 原样放入 items；缺省 offset 会重读首页。正文只需 offset=next_offset；仅 parents/members 还需 cursor=page_cursor，读完本页再按 next_cursor 翻页。沿用 version，冲突重新检索。 Planner 可读本任务 session: 条目，field=/content 续读历史原文。',
   read_tool_output: '按返回引用与游标续读完整工具 JSON；未读取的内容不能当作已确认信息。',
@@ -36,9 +37,11 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_finding_retest_context: '分页读取本次漏洞复测的固定快照、证据和范围，仅限当前漏洞。',
   record_finding_retest_result: '保存复测结论及证据：实际复现才 reproduced，证据充分才 fixed，否则 inconclusive；宿主负责更新原漏洞状态。',
   record_conversation_fact: '向当前绑定任务保存有来源的新事实及真实证据，未绑定任务不能写入。',
-  report_conversation_finding: '向当前绑定任务提交已复现漏洞及证据，先查重；疑似问题记录为事实。',
+  report_conversation_finding: '向当前绑定任务提交已复现漏洞或补正；未绑定任务不能写入。'+FINDING_WRITE_GUIDANCE.replaceAll('report_finding','report_conversation_finding'),
 };
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
+  if(name==='report_finding'&&isPreviousFindingDescription(stored))stored=undefined;
+  if(name==='report_conversation_finding'&&stored==='绑定任务的 Pentest 原子提交有证据的漏洞')stored=undefined;
   stored=recognizedHistoricalDescription(name,stored);
   if(name==='set_constraints'&&stored==='保存用户明确的允许或禁止约束，写明具体目标。')return {description:CONSTRAINT_TOOL_DESCRIPTION,source:'builtin'};
   const priorPagedDefault = '按 items 批量读取引用。summary 只读索引，detail 读详情，output 读结果；field 选 JSON Pointer 字段。parents/members 每页最多 20 条；有 next_offset 时用 page_cursor 和 offset 读完本页，再用 next_cursor 翻页并重置 offset。沿用 version，冲突重新检索。';

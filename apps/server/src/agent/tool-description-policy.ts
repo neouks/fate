@@ -18,6 +18,7 @@ export function recognizedHistoricalDescription(name:string,stored:unknown):unkn
 /** These are built-in capability hints, not edits to the user's prompt or text. */
 export function roleToolDescription(name:string,resolved:{description:string;source:string},role:string):string {
   if (resolved.source !== 'builtin') return resolved.description;
+  if (name==='report_finding' && role==='pentest') return resolved.description.replaceAll('report_finding','report_conversation_finding');
   if (name === 'update_finding_report') return resolved.description + (role === 'reporter'
     ? ' ' + REPORTER_SAVE_GUIDANCE : ' 提交 report_sections 或兼容的非空 report。');
   let description = resolved.description;

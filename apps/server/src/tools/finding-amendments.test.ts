@@ -58,7 +58,7 @@ test('finding supplement, deduplication, version races, recovery and native pi p
   assert.equal(saved.writeback.coverage_eligible,false);
   const duplicate=await invoke({...base,asset_ids:[a]},'repeat-new-id');
   assert.equal(duplicate.duplicate,true);assert.equal(duplicate.finding_id,id);assert.equal(duplicate.changes_applied,false);
-  const similar=await invoke({...base,summary:base.summary+'，补充资产',asset_ids:[a]},'similar');
+  const similar=await invoke({...base,summary:base.summary+'，补充资产',evidence:'改写后的第二段本地证据，与原报洞不同',asset_ids:[a]},'similar');
   assert.equal(similar.code,'FINDING_DUPLICATE_REVIEW');assert.equal(similar.candidates[0].finding_id,id);
   assert.equal((await db.query('SELECT count(*) n FROM findings WHERE task_id=$1',[task])).rows[0]!.n,'1');
 
