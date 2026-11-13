@@ -164,9 +164,8 @@ export function registerCategoryRoutes(app: FastifyInstance): void {
       const task = await app.db.tasks().getTask(id);
       if (!task) return { ok: false, error: "任务不存在" };
       await engineNoop(app.engine.stop(id));
-      const counts = await app.db.exploration(task.exploration_id).executionCounts().catch(() => ({ running: 0, goals: 0, met: 0 }));
-      const status = counts.goals > 0 && counts.met >= counts.goals ? "done" : "failed";
-      await app.db.tasks().setTaskStatusGuarded(id, status);
+      const status = await app.db.tasks().finishManually(id);
+      if (!status) return { ok: false, error: "任务不存在" };
       return { ok: true, status };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

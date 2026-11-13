@@ -1946,6 +1946,23 @@ CREATE TABLE IF NOT EXISTS goals_bootstrap (
 -- Keep old policy defaults for historical/manual enrollment; new API creation opts in explicitly.
 ALTER TABLE goals_bootstrap ADD COLUMN IF NOT EXISTS pending_errors JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+-- Count the current goals. Explicit deletion withdraws a requirement, but
+-- unfinished initialization or an empty goal list cannot prove a stated goal.
+CREATE OR REPLACE FUNCTION task_goal_progress(p_exp BIGINT)
+RETURNS TABLE(total BIGINT, met BIGINT, ready BOOLEAN) LANGUAGE sql STABLE AS $$
+ WITH current_task AS (
+   SELECT t.goal,b.phase FROM tasks t LEFT JOIN goals_bootstrap b ON b.task_id=t.id
+   WHERE t.exploration_id=p_exp AND t.deleted_at IS NULL
+ ), counts AS (
+   SELECT count(*) total,count(*) FILTER(WHERE state='met') met
+   FROM exploration_nodes WHERE exploration_id=p_exp AND kind='goal'
+ )
+ SELECT counts.total,counts.met,
+   NOT EXISTS(SELECT 1 FROM current_task WHERE phase<>'completed' OR
+     (counts.total=0 AND goal ~ '[^[:space:]]'))
+ FROM counts;
+$$;
+
 -- Planning capacity is independent of Worker execution capacity.
 CREATE TABLE IF NOT EXISTS engine_planner_slots (
  task_id BIGINT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
