@@ -6,6 +6,7 @@ import {NativeActivityRecovery} from './native-activity-recovery.js';
 import {pendingPlannerWakeups,plannerWakeupReady} from './planner-wakeup.js';
 import {goalsBootstrap} from '../db/goals-bootstrap.js';
 import {blackboardRevision,markWorkerReleased,recoverWorkerSettlements} from '../db/worker-drafts.js';
+import {WorkerReleaseQueue} from './worker-release-queue.js';
 import {LiveStreamWriter,runnerActivityMetadata} from './live-stream.js';
 import {recoverExpiredRuntimes} from './runtime-config.js';
 import {workerStopReceipt,failureReason,type WorkerStopReason} from './worker-outcome.js';
@@ -131,6 +132,7 @@ export class Engine {
   private loading = new Map<number, Promise<TaskRuntime>>();
   private starting = new Map<number, Promise<void>>();
   private coordinator: Coordinator;
+  private workerReleases: WorkerReleaseQueue;
   private graphMaintenance: GraphMaintenance;
   private scheduler?: ReturnType<typeof setInterval>;
   private pumping = false;
@@ -143,11 +145,11 @@ export class Engine {
   private plannerPumping = false;
 
   runtimeMetrics(){return {tasks:this.tasks.size,worker_executions:[...this.tasks.values()].reduce((n,r)=>n+r.executions.size,0),
-    planners:[...this.tasks.values()].filter(r=>r.plannerReserved).length,planner_queue:this.plannerQueue.size,claim_dispatchers:Number(this.dispatching),graph_maintenance:this.graphMaintenance.metrics(),activity_outbox:this.activityOutbox.metrics(),native_activity_recovery:this.nativeActivityRecovery.metrics(),runtime_resources:runtimeResourceMetrics(),...this.coordinator.metrics()};}
+    planners:[...this.tasks.values()].filter(r=>r.plannerReserved).length,planner_queue:this.plannerQueue.size,pending_worker_releases:this.workerReleases.size,claim_dispatchers:Number(this.dispatching),graph_maintenance:this.graphMaintenance.metrics(),activity_outbox:this.activityOutbox.metrics(),native_activity_recovery:this.nativeActivityRecovery.metrics(),runtime_resources:runtimeResourceMetrics(),...this.coordinator.metrics()};}
   private ensureDispatchWatchdog(){
     if(this.dispatchWatchdog)return;
     this.dispatchWatchdog=setInterval(()=>{
-      if(![...this.tasks.values()].some(rt=>rt.started&&!rt.stopped)&&!this.plannerQueue.size){clearInterval(this.dispatchWatchdog);this.dispatchWatchdog=undefined;return;}
+      if(![...this.tasks.values()].some(rt=>rt.started&&!rt.stopped)&&!this.plannerQueue.size&&!this.workerReleases.size){clearInterval(this.dispatchWatchdog);this.dispatchWatchdog=undefined;return;}
       this.scheduleDispatch();
     },1000);this.dispatchWatchdog.unref();
   }
@@ -232,6 +234,16 @@ export class Engine {
     this.nativeActivityRecovery=new NativeActivityRecovery(db,dataDir);
     this.nativeActivityRecovery.start();
     this.coordinator = new Coordinator(db,cfg.workers);
+    this.workerReleases = new WorkerReleaseQueue(async item => {
+      await this.coordinator.releaseSlot(item.slot);
+      await markWorkerReleased(this.db,item.expID,item.intentID);
+      await this.publishFeedback(item.taskID);
+      this.notify(item.taskID);
+    }, (item,error) => {
+      this.ensureDispatchWatchdog();
+      this.emitActivity(item.taskID,{nodeID:item.intentID,worker:'system',kind:'status',isError:true,
+        summary:`Worker 已退出，释放收尾暂时失败，将自动重试；不会重跑意图：${String(error)}`});
+    });
     this.graphMaintenance=new GraphMaintenance(db,taskID=>{const rt=this.tasks.get(taskID);return !!rt?.started&&!rt.stopped&&!rt.paused&&!rt.settling;});
     this.conversations=new ConversationService(db,modelResolver,dataDir,this,egressAddr);
     this.triggerScheduler=new TriggerScheduler(db);
@@ -645,6 +657,7 @@ export class Engine {
     if(this.dispatching||this.closing)return;this.dispatching=true;
     let claimed=false;
     try{
+      await this.workerReleases.flush();
       const tasks=[...this.tasks.values()].filter(rt=>rt.ready&&rt.started&&!rt.stopped&&!rt.paused&&!rt.settling);
       const limit=await this.coordinator.workers();
       const offset=tasks.length?this.dispatchCursor++%tasks.length:0;
@@ -674,9 +687,7 @@ export class Engine {
               await this.runOneIntent(rt,claim.intent,name);
             }finally{
               rt.workerNames.delete(name);
-              await this.coordinator.releaseSlot(claim.slot);
-              await markWorkerReleased(this.db,rt.expID,claim.intent.id);
-              await this.publishFeedback(rt.taskID);this.notify(rt.taskID);
+              await this.workerReleases.finish({slot:claim.slot,taskID:rt.taskID,expID:rt.expID,intentID:claim.intent.id});
             }
           })().catch(error=>{this.emitActivity(rt.taskID,{worker:name,kind:'result',isError:true,summary:String(error)});});
           this.trackExecution(rt,execution);
@@ -991,6 +1002,7 @@ export class Engine {
     await this.graphMaintenance.close();
     await this.conversations.shutdown();
     await Promise.all([...this.tasks.keys()].map((id) => this.stop(id,'shutdown')));
+    await this.workerReleases.flush(true);
     await this.activityOutbox.close();
     await this.nativeActivityRecovery.close();
   }
@@ -1095,7 +1107,7 @@ export class Engine {
       await db.exploration(rt.expID).appendActivity({node_id:intentID,worker:'system',kind:'text',summary:'通过按钮恢复当前 Worker',metadata:{event_type:'lifecycle',status:'resume_started',source:'user',command_id:commandID}});
       return true;
     });
-    if(inserted)this.trackExecution(rt,this.runOneIntent(rt,{id:intentID},name).catch(error=>{this.emitActivity(rt.taskID,{nodeID:intentID,worker:name,kind:'result',isError:true,summary:String(error)});}).finally(async()=>{await this.coordinator.releaseSlot(slot!);await markWorkerReleased(this.db,rt.expID,intentID);await this.publishFeedback(rt.taskID);this.notify(rt.taskID);}));
+    if(inserted)this.trackExecution(rt,this.runOneIntent(rt,{id:intentID},name).catch(error=>{this.emitActivity(rt.taskID,{nodeID:intentID,worker:name,kind:'result',isError:true,summary:String(error)});}).finally(()=>this.workerReleases.finish({slot:slot!,taskID:rt.taskID,expID:rt.expID,intentID})));
     return inserted;
   }
 
