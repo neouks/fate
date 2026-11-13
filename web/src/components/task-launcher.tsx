@@ -5,7 +5,7 @@ import { PaperclipIcon, SlidersHorizontalIcon, ChevronRightIcon, PlusIcon } from
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { Task, TaskCategory, Company, LLMProfile, ChatAttachment } from "@/lib/types";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -529,6 +529,16 @@ export function TaskLauncher() {
     }
   }
 
+  function handleFormKeys(event: React.KeyboardEvent) {
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.key !== "Enter") return;
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      void createTask();
+    } else if (event.target instanceof HTMLInputElement) {
+      event.preventDefault();
+    }
+  }
+
   const summaries = [
     ...(sourceTaskIDs.length ? [`关联任务 ${sourceTaskIDs.length}`] : []),
     ...(companyIDs.length ? [`企业范围 ${companyIDs.length}`] : []),
@@ -546,126 +556,37 @@ export function TaskLauncher() {
           <p>描述测试对象与背景，接下来确认目标和执行配置。</p>
         </header>
         <form
-          className="task-launcher-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void createTask();
-          }}
-          onKeyDown={(e) => {
-            if (e.defaultPrevented || e.nativeEvent.isComposing) return;
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault();
-              void createTask();
-            } else if (e.key === "Enter" && e.target instanceof HTMLInputElement) e.preventDefault();
-          }}
+          aria-label="新建任务"
+          onSubmit={(event) => { event.preventDefault(); void createTask(); }}
+          onKeyDown={handleFormKeys}
         >
-          <fieldset disabled={creating} className="task-launcher-fields">
-            <div className="task-launcher-card">
-              <FieldGroup>
-                <Field className="task-launcher-field">
-                  <FieldLabel htmlFor="description" className="sr-only">
-                    测试对象、背景与约束
-                  </FieldLabel>
-                  <Textarea
-                    id="description"
-                    required
-                    value={description}
-                    disabled={creating}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="描述你希望完成的任务…"
-                  />
-                </Field>
-              </FieldGroup>
-              <div className="task-launcher-toolbar">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  title="上传附件"
-                  aria-label="上传附件"
-                  disabled={creating || uploading}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  {uploading ? <Spinner /> : <PaperclipIcon />}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  title="任务设置"
-                  aria-label="任务设置"
-                  disabled={creating}
-                  onClick={() => {
-                    settingTarget.current = "source-tasks";
-                    setOpen(true);
-                  }}
-                >
-                  <SlidersHorizontalIcon />
-                </Button>
-                <span>支持上传测试资料</span>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  hidden
-                  onChange={(e) => void pickFiles(e.target.files)}
-                />
-              </div>
-            </div>
-            {uploadError && (
-              <p role="alert" className="text-sm text-destructive">
-                {uploadError}（{uploadNames.join("、")}），请重新选择文件上传。
-              </p>
-            )}
-            {uploading && (
-              <p role="status" className="text-sm text-muted-foreground">
-                正在上传：{uploadNames.join("、")}…
-              </p>
-            )}
-            {attachments.length > 0 && (
-              <ul aria-label="已上传附件" className="flex flex-wrap gap-2">
-                {attachments.map((a, i) => (
-                  <li key={`${a.path}:${i}`} className="max-w-full break-all rounded-md border px-2 py-1 text-xs">
-                    {a.name} · {fmtBytes(a.size)}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {summaries.length > 0 && (
-              <div aria-label="已选任务配置" className="flex flex-wrap gap-2">
-                {summaries.map((s) => (
-                  <Button
-                    key={s}
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-auto max-w-full whitespace-normal break-all"
-                    onClick={() => {
-                      settingTarget.current = s.startsWith("关联")
-                        ? "source-tasks"
-                        : s.startsWith("企业")
-                          ? "task-companies"
-                          : s.startsWith("模型")
-                            ? "llm-profiles"
-                            : "advanced-settings";
-                      setOpen(true);
-                    }}
-                  >
-                    {s}
-                  </Button>
-                ))}
-              </div>
-            )}
-
-            <Card className="task-launcher-confirmation">
-              <CardHeader>
-                <CardTitle>
-                  <h2>确认任务目标</h2>
-                </CardTitle>
-                <CardDescription>确认后创建任务；高级选项沿用当前系统默认值。</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup>
+          <fieldset disabled={creating} className="min-w-0">
+            <Card className="task-launcher-card gap-0 py-0">
+              <CardContent className="flex flex-col gap-4 py-(--card-spacing)">
+                <FieldGroup className="gap-4">
+                  <Field>
+                    <FieldLabel htmlFor="description">描述（必填）</FieldLabel>
+                    <Textarea
+                      id="description"
+                      className="min-h-32 resize-y"
+                      required
+                      value={description}
+                      onChange={(event) => setDescription(event.target.value)}
+                      placeholder="描述你希望完成的任务…"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="goal">目标（必填）</FieldLabel>
+                    <Textarea
+                      id="goal"
+                      className="min-h-24 resize-y"
+                      required
+                      value={goal}
+                      disabled={creating}
+                      onChange={(e) => setGoal(e.target.value)}
+                      placeholder="描述期望达成的目标，例如：确认是否存在可复现的高风险权限问题，并保存证据与修复建议。"
+                    />
+                  </Field>
                   <Field>
                     <FieldLabel htmlFor="name">名称（可选）</FieldLabel>
                     <Input
@@ -699,32 +620,100 @@ export function TaskLauncher() {
                     )}
                     <FieldDescription>可选，单个分类；用于任务列表筛选和归档，不影响 Agent 执行。</FieldDescription>
                   </Field>
-                  <Field>
-                    <FieldLabel htmlFor="goal">目标（必填）</FieldLabel>
-                    <Textarea
-                      id="goal"
-                      required
-                      value={goal}
-                      disabled={creating}
-                      onChange={(e) => setGoal(e.target.value)}
-                      placeholder="描述期望达成的目标，例如：确认是否存在可复现的高风险权限问题，并保存证据与修复建议。"
-                    />
-                  </Field>
                 </FieldGroup>
+                {uploadError && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {uploadError}（{uploadNames.join("、")}），请重新选择文件上传。
+                  </p>
+                )}
+                {uploading && (
+                  <p role="status" className="text-sm text-muted-foreground">
+                    正在上传：{uploadNames.join("、")}…
+                  </p>
+                )}
+                {attachments.length > 0 && (
+                  <ul aria-label="已上传附件" className="flex flex-wrap gap-2">
+                    {attachments.map((a, i) => (
+                      <li key={`${a.path}:${i}`} className="max-w-full break-all rounded-md border px-2 py-1 text-xs">
+                        {a.name} · {fmtBytes(a.size)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {summaries.length > 0 && (
+                  <div aria-label="已选任务配置" className="flex flex-wrap gap-2">
+                    {summaries.map((s) => (
+                      <Button
+                        key={s}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-auto max-w-full whitespace-normal break-all"
+                        onClick={() => {
+                          settingTarget.current = s.startsWith("关联")
+                            ? "source-tasks"
+                            : s.startsWith("企业")
+                              ? "task-companies"
+                              : s.startsWith("模型")
+                                ? "llm-profiles"
+                                : "advanced-settings";
+                          setOpen(true);
+                        }}
+                      >
+                        {s}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {submitError && (
+                  <p role="alert" className="text-sm text-destructive">{submitError}</p>
+                )}
               </CardContent>
-              <CardFooter className="flex-wrap justify-between gap-3">
-                <span className="text-sm text-muted-foreground">Ctrl / ⌘ + Enter 创建任务</span>
-                <Button type="submit" disabled={!description.trim() || !goal.trim() || uploading || creating}>
-                  {creating && <Spinner data-icon="inline-start" />}
-                  {creating ? "正在创建…" : "创建任务"}
-                </Button>
+              <CardFooter className="flex-wrap justify-between gap-x-4 gap-y-2">
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    title="上传附件"
+                    aria-label="上传附件"
+                    disabled={creating || uploading}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    {uploading ? <Spinner /> : <PaperclipIcon />}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    title="任务设置"
+                    aria-label="任务设置"
+                    disabled={creating}
+                    onClick={() => {
+                      settingTarget.current = "source-tasks";
+                      setOpen(true);
+                    }}
+                  >
+                    <SlidersHorizontalIcon />
+                  </Button>
+                  <span className="text-sm text-muted-foreground">支持上传测试资料</span>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={(e) => void pickFiles(e.target.files)}
+                  />
+                </div>
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+                  <span className="text-sm text-muted-foreground">Ctrl / ⌘ + Enter 创建任务</span>
+                  <Button type="submit" disabled={!description.trim() || !goal.trim() || uploading || creating}>
+                    {creating && <Spinner data-icon="inline-start" />}
+                    {creating ? "正在创建…" : "创建任务"}
+                  </Button>
+                </div>
               </CardFooter>
             </Card>
-            {submitError && (
-              <p role="alert" className="text-sm text-destructive">
-                {submitError}
-              </p>
-            )}
           </fieldset>
         </form>
         <TaskTemplateLibrary

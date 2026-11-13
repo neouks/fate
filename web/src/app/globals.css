@@ -364,6 +364,11 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .task-composer .composer-send { border-radius: 999px; width: 36px; height: 36px; }
 .task-composer [data-slot="input-group-addon"] { padding: 2px 0; }
 @media (max-width:639px) { .task-main-conversation [data-slot="message-scroller-content"] { padding: 20px 16px; gap: 24px; } .task-composer { padding: 8px 10px 12px; } .task-composer textarea { min-height: 76px; } }
+.task-composer.chat-composer [data-slot="input-group"] { border-color: var(--border); opacity: 1; }
+.task-composer.chat-composer [data-slot="input-group"]:has(textarea:focus-visible) { border-color: var(--ring); box-shadow: 0 0 0 1px color-mix(in oklch,var(--ring) 18%,transparent); }
+.task-composer.chat-composer textarea { min-height: 64px; padding: 8px 6px; }
+.planner-report-section th, .planner-report-section td { white-space: nowrap; }
+.planner-report-section[data-wrap-summary="true"] td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
 .task-findings { min-height: 100%; }
 /* Sidebar reference rhythm: 30px rows, 14/20px text, 16px line icons.
    Scoped to the app navigation; settings and other Sidebar consumers are unaffected. */
@@ -597,26 +602,12 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .markdown-code-block .hljs-number, .markdown-code-block .hljs-literal, .markdown-code-block .hljs-title { color: var(--chart-3); }
 .markdown-code-block .hljs-comment { color: var(--muted-foreground); font-style: italic; }
 
-/* Task launcher: description and always-visible goal confirmation. */
-.task-launcher { min-height: 100%; padding: clamp(32px,8vh,88px) 24px 48px; background: color-mix(in oklch,var(--muted) 48%,var(--background)); }
-.task-launcher-inner { width: 100%; max-width: 960px; margin-inline: auto; display: flex; flex-direction: column; gap: 32px; }
+/* Task launcher form and template library. */
+.task-launcher { min-height: 100%; padding: clamp(32px,5vh,64px) clamp(24px,4vw,56px) 48px; background: color-mix(in oklch,var(--muted) 48%,var(--background)); }
+.task-launcher-inner { width: 100%; max-width: 1120px; margin-inline: auto; display: flex; flex-direction: column; gap: 36px; }
 .task-launcher header { text-align: center; margin-bottom: 4px; }
-.task-launcher h1 { font-size: 28px; font-weight: 600; line-height: 1.4; letter-spacing: -.025em; }
+.task-launcher h1 { font-size: 32px; font-weight: 600; line-height: 1.4; letter-spacing: -.025em; }
 .task-launcher header p { margin-top: 12px; color: var(--muted-foreground); font-size: var(--text-base); }
-.task-launcher-form, .task-launcher-fields { min-width: 0; display: flex; flex-direction: column; gap: 28px; }
-.task-launcher-card { min-width: 0; border: 1px solid var(--border); border-radius: 24px; background: var(--card); box-shadow: 0 12px 36px color-mix(in oklch,var(--foreground) 5%,transparent); overflow: hidden; }
-.task-launcher-field { padding: 22px 24px 14px; }
-.task-launcher-field textarea { min-height: 150px; max-height: 360px; resize: vertical; border: 0; border-radius: 4px; padding: 4px 0; box-shadow: none; background: transparent; font-size: var(--text-base); line-height: 1.8; }
-.task-launcher-field textarea:focus-visible { box-shadow: none; outline: none; }
-.task-launcher-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 16px 14px; color: var(--muted-foreground); }
-.task-launcher-toolbar span { font-size: var(--text-sm); margin-left: 4px; }
-.task-launcher-confirmation { --card-spacing: 24px; }
-.task-launcher-confirmation textarea { min-height: 110px; max-height: 360px; resize: vertical; line-height: 1.8; }
-@media (max-width:640px) { .task-launcher { padding: 32px 16px; } .task-launcher h1 { font-size: 22px; } .task-launcher-field { padding-inline: 18px; } .task-launcher-toolbar { padding-inline: 12px; } .task-launcher-confirmation { --card-spacing: 18px; } .task-launcher-inner, .task-launcher-fields { gap: 24px; } }
-
-.planner-report-section th, .planner-report-section td { white-space: nowrap; }
-.planner-report-section[data-wrap-summary="true"] td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
-
-.task-composer.chat-composer [data-slot="input-group"] { border-color: var(--border); opacity: 1; }
-.task-composer.chat-composer [data-slot="input-group"]:has(textarea:focus-visible) { border-color: var(--ring); box-shadow: 0 0 0 1px color-mix(in oklch,var(--ring) 18%,transparent); }
-.task-composer.chat-composer textarea { min-height: 64px; padding: 8px 6px; }
+.task-launcher-card { --card-spacing: 24px; min-width: 0; border-radius: 24px; box-shadow: 0 12px 36px color-mix(in oklch,var(--foreground) 5%,transparent); }
+.task-launcher-card textarea { max-height: 360px; }
+@media (max-width:640px) { .task-launcher { padding: 32px 16px; } .task-launcher h1 { font-size: 22px; } .task-launcher-card { --card-spacing: 18px; } .task-launcher-inner { gap: 24px; } }
