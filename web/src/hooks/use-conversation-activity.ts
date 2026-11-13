@@ -16,13 +16,14 @@ export function useConversationActivity(id:number|null){
   const [error,setError]=React.useState('');
   const [hasMore,setHasMore]=React.useState(false);
   const [loading,setLoading]=React.useState(false);
+  const [historyFailed,setHistoryFailed]=React.useState(false);
+  const [historyAttempt,setHistoryAttempt]=React.useState(0);
   const generation=React.useRef(0);
   const currentID=React.useRef(id);currentID.current=id;
   React.useEffect(()=>{
     const token=++generation.current;let alive=true;let transport:ReturnType<typeof openActivityStream>|undefined;
-    setScope(id);setRecords([]);setStreams([]);setStatus('idle');setConnected(false);setError('');setHasMore(false);
+    setScope(id);setRecords([]);setStreams([]);setStatus('idle');setConnected(false);setError('');setHasMore(false);setHistoryFailed(false);setLoading(id!==null);
     if(!id)return;
-    setLoading(true);
     void api.conversationHistory(id).then(history=>{
       if(!alive)return;
       setRecords(rows=>mergeConversationActivities(history.items,rows));setHasMore(history.hasMore);
@@ -35,9 +36,9 @@ export function useConversationActivity(id:number|null){
       es.addEventListener('run_status',e=>{if(alive){const data=JSON.parse((e as MessageEvent).data);setStatus(data.status);if(data.error)setError(data.error);}});
       es.addEventListener('access_revoked',()=>{if(alive){setRecords([]);setStreams([]);setError('会话已删除或当前授权已撤销');setStatus('idle');transport?.close();}});
       },value=>{if(alive)setConnected(value);});
-    }).catch(e=>{if(alive)setError(e.message);}).finally(()=>{if(alive&&generation.current===token)setLoading(false);});
+    }).catch(e=>{if(alive){setError(e.message);setHistoryFailed(true);}}).finally(()=>{if(alive&&generation.current===token)setLoading(false);});
     return()=>{alive=false;transport?.close();};
-  },[id]);
+  },[id,historyAttempt]);
   const loadEarlier=React.useCallback(async(viewport?:HTMLElement|null)=>{
     if(!id||loading||!hasMore)return;
     const restore=preserveTranscriptPosition(viewport??null);
@@ -48,6 +49,7 @@ export function useConversationActivity(id:number|null){
   },[id,loading,hasMore,records]);
   const sameScope=scope===id;
   return {records:sameScope?records:[],items:sameScope?withLiveStreams(records,streams):[],status:sameScope?status:'idle',setStatus:(value:string)=>{if(currentID.current===id)setStatus(value);},connected:sameScope&&connected,error:sameScope?error:'',hasMore:sameScope&&hasMore,loading:!sameScope||loading,loadEarlier,
+    historyFailed:sameScope&&historyFailed,retryHistory:()=>setHistoryAttempt(attempt=>attempt+1),
     add:(a:Activity)=>{if(currentID.current===id)setRecords(rows=>mergeConversationActivities(rows,[a]));},
     removePending:(requestID:string)=>{if(currentID.current===id)setRecords(rows=>rows.filter(a=>!(a.seq<0&&a.turn_id===requestID)));},
     reconcile:(items:Activity[])=>{if(currentID.current===id)setRecords(rows=>mergeConversationActivities(rows,items));},

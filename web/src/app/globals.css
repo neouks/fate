@@ -616,3 +616,7 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 
 .planner-report-section th, .planner-report-section td { white-space: nowrap; }
 .planner-report-section[data-wrap-summary="true"] td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
+
+.task-composer.chat-composer [data-slot="input-group"] { border-color: var(--border); opacity: 1; }
+.task-composer.chat-composer [data-slot="input-group"]:has(textarea:focus-visible) { border-color: var(--ring); box-shadow: 0 0 0 1px color-mix(in oklch,var(--ring) 18%,transparent); }
+.task-composer.chat-composer textarea { min-height: 64px; padding: 8px 6px; }
