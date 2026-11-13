@@ -1553,7 +1553,7 @@ export interface TaskFileCleanupPreview { snapshot:string|null; count:number; by
 export interface TaskFileCleanupResult { deleted:number; deleted_bytes:number; changed:number; missing:number; protected:number; remaining:number; busy:number }
 export interface EvidenceContentPage { content:string; offset:number; next_offset:number; total:number; truncated:boolean; binary:boolean; encoding:'base64'|'utf8' }
 
-export interface FindingStep {id:string;action:string;request:string;response:string;expected:string;proves:string;traffic_id?:string;source?:"evidence";source_ref?:string;verified?:boolean;truncated?:boolean}
+export interface FindingStep {id:string;action:string;request:string;response:string;expected:string;proves:string;traffic_id?:string;source?:"evidence";source_ref?:string;verified?:boolean;truncated?:boolean;packet_note?:string}
 export interface FindingReproduction {entry_point:string;prerequisites:string[];steps:FindingStep[];provenance:string}
 export interface FindingReportSections {description:string;impact:string[];remediation:string[];discovery?:{vulnerability?:string;asset?:string}}
 export interface FindingStepImage {id:string;step_id?:string|null;caption:string;mime:string;position:number}
