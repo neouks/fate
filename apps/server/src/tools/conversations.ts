@@ -1,4 +1,4 @@
-import {archiveReport,prepareReproduction,attachStepTraffic,assembleReport,reproductionSchema} from '../evidence/reproduction.js';
+import {archiveReport,prepareReproduction,attachStepTraffic,assembleReport,reproductionSchema,expandTrafficPackets} from '../evidence/reproduction.js';
 import {reportSections,reportSectionsSchema} from '../evidence/report-sections.js';
 import {requireTaskGoal} from "../agent/task-goal.js";
 import type {ToolDefinition} from '@earendil-works/pi-coding-agent';
@@ -34,7 +34,7 @@ export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'a
      const read=prior&&prior.evidence===Number(f.evidence_version)&&prior.revision===Number(f.report_revision)?prior:{evidence:Number(f.evidence_version),revision:Number(f.report_revision),ranges:[] as Array<[number,number]>,total:body.length,complete:false};
      read.ranges.push([Math.min(off,body.length),end]);read.ranges.sort((x,y)=>x[0]-y[0]);let covered=0;for(const [start,stop] of read.ranges){if(start>covered)break;covered=Math.max(covered,stop);}read.complete=covered>=body.length;reads.set(Number(f.id),read);
      return {finding_id:Number(f.id),evidence_version:Number(f.evidence_version),report_revision:Number(f.report_revision),read_complete:read.complete,content:body.slice(off,off+1500).join(''),next_offset:off+1500<body.length?off+1500:null,evidence:await findingEvidence(c.db,a.finding_id)};
-    }},ctx) as never,domainTool<{finding_id:number;evidence_version:number;report?:string;report_revision?:number;report_sections?:unknown;reproduction?:unknown}>({name:'update_finding_report',transactional:false,description:'先读完漏洞证据，再带版本保存报告。',parameters:{
+    }},ctx) as never,domainTool<{finding_id:number;evidence_version:number;report?:string;report_revision?:number;report_sections?:unknown;reproduction?:unknown}>({name:'update_finding_report',transactional:false,description:'先读完漏洞证据，再带版本保存精简自然语言报告。复现 HTTP 请求和响应引用完整协议报文，优先用真实 traffic_id 展开 Header 和 Body；缺失说明，不补造。',parameters:{
       type:'object',
       properties:{
         finding_id:{type:'integer',minimum:1},
@@ -59,7 +59,7 @@ export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'a
      if(!f||Number(f.evidence_version)!==a.evidence_version||Number(f.report_revision)!==seen.revision||
         (a.report_revision!==undefined&&a.report_revision!==seen.revision)||seen.evidence!==a.evidence_version)throw new Error('证据或报告版本已变化，请重新读取');
      await archiveReport(c.db,f);
-     const repro=a.reproduction===undefined?(f.reproduction as import('../evidence/reproduction.js').Reproduction|null):await prepareReproduction(c.db,a.reproduction,{taskID:Number(f.task_id),evidence:String(f.evidence),findingNodeID:Number(f.node_id)},true);
+     const repro=a.reproduction===undefined?await expandTrafficPackets(c.db,structuredClone(f.reproduction) as import('../evidence/reproduction.js').Reproduction|null,Number(f.task_id)):await prepareReproduction(c.db,a.reproduction,{taskID:Number(f.task_id),evidence:String(f.evidence),findingNodeID:Number(f.node_id)},true);
      if(a.reproduction!==undefined)await attachStepTraffic(c.db,a.finding_id,Number(f.task_id),repro);
      const version=Number((await c.db.query('SELECT evidence_version FROM findings WHERE id=$1',[a.finding_id])).rows[0]!.evidence_version);
      const report=sections?assembleReport({...f,report_sections:sections,reproduction:repro,report_evidence_version:version,evidence_version:version}):a.report!;

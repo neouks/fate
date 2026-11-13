@@ -6,7 +6,7 @@ import {readBlob} from './blobs.js';
 import {authorizeEvidence} from './authorization.js';
 import {bindEvidence} from './store.js';
 import {DISCOVERY_LABELS,type ReportSections} from './report-sections.js';
-export interface ReproStep {id:string;action:string;request:string;response:string;expected:string;proves:string;traffic_id?:string;source?:'evidence';source_ref?:string;verified?:boolean;truncated?:boolean;}
+export interface ReproStep {id:string;action:string;request:string;response:string;expected:string;proves:string;traffic_id?:string;source?:'evidence';source_ref?:string;verified?:boolean;truncated?:boolean;packet_note?:string;}
 export interface Reproduction {entry_point:string;prerequisites:string[];steps:ReproStep[];provenance:string;}
 const invalid=(m:string)=>Object.assign(new Error(m),{statusCode:400});
 const text=(v:unknown)=>typeof v==='string'?v:'';
@@ -32,7 +32,7 @@ export function normalizeReproduction(value:unknown):Reproduction|null{
  if(v.prerequisites!==undefined&&(!Array.isArray(v.prerequisites)||v.prerequisites.some(x=>typeof x!=='string')))throw invalid('prerequisites 必须为字符串数组');
  return {entry_point:text(v.entry_point),prerequisites:(v.prerequisites??[]) as string[],steps,provenance:text(v.provenance)};
 }
-export const reproductionSchema={type:'object',properties:{entry_point:{type:'string'},prerequisites:{type:'array',items:{type:'string'}},provenance:{type:'string'},steps:{type:'array',maxItems:100,items:{type:'object',properties:{id:{type:'string'},action:{type:'string',description:'自然语言说明做了什么'},request:{type:'string',description:'真实 HTTP 请求或执行命令原文'},response:{type:'string',description:'真实响应或命令输出原文；缺失留空'},expected:{type:'string'},proves:{type:'string',description:'真实结果证明了什么'},traffic_id:{type:'string'},source:{type:'string',enum:['evidence']},source_ref:{type:'string',description:'node:<id>、activity:<id> 或 tool-output:<uuid>，摘录必须逐字匹配来源'},truncated:{type:'boolean'}},required:['action','request','response','proves']}}},required:['steps']};
+export const reproductionSchema={type:'object',properties:{entry_point:{type:'string'},prerequisites:{type:'array',items:{type:'string'}},provenance:{type:'string'},steps:{type:'array',maxItems:100,items:{type:'object',properties:{id:{type:'string'},action:{type:'string',description:'自然语言说明做了什么'},request:{type:'string',description:'HTTP 请求原文：完整请求行、全部 Header、空行和完整 Body；优先填真实 traffic_id 由平台展开。非 HTTP 操作保留真实命令，不编造报文'},response:{type:'string',description:'HTTP 响应原文：完整状态行、全部 Header、空行和完整 Body；不只写 JSON 或关键片段。证据缺失留空并说明；非 HTTP 操作保留真实输出'},expected:{type:'string'},proves:{type:'string',description:'真实结果证明了什么'},traffic_id:{type:'string',description:'当前任务真实流量 ID；平台展开已保存的 Header 和 Body，无需模型重复抄写'},source:{type:'string',enum:['evidence']},source_ref:{type:'string',description:'node:<id>、activity:<id> 或 tool-output:<uuid>，摘录必须逐字匹配来源'},truncated:{type:'boolean'}},required:['action','request','response','proves']}}},required:['steps']};
 function target(request:string,entry:string){
  const url=request.match(/https?:\/\/[^\s'"<>]+/)?.[0]??entry.match(/https?:\/\/[^\s'"<>]+/)?.[0];
  if(!url)return;
@@ -44,7 +44,7 @@ export async function prepareReproduction(db:Database,value:unknown,owner:{taskI
  const intentID=owner.intentID??(owner.findingNodeID?Number((await db.query("SELECT payload->>'from_intent' AS intent FROM exploration_nodes WHERE id=$1",[owner.findingNodeID])).rows[0]?.intent)||undefined:undefined);
  const start=owner.since??(intentID?new Date(String((await db.query('SELECT created_at FROM exploration_nodes WHERE id=$1',[intentID])).rows[0]?.created_at)):undefined);
  for(const st of repro.steps){
-  if(st.source==='evidence'||st.source_ref){
+  if(!st.traffic_id&&(st.source==='evidence'||st.source_ref)){
    const original=await stepSource(db,owner,st);
    if((st.request&&!original.includes(st.request))||(st.response&&!original.includes(st.response)))throw invalid('步骤摘录不是原始证据内容');st.verified=true;if(!st.traffic_id)continue;
   }
@@ -58,16 +58,57 @@ export async function prepareReproduction(db:Database,value:unknown,owner:{taskI
   const matches:Record<string,unknown>[]=[];
   for(const snap of candidates){
    await authorizeEvidence(db,snap as never,owner.taskID);
-   const request=String(snap.req_head)+'\r\n\r\n'+(await readBlob(db,String(snap.req_hash))).toString('utf8');
-   const response=String(snap.resp_head)+'\r\n\r\n'+(await readBlob(db,String(snap.resp_hash))).toString('utf8');
+   if(st.traffic_id&&!st.request&&!st.response){matches.push(snap);continue;}
+   const request=packet(snap.req_head,await readBlob(db,String(snap.req_hash)));
+   const response=packet(snap.resp_head,await readBlob(db,String(snap.resp_hash)));
    if((!st.request||request.includes(st.request))&&(!st.response||response.includes(st.response)))matches.push(snap);
   }
   if(st.traffic_id&&matches.length!==1)throw invalid('流量引用不存在、跨任务或摘录不匹配');
   if(matches.length===1){st.traffic_id=String(matches[0]!.id);st.verified=true;}
   else if(strict&&(st.request||st.response))throw invalid('新增步骤必须引用原始 evidence 或唯一真实流量；不能补造报文');
  }
+ return expandTrafficPackets(db,repro,owner.taskID);
+}
+
+const INLINE_PACKET_BYTES=256*1024;
+const packet=(head:unknown,body:Buffer)=>String(head??'').replace(/(?:\r?\n)+$/,'')+'\r\n\r\n'+body.toString('utf8');
+/** Expand only verified persisted traffic; the model never reconstructs headers. */
+export async function expandTrafficPackets(db:Database,repro:Reproduction|null,taskID:number){
+ if(!repro)return repro;
+ for(const step of repro.steps){
+  delete step.packet_note;
+  if(!step.traffic_id){
+   const httpContext=/^https?:/i.test(repro.entry_point)||/^HTTP\//.test(step.response)||/^[A-Z]+ \S+ HTTP\//.test(step.request);
+   if(httpContext&&(!/^[A-Z]+ \S+ HTTP\/\d(?:\.\d)?\r?\n/.test(step.request)||!/^HTTP\/\d(?:\.\d)? \d{3}[^\r\n]*\r?\n/.test(step.response)||![step.request,step.response].every(v=>/\r?\n\r?\n/.test(v))))
+    step.packet_note='原始证据未包含完整 HTTP 请求与响应（起始行、Header、空行或 Body 缺失），保留已知内容，不补造。';
+   continue;
+  }
+  const snap=(await db.query(`SELECT s.*,e.truncated AS capture_truncated FROM traffic_evidence_snapshots s
+   LEFT JOIN traffic_exchanges e ON e.id=s.id WHERE s.id=$1 AND s.task_id=$2`,[step.traffic_id,taskID])).rows[0];
+  if(!snap)throw invalid('流量引用不存在或不属于当前任务');
+  await authorizeEvidence(db,snap as never,taskID);
+  if(Number(snap.req_len)+Number(snap.resp_len)+Buffer.byteLength(String(snap.req_head)+String(snap.resp_head))>INLINE_PACKET_BYTES){
+   step.request=packet(snap.req_head,Buffer.alloc(0));step.response=packet(snap.resp_head,Buffer.alloc(0));
+   step.truncated=true;step.packet_note='报文超过内联展示上限，请通过流量证据读取或下载全部 Header 与 Body；此处不是完整报文。';continue;
+  }
+  const req=await readBlob(db,String(snap.req_hash)),resp=await readBlob(db,String(snap.resp_hash));
+  try{for(const bytes of [req,resp]){new TextDecoder('utf-8',{fatal:true}).decode(bytes);if(bytes.includes(0))throw new Error('binary');}}
+  catch{step.request=packet(snap.req_head,Buffer.alloc(0));step.response=packet(snap.resp_head,Buffer.alloc(0));step.truncated=true;step.packet_note='Body 含二进制内容，请通过流量证据下载原始数据；不以文本改写。';continue;}
+  const request=packet(snap.req_head,req),response=packet(snap.resp_head,resp);
+  if((step.request&&!request.includes(step.request))||(step.response&&!response.includes(step.response)))throw invalid('步骤摘录不是关联流量的原始内容');
+  if(Buffer.byteLength(JSON.stringify({...step,request,response}))>INLINE_PACKET_BYTES){
+   step.request=packet(snap.req_head,Buffer.alloc(0));step.response=packet(snap.resp_head,Buffer.alloc(0));
+   step.truncated=true;step.packet_note='报文超过内联展示上限，Header 完整保留，Body 请从关联流量证据下载。';continue;
+  }
+  // Expanded packets are now backed by the traffic snapshot, not a shorter source excerpt.
+  step.request=request;step.response=response;step.verified=true;delete step.source;delete step.source_ref;
+  step.truncated=snap.capture_truncated===true;
+  if(step.truncated)step.packet_note='原始流量采集已截断，以下为全部已保存内容，缺失部分无法补造。';
+  else if(snap.capture_truncated==null)step.packet_note='以下为全部已保存报文；历史采集完整性未记录。';
+ }
  return repro;
 }
+
 export async function stepSource(db:Database,owner:{taskID:number;intentID?:number;evidence:string},step:ReproStep):Promise<string>{
  if(!step.source_ref)return owner.evidence;
  const task=await db.tasks().getTask(owner.taskID);if(!task)throw invalid('证据任务不存在');
@@ -103,18 +144,18 @@ export function assembleReport(f:Record<string,unknown>,images:Array<{id:string;
   const value=sections?.discovery?.[key];
   if(value?.trim())out.push(`## ${DISCOVERY_LABELS[key]}`,value,'');
  }
- if(r){out.push('## 测试过程',`入口：${r.entry_point||'未记录'}`,'',...r.prerequisites.map(p=>`- ${p}`),'');
+ if(r){out.push('## 复现步骤',`入口：${r.entry_point||'未记录'}`,'',...r.prerequisites.map(p=>`- ${p}`),'');
  for(const [i,s]of r.steps.entries()){
-  out.push(`### 步骤 ${i+1}：${s.action||'验证'}`,'',s.expected,s.proves,'');
+  out.push(`${i+1}. ${s.action||'验证'}`,'',...[s.expected,s.proves].filter(Boolean),'');
   if(!s.verified)out.push('> Worker 提交的过程；尚未关联可核对的原始证据。','');
-  if(s.truncated)out.push('> 以下为证据关键片段，完整内容请读取证据来源。','');
+  if(s.packet_note||s.truncated)out.push('> '+(s.packet_note||'以下为证据片段，完整内容请读取证据来源。'),'');
   if(s.request)out.push('请求 / 命令：',fence(s.request),'');else out.push('缺少原始请求 / 命令。','');
   if(s.response)out.push('响应 / 输出：',fence(s.response),'');else out.push('缺少原始响应 / 输出。','');
-  if(s.traffic_id)out.push(`[完整流量证据](/function/traffic?exchange=${encodeURIComponent(s.traffic_id)})`,'');
+  if(s.traffic_id)out.push(`[流量证据 ${s.traffic_id}](/function/findings/detail?id=${encodeURIComponent(String(f.id))})`,'');
   for(const img of images.filter(im=>im.step_id===s.id))out.push(`![${img.caption.replace(/[\[\]\n]/g,' ')}](${imageURL(img.id)})`,'');
  }
  if(!sections?.discovery&&r.provenance)out.push('## 发现来源',r.provenance,'');
- }else out.push('## 测试过程','尚未整理分步骤过程，以下原始证据完整保留。','');
+ }else out.push('## 复现步骤','尚未整理复现过程，以下原始证据完整保留。','');
  const extra=images.filter(im=>!im.step_id||!r?.steps.some(s=>s.id===im.step_id));if(extra.length)out.push('## 补充证据',...extra.flatMap(img=>[`![${img.caption.replace(/[\[\]\n]/g,' ')}](${imageURL(img.id)})`,'']));
  if(sections?.impact.length)out.push('## 具体影响',...sections.impact.map(s=>`- ${s}`),'');
  if(sections?.remediation.length)out.push('## 修复建议',...sections.remediation.map(s=>`- ${s}`),'');

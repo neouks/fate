@@ -1,7 +1,7 @@
 import {randomUUID,createHash} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {cleanupOrphanBlobs,putBlob,readBlob} from '../../evidence/blobs.js';
-import {archiveReport,normalizeReproduction,prepareReproduction,attachStepTraffic,assembleReport,stepSource} from '../../evidence/reproduction.js';
+import {archiveReport,normalizeReproduction,prepareReproduction,attachStepTraffic,assembleReport,stepSource,expandTrafficPackets} from '../../evidence/reproduction.js';
 import {reportSections,REPORTER_SAVE_GUIDANCE,type ReportSections} from '../../evidence/report-sections.js';
 const error=(m:string,statusCode=400)=>Object.assign(new Error(m),{statusCode});
 export function registerFindingReproductionRoutes(app:FastifyInstance){
@@ -42,6 +42,7 @@ export function registerFindingReproductionRoutes(app:FastifyInstance){
    const repro=normalizeReproduction(b.reproduction),old=normalizeReproduction(f.reproduction);
    for(const step of repro?.steps??[]){const before=old?.steps.find(s=>s.id===step.id);if(before&&before.request===step.request&&before.response===step.response&&before.traffic_id===step.traffic_id&&before.source===step.source&&before.source_ref===step.source_ref){step.verified=(f.reproduction as {steps:Array<{id:string;verified?:boolean}>})?.steps.find(s=>s.id===step.id)?.verified;continue;}
     const checked=await prepareReproduction(tx,{...repro,steps:[step]},{taskID:Number(f.task_id),evidence:String(f.evidence),findingNodeID:Number(f.node_id)},true);Object.assign(step,checked!.steps[0]);}
+   await expandTrafficPackets(tx,repro,Number(f.task_id));
    await archiveReport(tx,f);await attachStepTraffic(tx,Number(f.id),Number(f.task_id),repro);
    await tx.query('UPDATE findings SET reproduction=$2,report_revision=report_revision+1,evidence_version=evidence_version+1 WHERE id=$1',[f.id,repro]);
    if(sections){const current=(await tx.query('SELECT * FROM findings WHERE id=$1',[f.id])).rows[0]!;await tx.query('UPDATE findings SET report_sections=$2,report=$3,report_evidence_version=evidence_version WHERE id=$1',[f.id,sections,assembleReport({...current,report_sections:sections,report_evidence_version:current.evidence_version})]);}

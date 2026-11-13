@@ -1,5 +1,5 @@
 import {goalIntegritySQL} from './goal-integrity-migration.js';
-import {migrateReproduction,migrateReporterConcisePrompt} from '../agent/reproduction-migration.js';
+import {migrateReproduction,migrateReporterConcisePrompt,migrateReporterNaturalPrompt} from '../agent/reproduction-migration.js';
 // PostgreSQL 数据源：连接、幂等 schema 迁移（advisory lock 钉专用连接）、简单查询协议多语句执行。
 // 平移自 Go 版 db/db.go 的 Open/withSchemaMigrationLock/applySchemaWithRetry；
 // seedBuiltins/backfillToolUsage 在 store 层（M1）引入。
@@ -236,6 +236,7 @@ export async function openDatabase(): Promise<Database> {
       await seedBuiltins(db);
       await migrateReproduction(db);
       await migrateReporterConcisePrompt(db);
+      await migrateReporterNaturalPrompt(db);
       await retireRetester(db);
       await backfillUsageLedger(db);
       await backfillIntentWorkIndex(db);

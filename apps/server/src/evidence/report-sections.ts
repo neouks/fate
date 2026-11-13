@@ -1,5 +1,4 @@
-export const REPORT_TEXT_LIMIT = 60;
-export const REPORTER_SAVE_GUIDANCE = `用 update_finding_report 提交 report_sections、evidence_version 和 report_revision。description、discovery.vulnerability、discovery.asset 各最多 ${REPORT_TEXT_LIMIT} 字；缺乏依据的思路省略，两项均无依据时提交 discovery: {}。超长按回执只改对应字段，版本冲突先重读，成功回执才算保存。`;
+export const REPORTER_SAVE_GUIDANCE = `用 update_finding_report 提交 report_sections、evidence_version 和 report_revision。description、discovery.vulnerability、discovery.asset 用精简、直接的自然语言描述；缺乏依据的思路省略，两项均无依据时提交 discovery: {}。复现过程连续叙述；HTTP 请求和响应保留完整起始行、全部 Header、空行及完整 Body，不以 curl 或 JSON 片段代替报文。有真实 traffic_id 时引用它由平台展开；证据缺失、截断或非文本时如实说明并保留来源，不补造、不探测。版本冲突先重读，成功回执才算保存。`;
 
 export const DISCOVERY_LABELS = { vulnerability: '漏洞发现思路', asset: '资产发现思路' } as const;
 type DiscoveryKey = keyof typeof DISCOVERY_LABELS;
@@ -32,39 +31,30 @@ export function reportSections(value: unknown, requireDiscovery = false): Report
     !Object.hasOwn(DISCOVERY_LABELS, key) || typeof content !== 'string')) {
     throw invalid('discovery 只接受文本字段 vulnerability、asset');
   }
-  const limits: string[] = [];
-  function check(content: string, label: string) {
-    const trimmed = content.trim();
-    const length = Array.from(trimmed).length;
-    if (length > REPORT_TEXT_LIMIT) limits.push(`${label}实际 ${length} 字，上限 ${REPORT_TEXT_LIMIT} 字`);
-    return trimmed;
-  }
-  const summary = check(description, '漏洞描述');
+  const summary = description.trim();
   const conciseDiscovery: ReportDiscovery = {};
   for (const key of discoveryKeys) {
-    const content = check((discovery[key] as string | undefined) ?? '', DISCOVERY_LABELS[key]);
+    const content = ((discovery[key] as string | undefined) ?? '').trim();
     if (content) conciseDiscovery[key] = content;
   }
-  if (limits.length) throw invalid(`请只精简超长字段后重新提交：${limits.join('；')}`);
   if (!summary) throw invalid('漏洞描述不能为空');
   return { description: summary, impact, remediation, discovery: conciseDiscovery };
 }
 
-// Describe the limit here and enforce it after trimming in reportSections so
-// model errors include the actual Unicode character count.
+// Concision is a writing guideline; never truncate saved evidence or prose.
 export function reportSectionsSchema(reporter: boolean) {
   return {
     type: 'object',
     properties: {
-      description: { type: 'string', pattern: '\\S', description: reporter ? `一句通俗结论，最多 ${REPORT_TEXT_LIMIT} 字` : '漏洞描述' },
+      description: { type: 'string', pattern: '\\S', description: reporter ? '精简、直接的自然语言，说明问题和实际影响' : '漏洞描述' },
       impact: { type: 'array', items: { type: 'string' }, description: '优先 1–2 条，每条一句，只写证据支持的影响' },
       remediation: { type: 'array', items: { type: 'string' }, description: '优先 1–2 条，每条一句，直接说明怎么修' },
       discovery: {
         type: 'object', additionalProperties: false,
         description: '缺少依据的思路省略，两项均无依据时提交 {}',
         properties: {
-          vulnerability: { type: 'string', description: `确认漏洞的关键观察，最多 ${REPORT_TEXT_LIMIT} 字` },
-          asset: { type: 'string', description: `定位相关资产的关键线索，最多 ${REPORT_TEXT_LIMIT} 字` },
+          vulnerability: { type: 'string', description: '用精简、直接的自然语言说明确认漏洞的关键观察' },
+          asset: { type: 'string', description: '用精简、直接的自然语言说明定位资产的关键线索' },
         },
       },
     },
