@@ -585,7 +585,7 @@ export class Engine {
         const u = r.usage;
         this.emitActivity(rt.taskID, {
           kind: "result", worker: "planner", metadata:{...turn.metadata,event_type:"lifecycle",status:r.aborted?"stopped":"completed"},
-          summary: (r.lastAssistantText ?? "规划轮完成").slice(0, 2000),
+          summary: (r.lastAssistantText || (r.aborted ? "规划轮已停止" : "规划轮完成")).slice(0, 2000),
           ...(u ? { inputTokens: u.input, outputTokens: u.output, cacheReadTokens: u.cacheRead, cacheWriteTokens: u.cacheWrite } : {}),
         });
         if(!r.aborted && r.stopReason==='completed'){

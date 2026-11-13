@@ -613,3 +613,6 @@ body { --font-mono: var(--font-geist-mono, ui-monospace), monospace; }
 .task-launcher-confirmation { --card-spacing: 24px; }
 .task-launcher-confirmation textarea { min-height: 110px; max-height: 360px; resize: vertical; line-height: 1.8; }
 @media (max-width:640px) { .task-launcher { padding: 32px 16px; } .task-launcher h1 { font-size: 22px; } .task-launcher-field { padding-inline: 18px; } .task-launcher-toolbar { padding-inline: 12px; } .task-launcher-confirmation { --card-spacing: 18px; } .task-launcher-inner, .task-launcher-fields { gap: 24px; } }
+
+.planner-report-section th, .planner-report-section td { white-space: nowrap; }
+.planner-report-section[data-wrap-summary="true"] td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }

@@ -2,11 +2,13 @@ import type {FastifyInstance} from 'fastify';
 import {conversationReadable} from '../activity-stream.js';
 import {readTurnSummaries,readTurnModelName} from '../../engine/turn-summary.js';
 import {isFinishedFileChangeTurn,readTurnFileChange,readTurnFileChangePage} from '../../db/turn-file-changes.js';
+import {registerPlannerReportRoute} from './planner-report.js';
 
 const validTurnID=(id:string)=>id.length<=240&&/^[\w:-]+$/.test(id);
 const validCursor=(id:string)=>/^(?:0|[1-9]\d{0,18})$/.test(id)&&BigInt(id)<=9223372036854775807n;
 
 export function registerTurnRoutes(app:FastifyInstance){
+ registerPlannerReportRoute(app);
  for(const scope of ['tasks','conversations'] as const){
   const base=`/api/${scope}/:id/turns/:turnId/file-changes`;
   for(const url of [base,`${base}/:changeId`])app.get(url,async(req,reply)=>{

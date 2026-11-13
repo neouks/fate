@@ -67,10 +67,17 @@ const components: Components = {
   td: ({ node, ...p }) => <td className="border border-border px-2 py-1 align-top" {...p} />,
 };
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, allowLink }: { text: string; allowLink?: (href: string) => boolean }) {
+  const renderers: Components = allowLink ? {
+    ...components,
+    a: ({ node, href, children, ...props }) => href && allowLink(href)
+      ? <a className="text-primary underline underline-offset-2" target="_blank" rel="noreferrer" href={href} {...props}>{children}</a>
+      : <>{children}</>,
+    img: ({ alt }) => <>{alt}</>,
+  } : components;
   return (
     <div className="transcript-markdown flex min-w-0 flex-col gap-2 text-base [&>*:first-child]:mt-0">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={renderers}>
         {text}
       </ReactMarkdown>
     </div>

@@ -766,6 +766,11 @@ export const api = {
     }));
   },
   turnSummaries: (task:string|undefined,conversation:number|undefined,ids:string[]) => get<{items:import('./turn-summary').TurnSummary[]}>(`/${conversation?`conversations/${conversation}`:`tasks/${task}`}/turns?ids=${encodeURIComponent(ids.join(','))}`),
+  plannerReport: (task: string, turn: string, offsets: { dispatch?: number; steering?: number }, signal: AbortSignal) =>
+    get<import('@/components/planner-report').PlannerReportData>(`/tasks/${encodeURIComponent(task)}/turns/${encodeURIComponent(turn)}/planner-report?${new URLSearchParams({
+      ...(offsets.dispatch === undefined ? {} : { dispatch_offset: String(offsets.dispatch) }),
+      ...(offsets.steering === undefined ? {} : { steering_offset: String(offsets.steering) }),
+    })}`, { signal }),
   turnFileChanges: (scope:string,turn:string,cursor:string,signal:AbortSignal) =>
     get<{items:import('./turn-summary').TurnFileChange[];next_cursor:string|null}>(`/${scope}/turns/${encodeURIComponent(turn)}/file-changes?cursor=${encodeURIComponent(cursor)}`,{signal}),
   turnFileChange: (scope:string,turn:string,id:string,signal:AbortSignal) =>

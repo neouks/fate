@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import {plannerRoundView,isPlannerBoundary} from '@/lib/planner-round';
 import {PlannerRoundMarker} from '@/components/planner-round-marker';
+import {PlannerReport} from '@/components/planner-report';
 import {SteeringNotice} from '@/components/steering-notice';
 import {isSteering} from '@/lib/steering';
 import {useTurnSummaries} from '@/hooks/use-turn-summaries';
@@ -518,6 +519,8 @@ function ExecutionTurn({turn,summary,latest,onProcessInteraction,...props}:Execu
   const elapsed=durationLabel(summary?.started_at??null,summary?.finished_at??terminal?.ts??null,now);
   const {final,process:rawProcess}=turnParts(turn.steps,summary);
   const planning=plannerRoundView(turn.steps,summary,live,ended);
+  const showPlanningReport=!!(ended&&planning&&props.taskId&&!props.conversationId&&!last.inherited&&!last.source_task_id);
+  const reportTurn=summary?.turn_id??turn.steps.map(turnID).find(Boolean);
   const process=planning?rawProcess.filter(a=>!isPlannerBoundary(a)):rawProcess;
   const [steeringExpanded,setSteeringExpanded]=React.useState<Record<number,boolean>>({});
   const onSteeringExpanded=React.useCallback((seq:number,open:boolean)=>setSteeringExpanded(old=>({...old,[seq]:open})),[]);
@@ -545,7 +548,14 @@ function ExecutionTurn({turn,summary,latest,onProcessInteraction,...props}:Execu
         <CollapsibleContent><Alert variant={failed||status==='exhausted'?'destructive':'default'}><AlertDescription>{errorText}</AlertDescription></Alert></CollapsibleContent>
       </Collapsible>}
       {!hasProse&&!live&&<p className="text-sm text-muted-foreground">本轮未记录文字回复</p>}
-      {final&&<div data-final-answer="true"><ActivitySteps {...stepProps} activity={[final]}/></div>}
+      {showPlanningReport&&<PlannerReport key={reportTurn??turn.key} task={props.taskId!} turn={reportTurn}
+        revision={summary?.data_revision??summary?.revision??terminal?.seq}/>}
+      {final&&(showPlanningReport
+        ? <Collapsible key={focus===final.seq?"focused-receipt":"receipt"} defaultOpen={focus===final.seq}>
+            <CollapsibleTrigger asChild><Button variant="ghost" className="execution-group-trigger justify-start px-0"><ChevronRight/>原始规划回执</Button></CollapsibleTrigger>
+            <CollapsibleContent data-final-answer="true"><ActivitySteps {...stepProps} activity={[final]}/></CollapsibleContent>
+          </Collapsible>
+        : <div data-final-answer="true"><ActivitySteps {...stepProps} activity={[final]}/></div>)}
       {ended&&summary?.file_changes&&<TurnFileChanges key={summary.turn_id} summary={summary.file_changes}
         turn={summary.turn_id} taskId={props.taskId} conversationId={props.conversationId}/>}
     </BubbleContent></Bubble>
