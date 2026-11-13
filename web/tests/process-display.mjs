@@ -18,8 +18,9 @@ try{
    const worker=chat?'auto':'work#1',endStatus=theme==='dark'?'failed':width===390?'stopped':'completed';
    const act=(seq,kind,summary,extra={})=>({seq,kind,summary,detail:summary,ts,worker,intent_id:chat?undefined:'201',turn_id,metadata:{turn_id},...extra});
    const initial=[act(1,'thinking','先核对已有记录，避免重复读取。',{detail:undefined,stream_id:'thought-1'}),act(2,'tool_use','context_get {"ref":"node:201"}',{tool:'context_get',tool_use_id:'call-1',detail:undefined}),act(3,'tool_result','已读取结果',{tool:'context_get',tool_use_id:'call-1',is_error:true,detail:undefined})];
-   const final=act(5,'text','最终答复保持原字号。',{metadata:{turn_id,final_answer:true}});
-   const end=act(6,'result','执行结束',{metadata:{turn_id,event_type:'lifecycle',status:endStatus}});
+   initial.push(act(4,'tool_use','bash {"command":"fixture"}',{tool:'bash',tool_use_id:'cancelled'}),act(5,'tool_result','Command aborted',{tool:'bash',tool_use_id:'cancelled',is_error:true}));
+   const final=act(7,'text','最终答复保持原字号。',{metadata:{turn_id,final_answer:true}});
+   const end=act(8,'result','执行结束',{metadata:{turn_id,event_type:'lifecycle',status:endStatus}});
    let ended=false,detailBroken=true,detailRequests=0;
    const errors=[],writes=[];
    const context=await browser.newContext({viewport:{width,height:950},colorScheme:theme});
@@ -42,8 +43,8 @@ try{
     if(p==='/api/conversations')return ok({conversations:[{id:801,agent_key:'auto',title:'合成独立会话',created_at:ts,updated_at:ts,status:ended?'idle':'running'}]});
     if(p==='/api/exploration/main-sessions')return ok({sessions:[{seq:0,created_at:ts}],current:0});
     if(p.includes('/intents'))return ok({items:[node],completed_count:1});
-    if(p==='/api/exploration/activity/history'||p==='/api/conversations/801/messages')return ok({items:chat||u.searchParams.get('session')==='intent:201'?[...initial,...ended?[final,end]:[]]:[],snapshot_cursor:6,cursor:6,earliest_cursor:1,latest_cursor:6,has_more:false,hasMore:false,running:!ended});
-    if(p.endsWith('/turns'))return ok({items:[{turn_id,role:chat?'auto':'worker',worker,status:ended?endStatus:'running',revision:6,started_at:ts,finished_at:ended?ts:null,models:[],steps:2,tool_calls:1,failed_tool_calls:1,...ended?{final_activity:final}:{}}]});
+    if(p==='/api/exploration/activity/history'||p==='/api/conversations/801/messages')return ok({items:chat||u.searchParams.get('session')==='intent:201'?[...initial,...ended?[final,end]:[]]:[],snapshot_cursor:8,cursor:8,earliest_cursor:1,latest_cursor:8,has_more:false,hasMore:false,running:!ended});
+    if(p.endsWith('/turns'))return ok({items:[{turn_id,role:chat?'auto':'worker',worker,status:ended?endStatus:'running',revision:8,started_at:ts,finished_at:ended?ts:null,models:[],steps:2,tool_calls:2,failed_tool_calls:2,...ended?{final_activity:final}:{}}]});
     if(p==='/api/exploration/activity/1'||p==='/api/conversations/801/messages/1'){
      detailRequests++;
      if(detailBroken)return route.fulfill({status:500,json:{error:'合成读取失败'}});
@@ -68,7 +69,11 @@ try{
    assert.equal(await row.getAttribute('aria-expanded'),'false');assert.equal(detailRequests,0);
    assert.equal(await row.evaluate(el=>getComputedStyle(el).fontSize),'13px');
    assert.equal(await row.evaluate(el=>getComputedStyle(el).paddingTop),'4px');
-   assert.equal(await segment.locator('.execution-tool > button').getAttribute('aria-expanded'),'false');
+   assert.equal(await segment.locator('.execution-tool > button').first().getAttribute('aria-expanded'),'false');
+   await trigger.getByText('· 1 次异常',{exact:true}).waitFor();
+   const cancelled=segment.locator('[data-tool-status="stopped"]');
+   await cancelled.getByRole('button').click();
+   await cancelled.getByText('输出（已停止）',{exact:true}).waitFor();
    await row.click();await thought.getByRole('button',{name:'重新读取第一页'}).waitFor();
    detailBroken=false;await thought.getByRole('button',{name:'重新读取第一页'}).click();
    await thought.getByText('完整推理第一页。',{exact:true}).waitFor();
@@ -79,10 +84,10 @@ try{
    await emit('streams',{items:[stream]});
    assert.equal(await trigger.getAttribute('aria-expanded'),'false');
    await trigger.click();await segment.getByText(/中文增量正在更新/).first().waitFor();
-   const persisted=act(4,'thinking',stream.text,{stream_id:'thought-2',channel:'thinking'});
+   const persisted=act(6,'thinking',stream.text,{stream_id:'thought-2',channel:'thinking'});
    initial.push(persisted);await emit('message',persisted);await emit('message',persisted);await emit('streams',{items:[]});
    await trigger.click();ended=true;await emit('message',final);await emit('message',end);await emit('streams',{items:[]});
-   await emit('turn_summary',{requested_ids:[turn_id],items:[{turn_id,revision:7,role:chat?'auto':'worker',worker,status:endStatus,started_at:ts,finished_at:ts,models:[],steps:2,tool_calls:1,failed_tool_calls:1,final_activity:final}]});
+   await emit('turn_summary',{requested_ids:[turn_id],items:[{turn_id,revision:9,role:chat?'auto':'worker',worker,status:endStatus,started_at:ts,finished_at:ts,models:[],steps:2,tool_calls:2,failed_tool_calls:2,final_activity:final}]});
    await page.locator('[data-final-answer]').getByText(final.summary,{exact:true}).waitFor();
    assert.equal(await trigger.getAttribute('aria-expanded'),'false');
    await trigger.click();assert.equal(await segment.locator('.execution-thought').count(),2);

@@ -1315,12 +1315,12 @@ export interface MissingSkill {
 }
 
 // ---- Tools (内置工具目录) ----
-// key + handler live in Go; only these fields are page-editable. system tools lock
-// the key and the parameter *structure* (name/type/required) — the per-param
-// description/default and the agent binding are what move.
+// Builtin parameter schemas are read-only and come from each role's loadout.
 export interface RoleToolPreview {
   role: string; scope: string; policy_version: string; resident: string[]; deferred: string[]; compatibility: string[]; fallback?: string;
   schema_bytes: { before: number; resident: number; registered: number };
+  schemas?: Record<string, Record<string, unknown>>;
+  descriptions?: Record<string, string>;
 }
 export interface Tool {
   implementation_status?: "active" | "compatibility" | "retired" | "unsupported";
@@ -1329,6 +1329,7 @@ export interface Tool {
   aliases?: string[];
   schema_source?: string;
   schema_read_only?: boolean;
+  description_source?: string;
   loading?: Record<string, "resident" | "deferred">;
   key: string;
   system: boolean;

@@ -1,7 +1,7 @@
 "use client";
 
 import {processPreview} from '@/lib/process-preview';
-import {terminalDiagnostic} from '@/lib/terminal-diagnostic';
+import {terminalDiagnostic,toolOutcomeText,toolWasStopped} from '@/lib/terminal-diagnostic';
 import * as React from "react";
 import {ActivityBody,ActivityContentProvider} from "@/components/activity-body";
 import {
@@ -185,7 +185,7 @@ function ProcessSegment({groups,focusActivity,children}: {groups:Group[];focusAc
   const [choice,setChoice] = React.useState<{open:boolean;focus?:number}>();
   const open = (containsFocus && choice?.focus !== focusActivity) || (choice?.open ?? true);
   const calls = groups.filter(g => g.type === "tool");
-  const failures = calls.filter(g => g.result?.is_error).length;
+  const failures = calls.filter(g => g.result?.is_error && !toolWasStopped(g.use,g.result)).length;
   return <Collapsible open={open} onOpenChange={open=>setChoice({open,focus:focusActivity})} data-process-segment className="min-w-0">
     <CollapsibleTrigger asChild><Button variant="ghost" className="execution-group-trigger h-auto w-full justify-start whitespace-normal px-0 py-1.5 text-left">
       <ChevronRight className={cn('transition-transform',open&&'rotate-90')}/>
@@ -255,26 +255,20 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
   const {use,result}=group,toolName=use?.tool||result?.tool||"工具";
   const isTerminal=toolName.toLowerCase()==="bash"||toolName.startsWith("shell_");
   const live=React.useContext(ExecutionLiveContext);
-  const outcomeText=result?.detail&&!result.detail_truncated?result.detail:result&&!result.summary_truncated?result.summary:undefined;
-  // PI's existing activity API records these cancellation outcomes as error
-  // text. Recognize only its exact markers, never a phrase in truncated output.
-  const cancelledOutput=!!result?.is_error&&!!outcomeText&&(
-    ['Operation aborted','Command aborted','Tool execution aborted','aborted'].includes(outcomeText.trim())
-    || toolName.toLowerCase()==='bash'&&/\n\nCommand aborted$/.test(outcomeText.trim())
-  );
   // Only this call's persisted outcome can mark it complete. A settled parent
   // turn cannot supply a missing result (e.g. incomplete historical pages).
-  const stopped=cancelledOutput||!!(result?.interrupted||use?.interrupted)
-    || ['aborted','cancelled','canceled','stopped','interrupted'].includes(result?.metadata?.status??use?.metadata?.status??'');
+  const stopped=toolWasStopped(use,result);
   const running=live&&!result&&!stopped;
   const state=stopped?'stopped':result?(result.is_error?'failed':'completed'):running?'running':'unknown';
   const raw=use&&use.summary.startsWith(toolName)?use.summary.slice(toolName.length).trimStart():use?.summary??'';
   const cmd=toolInputText(toolName,raw);
-  const diagnostic=isTerminal&&result?.is_error?terminalDiagnostic(use?.detail&&!use.detail_truncated?toolInputText(toolName,use.detail):undefined,outcomeText):undefined;
+  const diagnostic=isTerminal&&!stopped&&result?.is_error
+    ? terminalDiagnostic(use?.detail&&!use.detail_truncated?toolInputText(toolName,use.detail):undefined,toolOutcomeText(result))
+    : undefined;
   const status={running:'执行中…',unknown:'结果未记录',completed:'已完成',failed:'失败',stopped:'已停止'}[state];
   const statusClass=state==='completed'?'text-[var(--status-success)]':state==='failed'?'text-destructive':'text-muted-foreground';
   const StatusIcon=state==='completed'?CheckIcon:state==='failed'?XIcon:state==='stopped'?CircleStopIcon:CircleHelpIcon;
-  const parts=[...(use?[{step:use,label:'命令'}]:[]),...(result?[{step:result,label:result.is_error?'输出 ✕':'输出 ✓'}]:[])];
+  const parts=[...(use?[{step:use,label:'命令'}]:[]),...(result?[{step:result,label:stopped?'输出（已停止）':result.is_error?'输出 ✕':'输出 ✓'}]:[])];
   return <div ref={root} data-source-call={focused||undefined} data-activity-id={use?.seq??result?.seq} data-terminal={isTerminal} data-tool-status={state} className={cn('execution-tool',focused&&'rounded-md border border-primary bg-accent/30 p-2')}>
     {focused&&<Badge variant="outline">{focusLabel}</Badge>}
     <button type="button" onClick={()=>setOpen(v=>!v)} aria-expanded={open} aria-controls={panelId} aria-busy={running} title={toolName} className="execution-process-trigger">
@@ -284,7 +278,7 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
       {cmd&&<span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{isTerminal?'$ ':''}{cmd}</span>}
       <span className={cn('ml-auto shrink-0 font-medium',statusClass)}>{status}</span>
     </button>
-    {diagnostic&&<p role="status" className="text-sm text-muted-foreground">{diagnostic.label} · 退出码 {diagnostic.code}{open&&` — ${diagnostic.detail}`}</p>}
+    {diagnostic&&<p role="status" className="text-sm text-muted-foreground">{diagnostic.label}{diagnostic.code!==undefined&&` · 退出码 ${diagnostic.code}`}{open&&` · ${diagnostic.detail}`}</p>}
     {open&&<div id={panelId} data-search-body className="execution-tool-detail"><div className="execution-terminal-surface" data-terminal={isTerminal}>
       {parts.map(({step,label})=><section key={step.seq} data-search-activity={step.seq} className="execution-terminal-part" aria-label={label}>
         <div className="execution-terminal-label">{label}</div>

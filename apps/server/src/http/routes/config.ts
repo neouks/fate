@@ -60,27 +60,37 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   // ─── 内置工具目录 ───
   app.get("/api/tools", async () => catalogTools(app.db));
 
-  app.put("/api/tools/:key", async (req) => {
+  app.put("/api/tools/:key", async (req, reply) => {
     const p = req.params as { key: string };
     const catalogRow=(await app.db.query('SELECT kind FROM tools WHERE key=$1',[p.key])).rows[0];
+    if(!catalogRow)return reply.code(404).send({error:'工具不存在'});
     if(catalogRow&&['retired','unsupported'].includes(toolIdentity(p.key,String(catalogRow.kind)).implementation_status))throw Object.assign(new Error('当前版本不支持此历史工具，不能重新启用'),{statusCode:410});
     const b = (req.body ?? {}) as Record<string, unknown>;
+    if(typeof b!=='object'||Array.isArray(b))return reply.code(400).send({error:'请求体必须为对象'});
+    if('schema' in b && catalogRow.kind==='builtin')return reply.code(400).send({error:'内置工具参数由代码定义，只读'});
+    if('description' in b && typeof b.description!=='string')return reply.code(400).send({error:'description 必须为字符串'});
+    if('enabled' in b && typeof b.enabled!=='boolean')return reply.code(400).send({error:'enabled 必须为布尔值'});
+    if('agents' in b && (!Array.isArray(b.agents)||b.agents.some(a=>typeof a!=='string')))return reply.code(400).send({error:'agents 必须为字符串数组'});
     const sets: string[] = [];
     const params: unknown[] = [];
     if (typeof b["description"] === "string") { params.push(b["description"]); sets.push(`description=$${params.length}`); }
     if (Array.isArray(b["agents"])) { params.push(JSON.stringify(b["agents"])); sets.push(`agents=$${params.length}::jsonb`); }
     if (typeof b["enabled"] === "boolean") { params.push(b["enabled"]); sets.push(`enabled=$${params.length}`); }
-    if (sets.length === 0) return { ok: false, error: "无可更新字段" };
+    if (sets.length === 0) return reply.code(400).send({ error: "无可更新字段" });
     params.push(p["key"]);
     const r = await app.db.query(`UPDATE tools SET ${sets.join(", ")} WHERE key=$${params.length}`, params);
+    if(!r.rowCount)return reply.code(404).send({error:'工具不存在'});
     return { ok: (r.rowCount ?? 0) === 1 };
   });
 
-  app.post("/api/tools/:key/reset", async (req) => {
+  app.post("/api/tools/:key/reset", async (req, reply) => {
     const p = req.params as { key: string };
     const catalogRow=(await app.db.query('SELECT kind FROM tools WHERE key=$1',[p.key])).rows[0];
+    if(!catalogRow)return reply.code(404).send({error:'工具不存在'});
+    if(catalogRow.kind!=='builtin')return reply.code(400).send({error:'仅内置工具支持恢复默认说明'});
     if(catalogRow&&['retired','unsupported'].includes(toolIdentity(p.key,String(catalogRow.kind)).implementation_status))throw Object.assign(new Error('当前版本不支持此历史工具，不能重新启用'),{statusCode:410});
-    const r = await app.db.query(`UPDATE tools SET enabled=true WHERE key=$1`, [p["key"]]);
+    const r = await app.db.query(`UPDATE tools SET description='' WHERE key=$1 AND kind='builtin'`, [p["key"]]);
+    if(!r.rowCount)return reply.code(404).send({error:'工具不存在'});
     return { ok: (r.rowCount ?? 0) === 1 };
   });
 

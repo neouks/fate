@@ -36,141 +36,42 @@ const isPlatformTool = (tool: Tool) =>
 // only usable when capture is on. Keep in sync with traffic.SeedToolMetas.
 const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get"]);
 
-// paramRows flattens schema.properties into an ordered row list for editing.
-// name/type/required are read-only (welded to the Go handler); description/default
-// are editable. Non-scalar params (array/object) can't carry an editable default.
-// parentKey is set for rows that live inside an array param's items.properties.
-type ParamRow = {
-  name: string;
-  type: string;
-  required: boolean;
-  description: string;
-  defaultStr: string; // "" = no default declared
-  scalar: boolean;
-  parentKey?: string; // set when this is a sub-field of an array param's items
-};
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toRows(schema: Record<string, any>): ParamRow[] {
-  const props = (schema?.properties ?? {}) as Record<string, Record<string, unknown>>;
-  const required = new Set<string>((schema?.required as string[]) ?? []);
-  const rows: ParamRow[] = [];
-  for (const [name, p] of Object.entries(props)) {
-    const type = String(p?.type ?? "");
-    const hasDefault = p != null && "default" in p && (p as Record<string, unknown>).default != null;
-    rows.push({
-      name,
-      type,
-      required: required.has(name),
-      description: String(p?.description ?? ""),
-      defaultStr: hasDefault ? String((p as Record<string, unknown>).default) : "",
-      scalar: ["string", "integer", "number", "boolean"].includes(type),
-    });
-    // Expand items.properties for array params so sub-fields are editable.
-    if (type === "array") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const itemProps = (p as any)?.items?.properties as Record<string, Record<string, unknown>> | undefined;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const itemRequired = new Set<string>(((p as any)?.items?.required as string[]) ?? []);
-      if (itemProps) {
-        for (const [subName, subP] of Object.entries(itemProps)) {
-          const subType = String((subP as Record<string, unknown>)?.type ?? "");
-          const subHasDefault = subP != null && "default" in subP && subP.default != null;
-          rows.push({
-            name: subName,
-            type: subType,
-            required: itemRequired.has(subName),
-            description: String(subP?.description ?? ""),
-            defaultStr: subHasDefault ? String(subP.default) : "",
-            scalar: ["string", "integer", "number", "boolean"].includes(subType),
-            parentKey: name,
-          });
-        }
-      }
-    }
-  }
-  return rows;
-}
-
-// coerceDefault turns the edited default string back into a typed JSON value, or
-// undefined to drop the "default" key entirely.
-function coerceDefault(type: string, raw: string): unknown {
-  const s = raw.trim();
-  if (s === "") return undefined;
-  if (type === "integer" || type === "number") {
-    const n = Number(s);
-    return Number.isNaN(n) ? undefined : n;
-  }
-  if (type === "boolean") return s === "true";
-  return raw;
-}
-
-// applyRows writes edited rows back into a deep-copied schema (structure untouched).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyRows(schema: Record<string, any>, rows: ParamRow[]): Record<string, any> {
-  const next = structuredClone(schema ?? {});
-  const props = (next.properties ?? {}) as Record<string, Record<string, unknown>>;
-  for (const r of rows) {
-    if (r.parentKey) {
-      // Sub-field of an array param's items.properties
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parent = props[r.parentKey] as any;
-      const subP = parent?.items?.properties?.[r.name] as Record<string, unknown> | undefined;
-      if (!subP) continue;
-      subP.description = r.description;
-      if (r.scalar) {
-        const dv = coerceDefault(r.type, r.defaultStr);
-        if (dv === undefined) delete subP.default;
-        else subP.default = dv;
-      }
-    } else {
-      const p = props[r.name];
-      if (!p) continue;
-      p.description = r.description;
-      if (r.scalar) {
-        const dv = coerceDefault(r.type, r.defaultStr);
-        if (dv === undefined) delete p.default;
-        else p.default = dv;
-      }
-    }
-  }
-  return next;
-}
-
 // ToolEditor is the full edit form for one tool, rendered inside the drawer.
 function ToolEditor({
   tool,
   agents,
+  roles,
   captureOn,
   onSaved,
   onClose,
 }: {
   tool: Tool;
   agents: Agent[];
+  roles: RoleToolPreview[];
   captureOn: boolean;
   onSaved: () => void;
   onClose: () => void;
 }) {
   // traffic tools can't be bound/enabled until the global 流量捕获 switch is on.
   const readOnly = historic(tool);
-  const schemaReadOnly = tool.schema_read_only !== false;
   const trafficGated = readOnly || TRAFFIC_TOOL_KEYS.has(tool.key) && !captureOn;
-  const [description, setDescription] = React.useState(tool.description);
+  const initialDescription = tool.description_source === "builtin" ? "" : tool.description;
+  const [description, setDescription] = React.useState(initialDescription);
+  const previews = roles.filter((r) => r.schemas?.[tool.key]);
+  const [previewRole, setPreviewRole] = React.useState(previews[0]?.role ?? "");
+  const preview = previews.find((r) => r.role === previewRole) ?? previews[0];
+  const schema = preview?.schemas?.[tool.key] ?? (Object.keys(tool.schema ?? {}).length ? tool.schema : null);
   const [bound, setBound] = React.useState<string[]>(tool.agents);
   const [enabled, setEnabled] = React.useState(tool.enabled);
-  const [rows, setRows] = React.useState<ParamRow[]>(() => toRows(tool.schema));
   const [saving, setSaving] = React.useState(false);
 
-  const setRow = (i: number, patch: Partial<ParamRow>) =>
-    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const toggleAgent = (k: string) => setBound((b) => (b.includes(k) ? b.filter((x) => x !== k) : [...b, k]));
 
   async function save() {
     setSaving(true);
     try {
       await api.saveTool(tool.key, {
-        description,
-        ...(schemaReadOnly ? {} : {schema: applyRows(tool.schema, rows)}),
+        ...(description !== initialDescription ? { description } : {}),
         agents: bound,
         enabled,
       });
@@ -184,13 +85,16 @@ function ToolEditor({
     }
   }
   async function reset() {
+    setSaving(true);
     try {
       await api.resetTool(tool.key);
-      toast.success(`已恢复「${tool.key}」为代码默认`);
+      toast.success(`已恢复「${tool.key}」的默认说明`);
       onSaved();
       onClose();
     } catch (e) {
       toast.error("恢复失败：" + (e as Error).message);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -232,65 +136,42 @@ function ToolEditor({
         </div>
 
         {/* description */}
-        <div className="grid gap-1.5">
-          <Label className="text-muted-foreground text-xs">工具描述（发送给模型）</Label>
+        <Field>
+          <FieldLabel htmlFor="tool-description">自定义说明（留空使用默认）</FieldLabel>
           <Textarea
+            id="tool-description"
             className="font-mono text-xs"
             rows={6}
             value={description}
             readOnly={readOnly}
             onChange={(e) => setDescription(e.target.value)}
           />
-        </div>
+        </Field>
 
-        {/* params */}
-        <div className="grid gap-2">
-          <Label className="text-muted-foreground text-xs">{tool.schema_source === "unavailable" ? "历史参数 Schema（无当前实现，只读）" : "参数 Schema（来自实际实现，只读）"}</Label>
-          {rows.length === 0 && <span className="text-muted-foreground text-xs">（无参数）</span>}
-          {rows.map((r, i) => (
-            <div
-              key={(r.parentKey ?? "") + "." + r.name}
-              className={
-                r.parentKey ? "border-l-2 border-muted ml-3 pl-3 grid gap-2 py-2" : "grid gap-2 rounded-md border p-3"
-              }
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                {r.parentKey && <span className="text-muted-foreground font-mono text-[10px]">↳</span>}
-                <span className="font-mono text-sm">{r.name}</span>
-                <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
-                  {r.type || "?"}
-                </Badge>
-                {r.required && (
-                  <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-                    必填
-                  </Badge>
-                )}
-                {r.parentKey && <span className="text-muted-foreground text-[10px]">items 子字段</span>}
-              </div>
-              <div className="grid gap-2">
-                <div className="grid gap-1">
-                  <Label className="text-muted-foreground text-[11px]">描述</Label>
-                  <Input
-                    className="text-xs"
-                    value={r.description}
-                    readOnly={schemaReadOnly}
-                    onChange={(e) => setRow(i, { description: e.target.value })}
-                  />
-                </div>
-                <div className="grid gap-1">
-                  <Label className="text-muted-foreground text-[11px]">默认值</Label>
-                  <Input
-                    className="text-xs"
-                    placeholder={r.scalar ? "（空=无默认）" : "仅标量支持"}
-                    disabled={schemaReadOnly || !r.scalar}
-                    value={r.defaultStr}
-                    onChange={(e) => setRow(i, { defaultStr: e.target.value })}
-                  />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <FieldGroup>
+          {previews.length > 0 && <Field>
+            <FieldLabel htmlFor="tool-preview-role">查看角色契约</FieldLabel>
+            <Select value={preview?.role ?? ""} onValueChange={setPreviewRole}>
+              <SelectTrigger id="tool-preview-role"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectGroup>
+                {previews.map((r) => <SelectItem key={r.role} value={r.role}>{r.role}</SelectItem>)}
+              </SelectGroup></SelectContent>
+            </Select>
+            <FieldDescription>当前配置的新会话预览，已有会话可能不同。</FieldDescription>
+          </Field>}
+          {preview?.descriptions?.[tool.key] && <Field>
+            <FieldLabel>角色实际说明</FieldLabel>
+            <p className="whitespace-pre-wrap text-sm">{preview.descriptions[tool.key]}</p>
+          </Field>}
+          <Field>
+            <FieldLabel>{preview ? '完整参数 Schema（只读）' : '目录参数（非角色预览）'}</FieldLabel>
+            {schema ? (
+              <pre className="max-h-96 overflow-auto rounded-md border p-3 text-xs" tabIndex={0} aria-label="参数 Schema">{JSON.stringify(schema, null, 2)}</pre>
+            ) : (
+              <FieldDescription>该工具未在当前角色预览中装配。</FieldDescription>
+            )}
+          </Field>
+        </FieldGroup>
       </div>
 
       <Separator className="mt-4" />
@@ -298,8 +179,8 @@ function ToolEditor({
         <Button size="sm" onClick={save} disabled={saving || readOnly}>
           <SaveIcon /> 保存
         </Button>
-        <Button size="sm" variant="outline" disabled={readOnly} onClick={reset}>
-          <RotateCcwIcon /> 恢复默认
+        <Button size="sm" variant="outline" disabled={saving || readOnly} onClick={reset}>
+          <RotateCcwIcon /> 恢复默认说明
         </Button>
       </div>
     </div>
@@ -434,7 +315,7 @@ export default function ToolsPage() {
           <CardHeader>
             <CardTitle>角色装配预览</CardTitle>
             <CardDescription>
-              工具数量仅统计平台内置工具；运行 Schema 含 pi 和自定义工具。新会话使用当前绑定，独立会话按已绑定任务预览。MCP Schema 未连接、不计入。旧会话及自定义提示词可能保留兼容工具。
+              预览当前配置下的新任务会话。数量仅计平台工具；Schema 大小含 pi 和自定义工具，不含 MCP。
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -548,6 +429,7 @@ export default function ToolsPage() {
                 key={selected.key}
                 tool={selected}
                 agents={agents}
+                roles={roles}
                 captureOn={captureOn}
                 onSaved={reload}
                 onClose={() => setSelectedKey(null)}

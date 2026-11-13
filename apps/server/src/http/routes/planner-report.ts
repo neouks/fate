@@ -29,6 +29,7 @@ function actionName(tool: string) {
   if (["prove_goal", "goal_evidence", "set_goal_status"].includes(tool)) return "核对目标";
   if (tool === "add_intent") return "提交意图";
   if (tool === "steer_work") return "提交纠偏";
+  if (tool === "kill_work") return "终止意图";
   return "其他工具调用";
 }
 
@@ -115,12 +116,15 @@ export async function readPlannerReport(db: Database, taskID: number, turnID: st
   const corrected = new Map<ReportItem, string>();
   const created = new Set<number>();
   for (const {tool, use, result} of calls.values()) {
-    const activity = (use ?? result)!.id;
+    const activity = (result?.is_error ? result : use ?? result)!.id;
     const name = actionName(tool);
     const action = actions.get(name) ?? { name, total: 0, succeeded: 0, failed: 0, unknown: 0, activity };
     action.total++;
     const durable = result?.receipt ?? use?.receipt;
-    if (result?.is_error) action.failed++;
+    if (result?.is_error) {
+      if (!action.failed) action.activity = activity;
+      action.failed++;
+    }
     else if (result || durable) action.succeeded++;
     else { action.unknown++; actionsPartial = true; }
     actions.set(name, action);

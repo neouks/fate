@@ -63,6 +63,18 @@ test('add_intent receipt replays an old flat call and rejects changed arguments'
   await assert.rejects(priorPlannerDispatch(db,ctx,{intents:[{summary:'其他方向'}]},{summary:'其他方向'}),/参数或交付身份已变化/);
 });
 
+test('add_intent rejects misplaced evidence before the entire batch reaches storage', async () => {
+  let transactions = 0;
+  const db = {transaction: async () => {transactions++; throw new Error('unexpected storage access');}} as unknown as Database;
+  const tool = addIntentTool(runContext(db, 1, 1, 'planner'));
+  const args = {intents:[{summary:'核对本地清单'},{summary:'核对本地记录',basis:[{node_id:42,version:0}]}]};
+  assert.throws(() => validate(tool,args), /intents\[1\]\.basis 只能放在 contract\.basis/);
+  const result = await invoke(tool,args,false);
+  assert.equal(result.error,true);
+  assert.match(result.body.error,/intents\[1\]\.basis 只能放在 contract\.basis/);
+  assert.equal(transactions,0);
+});
+
 test('OpenAI-compatible streaming rejects empty add_intent and accepts a corrected fragmented call', async () => {
   const dir = await mkdtemp(join(tmpdir(),'fate-intent-wire-'));
   const requests: {tools?: {function: {name:string;parameters:{required:string[]}}}[]}[] = [];

@@ -50,7 +50,7 @@ test("Planner reports use scoped durable receipts, distinguish unknowns and pagi
   await use("first", "add_intent", "duplicate");
   await result("first", "add_intent", "duplicate", JSON.stringify({ intents: [{ intent_id: ids[0], created: false }] }));
   await use("first", "add_intent", "failed");
-  await result("first", "add_intent", "failed", "rejected", true);
+  const failedDispatch = await result("first", "add_intent", "failed", "rejected", true);
   await use("first", "add_intent", "mismatched");
   await result("first", "add_intent", "mismatched", JSON.stringify({ intents: [{ intent_id: unrelated, created: true }] }));
   for (const call of ["steer-1", "steer-2"]) {
@@ -63,6 +63,8 @@ test("Planner reports use scoped durable receipts, distinguish unknowns and pagi
   } }, { node_id: ids[0], worker: "work#1", tool: "steer_work" });
   await use("first", "context_get", "read");
   await result("first", "context_get", "read", "{}");
+  await use("first", "kill_work", "stop");
+  await result("first", "kill_work", "stop", JSON.stringify({ killed: ids[0] }));
   await activity("first", "status", { event_type: "runner_settled", stop_reason: "budget" });
   await end("first");
   await start("recovered");
@@ -93,8 +95,11 @@ test("Planner reports use scoped durable receipts, distinguish unknowns and pagi
   assert.equal(report.dispatch.next_offset, 10);
   assert.deepEqual(report.steering.items.map((item: {status: string}) => item.status), ["submitted", "delivered"]);
   assert.equal(report.actions.items.find((item: {name: string}) => item.name === "读取上下文").succeeded, 1);
+  assert.equal(report.actions.items.find((item: {name: string}) => item.name === "终止意图").succeeded, 1);
+  assert.equal(report.actions.items.find((item: {name: string}) => item.name === "提交意图").activity, String(failedDispatch));
   const next = await read(url("first") + "?dispatch_offset=10");
   assert.deepEqual(next.dispatch.items.map((item: {status: string}) => item.status), ["created", "created", "duplicate", "failed"]);
+  assert.equal(next.dispatch.items.at(-1).activity, String(failedDispatch));
   assert.equal(next.dispatch.next_offset, null);
   assert.deepEqual(await read(url("first")), report);
   const replayed = await read(url("recovered"));

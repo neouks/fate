@@ -19,7 +19,7 @@ import {terminalToolDefinitions} from '../pi/terminal.js';
 import {customWorkerTools,platformBashDescription} from '../tools/custom.js';
 import {applyToolBindings,disabledBuiltinTools} from './tool-bindings.js';
 import {toolIdentity,ACTIVE_ROLES} from './tool-registry.js';
-import {prepareToolLoading,compactToolSchema} from './tool-loading.js';
+import {prepareToolLoading} from './tool-loading.js';
 import {platformPolicy} from '../pi/platform-policy.js';
 import {hasDeferredMcp,TOOL_SEARCH_HINT} from '../pi/platform-mcp.js';
 import {resolveRolePrompt} from './prompts.js';
@@ -66,17 +66,25 @@ export async function previewRoleTools(db:Database,role:string,taskBound=true){
   resident:initial.map(t=>t.name),deferred:loadout.toolLoading.deferred,compatibility:loadout.toolLoading.compatibility,fallback:loadout.toolLoading.fallback,
   schema_bytes:{before:measure(bound),resident:measure(initial),registered:measure([...definitions.values()])},
   mcp:{status:'not_connected',servers:resources.mcpEntries?.map(e=>e.name)??[],schema_counted:false},
+  descriptions:Object.fromEntries([...definitions.values()].map(t=>[t.name,t.description])),
   schemas:Object.fromEntries([...definitions.values()].map(t=>[t.name,t.parameters]))};
+}
+/** A shared schema is valid only when every loaded role agrees. */
+export function catalogSchema(name:string,roles:Array<{schemas:Record<string,unknown>}>,stored:unknown={}){
+ const schemas=roles.map(r=>r.schemas[name]).filter(s=>s!==undefined);
+ if(!schemas.length)return {schema:stored??{},schema_source:'unavailable'};
+ const shared=schemas.every(s=>JSON.stringify(s)===JSON.stringify(schemas[0]));
+ return {schema:shared?schemas[0]:{},schema_source:shared?'role':'role_specific'};
 }
 export async function catalogTools(db:Database){
  const definitions=builtinDefinitions(db),rows=(await db.query('SELECT * FROM tools ORDER BY key')).rows;
  const roles:Awaited<ReturnType<typeof previewRoleTools>>[]=[];for(const role of ACTIVE_ROLES)roles.push(await previewRoleTools(db,role));
  return {roles,tools:rows.map(row=>{
   const identity=toolIdentity(String(row.key),String(row.kind)),definition=definitions.get(String(row.key));
-  const implementation=definition?compactToolSchema(definition):undefined;
   const loaded=roles.filter(r=>r.resident.includes(String(row.key))||r.deferred.includes(String(row.key)));
   const description=row.kind==='builtin'&&definition?effectiveToolDescription(String(row.key),definition.description,row.description):{description:row.description,source:'configuration'};
-  return {...row,...identity,description:description.description,description_source:description.source,schema:row.kind==='builtin'?implementation?.parameters??row.schema??{}:row.schema??{},schema_source:row.kind==='builtin'?definition?'implementation':'unavailable':'configuration',
+  return {...row,...identity,description:description.description,description_source:description.source,
+   ...(row.kind==='builtin'?catalogSchema(String(row.key),roles,row.schema):{schema:row.schema??{},schema_source:'configuration'}),
    schema_read_only:row.kind==='builtin',agents:row.agents??[],loading:Object.fromEntries(loaded.map(r=>[r.role,r.deferred.includes(String(row.key))?'deferred':'resident']))};
  })};
 }

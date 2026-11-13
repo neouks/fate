@@ -50,8 +50,12 @@ export function domainCompactionExtension(opts:AgentRunnerOptions,health:Compact
             if(attempt<2&&await opts.modelPolicy?.retry(signal))continue;
             throw new Error('摘要模型请求失败');
           }
-          if(response.stopReason==='aborted'||response.stopReason==='length'||response.content.some(b=>b.type==='toolCall'))
-            throw new Error(`摘要未完整生成（${response.content.some(b=>b.type==='toolCall')?'unexpected_tool_call':response.stopReason}），原始会话已保留`);
+          if(response.content.some(b=>b.type==='toolCall'))
+            throw new Error('摘要返回了工具调用，原始会话已保留');
+          if(response.stopReason!=='stop'){
+            const reason=response.stopReason==='length'?'达到模型输出长度上限':response.stopReason;
+            throw new Error(`摘要未完整生成（${reason}），原始会话已保留`);
+          }
           const summary=response.content.filter(b=>b.type==='text').map(b=>b.text).join('\n').trim();
           if(!summary)throw new Error('摘要为空，原始会话已保留');
           return response;

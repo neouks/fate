@@ -46,9 +46,11 @@ function readIntentItems(args: AddIntentArgs): IntentItem[] {
   const items = batch ? args.intents! : [args as IntentItem];
   for (const [index, item] of items.entries()) {
     const path = batch ? 'intents[' + index + '].' : '';
-    if (typeof item?.summary !== 'string' || !item.summary.trim() || item.summary.length > 2000) {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.summary !== 'string' || !item.summary.trim() || item.summary.length > 2000) {
       throw new Error('Invalid arguments for tool "add_intent": ' + path + 'summary 必须是 1–2000 字符的非空方向说明');
     }
+    if (Object.hasOwn(item, 'basis'))
+      throw new Error('Invalid arguments for tool "add_intent": ' + path + 'basis 只能放在 contract.basis 中');
     if (item.parent_ids !== undefined && item.parent_id !== undefined)
       throw new Error('Invalid arguments for tool "add_intent": ' + path + 'parent_id 与 parent_ids 只能传一种');
   }
