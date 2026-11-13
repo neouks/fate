@@ -10,10 +10,11 @@ import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
 import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
 import {stableToolPayload,hostTaskContext} from './request-prefix.js';
 import {restrictRegisteredTools,wrapRegisteredTools} from './operation-tools.js';
-import { nativeWorkspaceFileTools } from './workspace-file-changes.js';
+import {operationFingerprint} from '../db/operation-journal.js';
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { nativeWorkspaceFileTools } from './workspace-file-changes.js';
 /**
  * pi SDK 会话生命周期、工具守卫、运行预算和事件适配。
  *
@@ -58,7 +59,7 @@ export interface ToolGuardDecision {
   /** A durable prerequisite changed: restrict tools and allow only a bounded writeback phase. */
   settle?: GuardSettlementReason;
 }
-export type GuardSettlementReason = 'basis_changed' | 'basis_unavailable';
+export type GuardSettlementReason = 'basis_changed' | 'basis_unavailable' | 'tool_retries_exhausted';
 
 /** 一次工具调用的门控上下文 */
 export interface ToolGuardContext {
@@ -66,7 +67,7 @@ export interface ToolGuardContext {
 	toolCallId: string;
 	toolName: string;
 	args: Record<string, unknown>;
-	/** Host-checked bound Skill document. */
+	/** Set by the host after checking the session Skill binding and file path. */
 	skillDocument?: boolean;
 }
 
@@ -88,12 +89,12 @@ export interface WrapupContext {
 export type WrapupBudget = (context: WrapupContext) => WrapupDecision | undefined | Promise<WrapupDecision | undefined>;
 
 type ClosingState = { active: boolean; reason?: WrapupContext['reason'];
-  control?: {reason:GuardSettlementReason;prompt:string;limit:number;announced:boolean} };
+  control?: {reason:GuardSettlementReason;prompt:string;limit:number;announced:boolean;excludedTool?:string} };
 const CLOSING_RULE = '已进入收尾阶段，停止新探索。bash、外部请求、MCP 等探索工具已停用，不要重试或排查工具环境。被宿主拒绝的调用未执行，不能当作目标响应或实测证据。仅读取已有证据、整理并提交本角色的最终结果；未完成的条件如实标记，不能继续探测来补齐。';
 function closingToolError(name: string, text: string | undefined, closing: ClosingState, tools?: readonly string[]) {
   // pi resolves inactive tools before tool_call. Preserve the real failure but
   // explain deliberate host deactivation in both the transcript and activity UI.
-  return closing.active && tools && !tools.includes(name) && text === `Tool ${name} not found`
+  return closing.active && tools && (!tools.includes(name) || closing.control?.excludedTool === name) && text === `Tool ${name} not found`
     ? `${CLOSING_RULE}\n原始工具错误：${text}` : text;
 }
 function toolAvailabilityError(name:string,text:string|undefined,closing:ClosingState,opts:AgentRunnerOptions){
@@ -386,7 +387,7 @@ export class AgentRunner {
             const rejection=roleToolRejection(opts.platform?.role,event.toolName);
             if(rejection)return {block:true,reason:rejection,terminate:false};
             if(await opts.stopWhen?.())return {block:true,reason:'本角色的最终结果已提交，不能继续操作',terminate:false};
-            if (closing.active && opts.settlementTools && !opts.settlementTools.includes(event.toolName))
+            if (closing.active && opts.settlementTools && (!opts.settlementTools.includes(event.toolName) || closing.control?.excludedTool === event.toolName))
               return {block:true,reason:CLOSING_RULE,terminate:false};
 						const decision = await opts.guard?.({
 							signal: context.signal,
@@ -437,9 +438,12 @@ export class AgentRunner {
 
     let budgetAnnounced = false;
     let rejectedIntentTurns = 0;
+    const failedCalls = new Map<string,string>();
+    const worker = opts.platform?.role === 'worker';
 		const budgetExtension: ExtensionFactory = (pi) => {
-      enterClosing=()=>{closing.active=true;if(opts.settlementTools)pi.setActiveTools(pi.getActiveTools().filter(name=>opts.settlementTools!.includes(name)));};
-      pi.on('agent_start', () => { rejectedIntentTurns = 0; });
+      enterClosing=()=>{closing.active=true;if(opts.settlementTools)pi.setActiveTools(pi.getActiveTools()
+        .filter(name=>opts.settlementTools!.includes(name) && name!==closing.control?.excludedTool));};
+      pi.on('agent_start', () => { rejectedIntentTurns = 0; failedCalls.clear(); });
       pi.on('turn_start',(_event,context)=>{
         if(turns+compactionHealth.requests>=requestLimit()){
           if(!closing.control)closing.reason='turn_limit';context.abort();
@@ -450,15 +454,50 @@ export class AgentRunner {
         if(opts.stopOnRecoveryBlock?.()){context.abort();return;}
         if(await opts.stopWhen?.()){domainCompletion.done=true;context.abort();return;}
         const intentResults = _event.toolResults.filter(result => result.toolName === 'add_intent');
-        rejectedIntentTurns = intentResults.length && intentResults.every(result => result.isError)
-          ? rejectedIntentTurns + 1 : 0;
-        if (rejectedIntentTurns >= 3) {
+        const intentSucceeded = intentResults.some(result => !result.isError);
+        if (intentSucceeded) {
+          rejectedIntentTurns = 0;
+          for (const [key, name] of failedCalls) if (name === 'add_intent') failedCalls.delete(key);
+        } else if (intentResults.length) rejectedIntentTurns++;
+        const calls = _event.message.role === 'assistant'
+          ? new Map(_event.message.content.flatMap(b => b.type === 'toolCall' ? [[b.id, b] as const] : []))
+          : new Map();
+        const newFailures = new Map<string,string>();
+        let repeatedTool: {name:string; denied:boolean} | undefined;
+        for (const result of _event.toolResults) {
+          if (!worker && (result.toolName !== 'add_intent' || intentSucceeded)) continue;
+          const call = calls.get(result.toolCallId);
+          if (!call) continue;
+          const signature = operationFingerprint(result.toolName, [call.arguments, call.argumentsError]);
+          if (!result.isError) { failedCalls.delete(signature); newFailures.delete(signature); continue; }
+          const error = toolResultText(result) ?? '';
+          // A role/intent denial persists even when the model varies the inputs.
+          const denial = error.match(/^(?:\{"error":")?(当前角色无 [a-zA-Z0-9_]+ 读取或执行权限|工具不在当前意图 allowed_tools 内|工具(?:或规范入口)?已禁用或解除角色绑定)/u)?.[1];
+          const key = denial ? operationFingerprint(result.toolName, denial) : signature;
+          if (failedCalls.has(key) || newFailures.has(key)) repeatedTool ??= {name:result.toolName, denied:!!denial};
+          newFailures.set(key,result.toolName);
+        }
+        for (const [key, name] of newFailures) {
+          failedCalls.set(key,name);
+          if (failedCalls.size > 256) failedCalls.delete(failedCalls.keys().next().value!);
+        }
+        if (!worker && (repeatedTool?.name === 'add_intent' || rejectedIntentTurns >= 3)) {
           activityDelivery.emit(() => opts.onActivity?.({
             kind: 'host_status', phase: 'tool_retries_exhausted',
-            text: '连续 3 个模型回合的 add_intent 均未成功，本轮已停止。请查看最后的工具错误并修正参数或依据。',
+            text: 'add_intent 重复失败，已停止本轮派单。请查看工具错误并修正参数或依据。',
           }));
           context.abort();
           return;
+        }
+        if (worker && repeatedTool && !closing.control && !closing.active) {
+          const remaining = Math.max(1, opts.maxWrapupTurns ?? 2);
+          const text = `工具 ${repeatedTool.name} 重复失败，已停止新探测。请保存已有观察并说明阻塞原因。`;
+          const canCorrectWriteback = !repeatedTool.denied && ['record_fact','report_finding','insert_assets'].includes(repeatedTool.name);
+          closing.control = {reason:'tool_retries_exhausted', prompt:text,
+            limit:turns+compactionHealth.requests+remaining, announced:false,
+            excludedTool:canCorrectWriteback?undefined:repeatedTool.name};
+          activityDelivery.emit(() => opts.onActivity?.({kind:'host_status',phase:'tool_retries_exhausted',text}));
+          enterClosing();
         }
         if(closing.active)enterClosing();
         if(closing.control){
@@ -510,7 +549,7 @@ export class AgentRunner {
         const wrapped=opts.wrapExecutionTool?.(tool)??tool;
         return opts.toolLoading?.deferred.includes(tool.name)?{...wrapped,exposure:'deferred'}:wrapped;
       })),
-			noSkills: true, // Only explicitly bound platform Skills; no automatic discovery.
+			noSkills: true, // Only the explicitly bound platform Skills below; no cwd/global discovery.
 			skillsOverride: opts.skillsDir
 				? (base) => {
 						const loaded = loadBoundSkills(opts.skillsDir!, opts.allowedSkills);

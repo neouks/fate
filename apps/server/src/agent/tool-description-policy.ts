@@ -31,13 +31,14 @@ export function roleToolDescription(name:string,resolved:{description:string;sou
 
 /** Shared by the tool catalog and role-specific declarations. */
 export function describeToolContract(name: string, description: string): string {
+  if (name === 'asset_search') return description + ' DSL 可用 tested==true 或 tested==false 筛选任务覆盖状态，与 untested 共享角色权限及覆盖度开关。';
   if (name === 'prove_goal') return description + ' 每次只提交一项目标的证据。仅明确的资产测试覆盖度 100% 由宿主核验，其他目标返回 awaiting_confirmation 等待人工确认；不得把提交申请描述为目标已完成。all_goals_met=false 时仍有目标待验收，不重复提交同一申请。';
-  if (name === 'add_intent') return description + ' 单条传顶层非空 summary；批量仅传 1–4 项 intents，每项各填 summary。parent_ids 仅限本任务；直接来源任务用 contract.basis 的 node_id 和实际内容版本。';
+  if (name === 'add_intent') return description + ' 统一传 1–4 项 intents，单条也放入数组，每项各填非空 summary。parent_ids 仅限本任务；直接来源任务用 contract.basis 的 node_id 和实际内容版本。';
   if (name === 'dispatch_intents') return description + ' 提交非空 intent_ids；仅用户明确要求批量下发时传 all_open: true。';
   if (name === 'record_fact') return description.replace('缺项仍保存但不计覆盖','缺少资产或 scope 时仍保存但不计覆盖')
     + ' Worker 每条事实必填非空 evidence；批量逐项核对结果，整批失败返回工具错误。';
   if (name === 'insert_assets') return description + ' 整批失败返回工具错误，部分成功只重试失败项。';
-  if (name === 'register_user_target') return description + ' evidence 引用目标或描述中的完整原句。精确域名用 subdomain；root_domain 仅用于原文明确的通配根域。';
+  if (name === 'register_user_target') return description + ' evidence 引用完整原句或独立目标地址行。精确域名用 subdomain；root_domain 仅用于原文明确的通配根域。';
   if (name === 'context_search') return description + ' source=operations/needs 不支持图谱筛选 q/types/state/asset_id。';
   return description;
 }

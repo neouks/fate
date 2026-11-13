@@ -37,14 +37,35 @@ function targetIdentity(kind: UserTargetInput['kind'], value: string): string {
   return host;
 }
 
-/** Match an intact user clause and the exact locator within it. This establishes
+function matchTargetEvidence(input: string, sources: readonly string[]): string | undefined {
+  const evidence = input.trim();
+  const quote = evidence.replace(/[。！？]$/u, '').trim();
+  if (quote && sources.some(source => source.split(/[\r\n。！？]+/u).some(clause => clause.trim() === quote))) {
+    return evidence;
+  }
+
+  // A target label and its value may occupy two lines. Accept an escaped line
+  // break from tool arguments only when both lines match an actual source block.
+  const [heading, target, ...extra] = evidence.replace(/\r\n?|\\r\\n|\\n/gu, '\n').split('\n');
+  if (!heading || !target || extra.length || !/^(?:目标|测试目标|授权目标|测试地址|target|test target)\s*[:：]$/iu.test(heading.trim())) {
+    return;
+  }
+  for (const source of sources) {
+    const lines = source.split(/(\r\n|\r|\n)/u);
+    for (let index = 0; index + 2 < lines.length; index += 2) {
+      if (lines[index]!.trim() === heading.trim() && lines[index + 2]!.trim() === target.trim()) {
+        return lines.slice(index, index + 3).join('').trim();
+      }
+    }
+  }
+}
+
+/** Match an intact user quote and the exact locator within it. This establishes
  * textual provenance, not a semantic judgment about every user constraint. */
 export function groundUserTarget(input: UserTargetInput, sources: readonly string[]) {
-  const evidence = input.evidence.trim();
-  const quote = evidence.replace(/[。！？]$/u, '').trim();
-  const quoted = sources.some(source => source.split(/[\r\n。！？]+/u).some(clause => clause.trim() === quote));
-  if (!quote || !quoted)
-    throw new Error('evidence 必须逐字引用任务目标或描述中的完整原句，保留条件和例外');
+  const evidence = matchTargetEvidence(input.evidence, sources);
+  if (!evidence)
+    throw new Error('evidence 须引用目标或描述中的完整原句或独立目标地址行，保留条件和例外；原文的目标标题与地址相邻时也可一起引用');
   if (!['root_domain', 'subdomain', 'ip', 'cidr'].includes(input.kind)) throw new Error('未知目标 kind');
   const value = targetIdentity(input.kind, input.value.trim());
   const exclusion = /禁止|不要|不得|不允许|不测试|仅供参考|仅作参考|示例|排除|(?:\bdo not\b|\bdon't\b|\bmust not\b|\bnot allowed\b|\bexcluded?\b|\bout of scope\b|\bfor reference\b)/iu;

@@ -30,12 +30,14 @@ const intentFields = {
                   objective:{type:'string'},acceptance:{type:'array',minItems:1,maxItems:10,items:{type:'string'}},out_of_scope:{type:'array',maxItems:20,items:{type:'string'}},
                   basis:{type:'array',description:'直接来源任务的证据放在此处，不放 parent_ids。填写已读取 fact/finding 的顶层 version/content_version，可为 0；read_receipt.version、writeback.version 是格式版本，不能作为依据版本。goal、intent 不是事实依据。',maxItems:20,items:{type:'object',properties:{node_id:{type:'integer',minimum:1},version:{type:'integer',minimum:0,description:'节点内容版本，不是读取回执或写回格式版本'}},required:['node_id','version']}},
                   work:{type:'object',properties:{resource:{type:'string'},question_key:{type:'string'},method_class:{type:'string'},identity:{type:'string'}},required:['resource','question_key','method_class','identity']},
-                  allowed_tools:{type:'array',items:{type:'string'},maxItems:50,description:'精确工具名，见 graph_overview.worker_capabilities；HTTP GET 使用 http_request，不能编造 http_get 等别名。内部事实/进度/结果写回不受此执行工具清单限制。'},
+                  allowed_tools:{type:'array',items:{type:'string'},maxItems:50,description:'精确工具名，见 graph_overview.worker_capabilities；HTTP GET 使用 http_request，不能编造 http_get 等别名。内部写回和已绑定 Skill 文档的读取不受此清单限制。'},
                 }},
                 retry_of:{type:'integer',minimum:1},retry_kind:{type:'string',enum:['new_evidence','transient_failure']},retry_reason:{type:'string',maxLength:2000},
               };
 
 function readIntentItems(args: AddIntentArgs): IntentItem[] {
+  if (!args || typeof args !== 'object' || Array.isArray(args) || !Object.keys(args).length)
+    throw new Error('Invalid arguments for tool "add_intent": 未收到意图参数。请按 {"intents":[{"summary":"具体方向与终点"}]} 提交；没有可派方向时结束本轮。');
   const batch = Object.hasOwn(args, 'intents');
   if (batch && (!Array.isArray(args.intents) || args.intents.length < 1 || args.intents.length > 4))
     throw new Error('Invalid arguments for tool "add_intent": intents 必须包含 1–4 项');
@@ -60,29 +62,22 @@ export function addIntentTool(ctx: ToolRunContext) {
       description:
         "提交 1~4 条探索意图进 frontier，worker 将按优先级领取执行。提交前逐一与 open/running 意图及" +
         "近期已完成意图比对。每条意图是一个可独立交付结论的方向，给出大致资产范围与探索价值即可，让 Worker 自主选择步骤，不按接口/参数拆单。contract.work 可选，legacy_text 仅做文本去重；dedup.related_intent_ids 表示局部交叉，需读取已有工作协调职责，不强制拆成更小单元。parent 必须是产出了证据的 fact/finding 节点" +
-        "（发现驱动规划）。串行依赖链用 todo_write 记录，只派前置已满足的那一步。单条直接提供 summary/asset_ids/parent_ids/priority；批量使用 intents，每项完整填写，禁止混合两种格式。",
+        "（发现驱动规划）。串行依赖链用 todo_write 记录，只派前置已满足的那一步。统一传 intents 数组；单条也放入数组，每项必填非空 summary。",
       promptSnippet: "派发探索意图（先查重）",
       parameters: {
         type: "object", additionalProperties:false,
         properties: {
-          ...intentFields,
           intents: {
             type: "array", minItems: 1, maxItems: 4,
-            description: "批量仅传 intents，每项必填非空 summary，其他单条字段按需填写；任一项无效整批不提交",
+            description: "1–4 条意图，单条也放在数组内；每项必填非空 summary，任一项无效整批不提交",
             items: { type: "object", properties: intentFields, required: ["summary"], additionalProperties: false },
           },
         },
-        oneOf: [
-          { required: ["summary"], not: { required: ["intents"] } },
-          { required: ["intents"], not: { anyOf: Object.keys(intentFields).map(key => ({ required: [key] })) } },
-        ],
+        required: ["intents"],
       },
       prepareArguments(input) {
-        if (!input || typeof input !== 'object' || Array.isArray(input))
-          throw new Error('Invalid arguments for tool "add_intent": 入参必须为对象');
         const args = input as AddIntentArgs;
-        readIntentItems(args);
-        return args;
+        return {intents:readIntentItems(args)};
       },
       // Main's direct-intent grant must run after the intent transaction commits;
       // otherwise the host admission transaction cannot see the uncommitted node.
@@ -91,7 +86,7 @@ export function addIntentTool(ctx: ToolRunContext) {
         const items = readIntentItems(args);
         const committed = await c.db.transaction(async db => {
           await c.hooks.assertOwnership?.(db);
-          const receipt=await priorPlannerDispatch(db,c,args);
+          const receipt=await priorPlannerDispatch(db,c,{intents:items},items.length===1?items[0]:undefined);
           if(receipt?.prior)return {results:receipt.prior,replayed:true};
           const capabilities = await workerCapabilities({...c, db});
           const s = db.exploration(c.expID), originFact = await s.originFactID();

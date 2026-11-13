@@ -23,6 +23,7 @@ export function compileAssetDSL(
 	input: string,
 	values: unknown[],
 	alias = "a",
+	coverage?: (tested: boolean) => string,
 ): string {
 	if (!input.trim()) return "TRUE";
 	const tokens: Token[] = [];
@@ -108,6 +109,11 @@ export function compileAssetDSL(
 		}
 		if (f === "task_id") return `${param(integer(v))}=ANY(${alias}.task_ids)`;
 		if (f === "company_id") return `${alias}.company_id=${param(integer(v))}`;
+		if (f === "tested" && coverage) {
+			if (!["=", "==", "!="].includes(op) || !/^(true|false)$/i.test(v))
+				throw new AssetQueryError("tested 仅支持 =、==、!=，值必须为 true 或 false");
+			return coverage((v.toLowerCase() === "true") !== (op === "!="));
+		}
 		if (Object.hasOwn(numbers, f))
 			return `${alias}.${numbers[f]} ${op === "==" ? "=" : op} ${param(integer(v))}`;
 		if (Object.hasOwn(arrays, f)) {
@@ -124,7 +130,7 @@ export function compileAssetDSL(
 			return `${alias}.${strings[f]} ${op === "==" ? "=" : op === "!=" ? "NOT ILIKE" : "ILIKE"} ${param(op === "==" ? v : "%" + v + "%")}`;
 		}
 		throw new AssetQueryError(`未知 DSL 字段: ${f}；支持字段: ${[
-			...Object.keys(strings), ...Object.keys(numbers), ...Object.keys(arrays), "task_id", "company_id",
+			...Object.keys(strings), ...Object.keys(numbers), ...Object.keys(arrays), "task_id", "company_id", ...(coverage ? ["tested"] : []),
 		].join(", ")}`);
 	};
 	const atom = (): string => {

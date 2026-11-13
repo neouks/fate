@@ -134,15 +134,14 @@ export function registerUserTargetTool(ctx: ToolRunContext) {
     {
       name: "register_user_target",
       description:
-        "登记用户明确授权的测试目标（显式授权边界）。只登记原文明确授权的资产：要求任务目标或描述中有完整授权语句" +
-        "作为 evidence；只登记精确主机或原文明示的通配域/CIDR；不把子域缩成根域；示例/参考/禁止目标一律不登记。",
+        "登记用户明确授权的测试目标。只登记精确主机或原文明示的通配域/CIDR；不把子域缩成根域；示例/参考/禁止目标一律不登记。",
       promptSnippet: "登记用户明确授权的目标",
       parameters: {
         type: "object",
         properties: {
           kind: { type: "string", enum: ["root_domain", "subdomain", "ip", "cidr"], description: "精确域名用 subdomain（含裸根域）；root_domain 仅用于原文明确的 *.根域" },
           value: { type: "string", pattern: "\\S", description: "原文中的精确主机、CIDR 或明确的通配根域" },
-          evidence: { type: "string", pattern: "\\S", description: "逐字引用任务目标或描述中明确授权该目标的完整原句，保留条件及例外" },
+          evidence: { type: "string", pattern: "\\S", description: "逐字引用目标或描述中的完整授权原句或独立目标地址行，保留条件和例外。原文的目标标题与地址相邻时可一起引用，不添加原文没有的标题" },
         },
         required: ["kind", "value", "evidence"],
       },

@@ -66,7 +66,7 @@ export function assetDTO(a: AssetRow): AssetRow {
 	if (a.read_only !== undefined) a.task_read_only = a.read_only;
 	return a;
 }
-export async function queryAssets(db: Database, q: AssetQuery) {
+export async function queryAssets(db: Database, q: AssetQuery, authorizeCoverage?: () => Promise<void>) {
 	const taskID = q.taskID ?? 0,
 		values: unknown[] = [taskID];
 	if (q.type && !ASSET_TYPES.includes(q.type as any))
@@ -75,9 +75,14 @@ export async function queryAssets(db: Database, q: AssetQuery) {
 		values.push(v);
 		return `$${values.length}`;
 	};
+	let coverageFiltered = false;
+	const coverage = (tested: boolean) => {
+		coverageFiltered = true;
+		return `(a.id IN(SELECT id FROM target) AND (a.id IN(SELECT asset_id FROM tested))=${param(tested)})`;
+	};
 	const where = [
 		taskID > 0 ? "a.id IN(SELECT id FROM visible)" : "TRUE",
-		compileAssetDSL(q.dsl ?? "", values),
+		compileAssetDSL(q.dsl ?? "", values, "a", coverage),
 	];
 	if (q.type) where.push(`a.type=${param(q.type)}`);
 	if (q.companyID) where.push(`a.company_id=${param(q.companyID)}`);
@@ -85,10 +90,13 @@ export async function queryAssets(db: Database, q: AssetQuery) {
 		where.push(
 			`a.id IN(SELECT COALESCE(x.asset_id,w.id) FROM unnest(${param(q.ids)}::bigint[]) w(id) LEFT JOIN asset_id_aliases x ON x.old_id=w.id)`,
 		);
-	if (q.untested)
-		where.push(
-			"a.id IN(SELECT id FROM target) AND a.id NOT IN(SELECT asset_id FROM tested)",
-		);
+	if (q.untested) where.push(coverage(false));
+	if (coverageFiltered) {
+		if (taskID <= 0) throw new AssetQueryError("覆盖状态筛选需要指定任务");
+		await authorizeCoverage?.();
+		if (!(await db.taskScope().coverageEnabled(taskID)))
+			throw new AssetQueryError("覆盖状态筛选需要启用任务覆盖度");
+	}
 	if (q.tested !== undefined)
 		where.push(`(a.id IN(SELECT asset_id FROM tested))=${param(q.tested)}`);
 	const limit = q.limit ?? 50,
@@ -103,11 +111,12 @@ export async function queryAssets(db: Database, q: AssetQuery) {
 	const cols = q.summary
 		? "a.id,a.content_version,a.type,a.company_id,a.domain,a.root_domain,a.ip,a.port,a.url,a.method,a.service_type,a.service_name,a.app_name,a.bundle_id,a.page_title,a.status_code,a.technologies,a.last_seen"
 		: "a.*";
+	const order = coverageFiltered ? "id" : "last_seen DESC NULLS LAST,id DESC";
 	const rows = await db.query(
 		`WITH ${assetContextCTE}, matched AS MATERIALIZED (
  SELECT a.id,a.last_seen FROM assets a WHERE ${where.join(" AND ")}
 ), selected AS (
- SELECT id FROM matched ORDER BY ${q.untested ? "id" : "last_seen DESC NULLS LAST,id DESC"} LIMIT ${param(limit)} OFFSET ${param(offset)}
+ SELECT id FROM matched ORDER BY ${order} LIMIT ${param(limit)} OFFSET ${param(offset)}
 ), page AS (
  SELECT ${cols},(a.id IN(SELECT asset_id FROM tested)) tested,(a.id IN(SELECT asset_id FROM legacy_tested)) legacy_tested,
  (SELECT min(t.created_at) FROM tested_records t WHERE t.asset_id=a.id) tested_at,
@@ -117,7 +126,7 @@ export async function queryAssets(db: Database, q: AssetQuery) {
  FROM selected JOIN assets a ON a.id=selected.id
  LEFT JOIN LATERAL(SELECT l.* FROM task_asset_links l JOIN context_tasks c ON c.task_id=l.task_id WHERE l.asset_id=a.id ORDER BY (l.task_id=$1) DESC,l.task_id LIMIT 1)link ON true
 )
- SELECT (SELECT count(*)::int FROM matched) total,COALESCE((SELECT jsonb_agg(to_jsonb(page) ORDER BY ${q.untested ? "id" : "last_seen DESC NULLS LAST,id DESC"}) FROM page),'[]') assets`,
+ SELECT (SELECT count(*)::int FROM matched) total,COALESCE((SELECT jsonb_agg(to_jsonb(page) ORDER BY ${order}) FROM page),'[]') assets`,
 		values,
 	);
 	const total = Number(rows.rows[0]?.total ?? 0),

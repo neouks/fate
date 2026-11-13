@@ -4,7 +4,7 @@ import {TOOL_POLICY_VERSION,ACTIVE_ROLES} from '../agent/tool-registry.js';
 import {migrateConstraintProvenance} from './constraint-provenance.js';
 import {migrateIsolatedGoalsPrompt} from '../agent/goals-migration.js';
 import {migrateConstraintPrompts} from '../agent/constraint-migration.js';
-import {migrateAssetTools} from './asset-migration.js';
+import {migrateAssetTools,migrateAssetCoverageBinding} from './asset-migration.js';
 import {migrateArtex} from './artex-migration.js';
 import {migrateBuiltinPrompts,migrateApprovalPrompts,migrateSeriesPlannerPrompt} from '../agent/prompts.js';
 // 平台配置 store：settings KV / agent 提示词 / 工具目录 / MCP / LLM profile / 内置种子。
@@ -989,6 +989,7 @@ export async function seedBuiltins(db: Database): Promise<void> {
   await migrateArtex(db);
   await migrateApprovalPrompts(db);
   await migrateAssetTools(db);
+  await migrateAssetCoverageBinding(db);
   await migrateSeriesPlannerPrompt(db);
   await migrateDirectionWriteback(db);
   await migrateSeriesGoals(db);

@@ -4,7 +4,7 @@ import type {Node} from '../db/exploration.js';
 export type WorkerStopReason = 'completed'|'partial'|'blocked'|'missing_result'|'invalid_result'
   |'turn_limit'|'duration_limit'|'task_timeout'|'planner_terminated'|'main_terminated'|'user_cancelled'
   |'task_paused'|'intent_paused'|'task_completed'|'task_ended'|'service_shutdown'|'executor_stopped'
-  |'lease_lost'|'executor_recovered'|'model_connection_error'|'model_error'|'aborted'|'operation_uncertain'|'basis_changed'|'basis_unavailable';
+  |'lease_lost'|'executor_recovered'|'model_connection_error'|'model_error'|'aborted'|'operation_uncertain'|'basis_changed'|'basis_unavailable'|'tool_retries_exhausted';
 
 const labels:Record<WorkerStopReason,string> = {
   completed:'当前意图执行结束',partial:'已提交部分结果',blocked:'已提交阻塞结果',missing_result:'会话结束但未提交可验收结果',invalid_result:'结果验收失败',
@@ -14,6 +14,7 @@ const labels:Record<WorkerStopReason,string> = {
   service_shutdown:'服务关闭',executor_stopped:'执行器已停止',lease_lost:'执行租约失效',executor_recovered:'原执行器不可用，由新租约恢复',
   model_connection_error:'模型连接失败',model_error:'模型或会话执行失败',aborted:'会话被中断（未提供原因）',
   operation_uncertain:'存在未核对的工具执行结果，已停止自动重放',
+  tool_retries_exhausted:'工具重复失败，已停止探测并保留已写回的观察',
   basis_changed:'当前意图依据已变化，已停止新探测并结束收尾，待 Planner 重新评估',
   basis_unavailable:'当前意图依据已撤销或不可读，已停止新探测并结束收尾，待 Planner 重新评估',
 };

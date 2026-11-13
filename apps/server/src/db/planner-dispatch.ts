@@ -5,14 +5,17 @@ import type {Database} from './index.js';
 export interface SubmittedIntent {summary:string;intent_id:number;created:boolean;duplicate_of?:number;dedup?:{version:3;strength:string;match?:string;related_intent_ids?:number[]}}
 /** Called only inside the intent transaction, after ownership validation. The
  * host supplies session/delivery IDs; neither is accepted in model arguments. */
-export async function priorPlannerDispatch(db:Database,c:ToolRunContext,args:unknown){
+export async function priorPlannerDispatch(db:Database,c:ToolRunContext,args:unknown,legacyArgs?:unknown){
  if(c.role!=='planner'||!c.plannerDelivery)return;
  if(!c.toolCallID)throw new Error('Planner 派单缺少宿主调用标识');
  const {sessionID,deliveryID}=c.plannerDelivery;
  const hash=createHash('sha256').update(JSON.stringify(args)).digest('hex');
  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[JSON.stringify(['planner-dispatch',c.expID,sessionID,deliveryID,c.toolCallID])]);
  const row=(await db.query('SELECT delivery_id,arguments_hash,result_text FROM planner_dispatch_calls WHERE exploration_id=$1 AND session_id=$2 AND tool_call_id=$3 AND delivery_id=$4',[c.expID,sessionID,c.toolCallID,deliveryID])).rows[0];
- if(row&&(row.delivery_id!==deliveryID||row.arguments_hash!==hash))throw new Error('同一 Planner 工具调用的参数或交付身份已变化');
+ // Old sessions may replay a committed single intent that used flat arguments.
+ if(row&&(row.delivery_id!==deliveryID||row.arguments_hash!==hash&&
+   (legacyArgs===undefined||row.arguments_hash!==createHash('sha256').update(JSON.stringify(legacyArgs)).digest('hex'))))
+  throw new Error('同一 Planner 工具调用的参数或交付身份已变化');
  return {sessionID,deliveryID,callID:c.toolCallID,hash,prior:row?JSON.parse(String(row.result_text)) as SubmittedIntent[]:undefined};
 }
 export async function savePlannerDispatch(db:Database,expID:number,receipt:NonNullable<Awaited<ReturnType<typeof priorPlannerDispatch>>>,results:SubmittedIntent[]){

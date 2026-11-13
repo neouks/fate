@@ -4,6 +4,7 @@ import type { ToolRunContext } from "./context.js";
 import { writeAssets } from "../db/asset-write.js";
 import { ASSET_TYPES, queryAssets, type AssetRow } from "../db/asset-query.js";
 import {unicodeLength,unicodeSlice} from '../unicode.js';
+import {assertToolBinding} from '../agent/tool-registry.js';
 const string = { type: "string" },
 	strings = { type: "array", items: string },
 	objects = { type: "array", items: { type: "object" } };
@@ -128,10 +129,10 @@ const searchProperties = {
 	dsl: {
 		type: "string",
 		description:
-			"如 port==5200 AND type==endpoint；常用字段 type、port、domain、ip、url、method、status_code、technology。= 模糊、== 精确、!= 排除，支持 AND/OR/括号",
+			"如 type==endpoint AND tested==false；tested 为任务覆盖状态，只接受 true/false。其他常用字段 port、domain、ip、url、method、status_code、technology；支持 AND/OR/括号",
 	},
 	type: { type: "string", enum: ASSET_TYPES, description: "资产类型精确过滤；也可写入 dsl，如 type==endpoint。与 dsl 同时提供时取交集。" },
-	untested: { type: "boolean" },
+	untested: { type: "boolean", description: "true 查询覆盖范围内缺少明确测试记录的资产，可与 type、dsl 组合。与 DSL 的 tested==false 同口径，均要求覆盖度已启用且角色已绑定未测资产查询。" },
 	limit: { type: "integer", minimum: 1, maximum: 50 },
 	offset: { type: "integer", minimum: 0 },
 };
@@ -154,13 +155,10 @@ export function assetSearchTool(ctx: ToolRunContext) {
 					throw new Error(
 						"需要 dsl；已知 ID 使用 asset_get，未测使用 untested=true",
 					);
-				if (
-					a.untested &&
-					(!c.taskID || !(await c.db.taskScope().coverageEnabled(c.taskID)))
-				)
-					throw new Error("未测查询需要启用覆盖度的任务");
-				if (c.taskID <= 0)
+				if (c.taskID <= 0) {
+					if (a.untested) throw new Error("覆盖状态筛选需要指定任务");
 					return { assets: [], total: 0, count: 0, has_more: false };
+				}
 				return queryAssets(c.db, {
 					taskID: c.taskID,
 					type: a.type,
@@ -169,7 +167,7 @@ export function assetSearchTool(ctx: ToolRunContext) {
 					limit: a.limit ?? 10,
 					offset: a.offset ?? 0,
 					summary: true,
-				});
+				}, () => assertToolBinding(c.db,c.role,'list_untested_assets'));
 			},
 		},
 		ctx,
@@ -382,6 +380,7 @@ export function listAssetsTool(ctx: ToolRunContext) {
 	return domainTool<{
 		type?: string;
 		dsl?: string;
+		untested?: boolean;
 		id?: number;
 		ids?: number[];
 		limit?: number;
@@ -403,12 +402,15 @@ export function listAssetsTool(ctx: ToolRunContext) {
 			async run(a, c) {
 				if (c.taskID <= 0) return { assets: [], total: 0, count: 0 };
 				const r = await queryAssets(c.db, {
-					...a,
 					taskID: c.taskID,
+					type: a.type,
+					dsl: a.dsl,
+					untested: a.untested,
 					ids: a.ids ?? (a.id ? [a.id] : undefined),
 					limit: Math.min(50, a.limit ?? 20),
+					offset: a.offset,
 					summary: true,
-				});
+				}, () => assertToolBinding(c.db,c.role,'list_untested_assets'));
 				return {
 					...r,
 					assets: r.assets.map((x) => ({
