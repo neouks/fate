@@ -1,3 +1,4 @@
+import {validateRetryRule,rejectRetiredRetry} from '../../pi/profile-policy.js';
 import type {FastifyInstance} from 'fastify';
 
 type RetryRule={attempts:number;interval_ms:number};
@@ -81,10 +82,15 @@ export function registerLLMManagementRoutes(app:FastifyInstance){
  });
  app.get('/api/llm/retry-policy',async()=>{
   const raw=await db.platform().getSetting('llm_retry_policy');
-  try{return normalizePolicy(raw?JSON.parse(raw):{});}catch{return emptyPolicy();}
+  try{return {...normalizePolicy(raw?JSON.parse(raw):{}),active_layers:['connect','breaker'],inactive_layers:['empty','stream','intent'],application:'next_session'};}catch{return emptyPolicy();}
  });
  app.post('/api/llm/retry-policy',async req=>{
-  const policy=normalizePolicy(req.body);
+  const raw=await db.platform().getSetting('llm_retry_policy');
+  let old:Record<string,unknown>={};try{old=raw?JSON.parse(raw):{}}catch{}
+  const body=(req.body??{}) as Record<string,unknown>;
+  for(const key of ['empty','stream','intent'])rejectRetiredRetry(body[key],old[key],key);
+  validateRetryRule(body.connect);validateRetryRule(body.breaker);
+  const policy=normalizePolicy({...old,...(body.connect!==undefined?{connect:body.connect}:{}),...(body.breaker!==undefined?{breaker:body.breaker}:{})});
   await db.platform().setSetting('llm_retry_policy',JSON.stringify(policy));
   return policy;
  });

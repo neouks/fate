@@ -162,7 +162,7 @@ export interface AgentRunnerOptions {
   boundedRunHistory?:boolean;
   onRequestSize?: (size: ReturnType<typeof requestSize>,purpose?:'conversation'|'compaction') => void | Promise<void>;
 	mcpGuard?: (server:string,method:string,tool?:string)=>Promise<void>;
-	modelPolicy?: { onResponse(message: unknown): Promise<void>; retry(signal?:AbortSignal): Promise<boolean>; setPurpose?(purpose: 'conversation'|'compaction'):void; setRuntimeID?(id:string):void; setScope?(scope:import('../db/usage-ledger.js').UsageScope):void; finish?():Promise<void> };
+	modelPolicy?: { isStreaming?():boolean; onResponse(message: unknown): Promise<void>; retry(signal?:AbortSignal): Promise<boolean>; setPurpose?(purpose: 'conversation'|'compaction'):void; setRuntimeID?(id:string):void; setScope?(scope:import('../db/usage-ledger.js').UsageScope):void; finish?():Promise<void> };
 	signal?: AbortSignal;
 	maxTurns?: number;
 	maxDurationMs?: number;
@@ -642,7 +642,7 @@ export class AgentRunner {
 				break;
 			case 'message_update': {
 				const update = event.assistantMessageEvent;
-				if (this.opts.streaming !== false && (update.type === 'text_delta' || update.type === 'thinking_delta')) {
+				if ((this.opts.modelPolicy?.isStreaming?.() ?? this.opts.streaming) !== false && (update.type === 'text_delta' || update.type === 'thinking_delta')) {
 					this.emitActivity({ kind: 'assistant_delta', text: update.delta, streamID: this.streamID, isThinking: update.type === 'thinking_delta' });
 				}
 				break;

@@ -1,3 +1,4 @@
+import {classifyModelError,retryRule} from './retry-policy.js';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
@@ -31,22 +32,22 @@ export async function resolveModelProfiles(db:Database,taskID:number,role:string
     const explicitlyBound=!!bound;
     if(poolEnabled&&(!explicitlyBound||bindFallback)&&primary){
       const all=await db.platform().listProfiles();
-      const candidates=all.filter(p=>p.id===primary||!p.poolExclude).sort((a,b)=>Number(b.id===primary)-Number(a.id)||Number(b.isDefault)-Number(a.isDefault)||b.priority-a.priority||a.id-b.id);
+      const candidates=all.filter(p=>p.id===primary||!p.poolExclude).sort((a,b)=>Number(b.id===primary)-Number(a.id===primary)||Number(!!b.isDefault)-Number(!!a.isDefault)||b.priority-a.priority||a.id-b.id);
       ids=candidates.map(p=>p.id);
     }
   }
   const profiles:LLMProfile[]=[];
   for(const id of ids){ const p=await db.platform().profileByID(id);if(p)profiles.push(p); }
-  if(profiles.length>1){
+  if(profiles.length){
     const health=await db.query(`SELECT profile_id FROM llm_profile_health WHERE profile_id=ANY($1::bigint[]) AND open_until>now()`,[profiles.map(p=>p.id)]);
     const cooling=new Set(health.rows.map(r=>Number(r.profile_id)));
     const available=profiles.filter(p=>!cooling.has(p.id));
-    if(available.length)profiles.splice(0,profiles.length,...available);
+    profiles.splice(0,profiles.length,...available);
   }
   const p=profiles[0];
   return {profiles,chain:chain.rows,source,resolution:{profile_id:p?.id,name:p?.name??'',model:p?.model??'',format:p?.format??'',source,
     available:!!p && agent.rows[0]?.enabled!==false,
-    ...(!p?{reason:chain.rows.length?'任务模型候补链已耗尽':'未配置 LLM'}:agent.rows[0]?.enabled===false?{reason:'角色已禁用'}:{})}};
+    ...(!p?{reason:chain.rows.length?'任务模型候补链已耗尽':'未配置可用 LLM，或配置处于熔断冷却中'}:agent.rows[0]?.enabled===false?{reason:'角色已禁用'}:{})}};
 }
 
 function cleanError(error:string,profiles:LLMProfile[]){
@@ -55,7 +56,8 @@ function cleanError(error:string,profiles:LLMProfile[]){
 }
 
 /** Shared database limiter: reservations are serialized per profile across tasks and processes. */
-async function reserveRequest(db:Database,p:LLMProfile,signal?:AbortSignal){
+export async function reserveRequest(db:Database,p:LLMProfile,signal?:AbortSignal){
+  signal?.throwIfAborted();
   const spacing=Math.max(p.ratePerSecond>0?1000/p.ratePerSecond:0,p.ratePerMinute>0?60000/p.ratePerMinute:0);
   if(!spacing)return;
   const wait=await db.transaction(async tx=>{
@@ -97,6 +99,11 @@ export function makeModelResolver(db:Database,build=buildModelSource):ModelResol
       contextWindow:Math.min(...sources.map(s=>s.model.contextWindow)),maxTokens:Math.min(...sources.map(s=>s.model.maxTokens)),
       route:async request=>{
         request.signal?.throwIfAborted();
+        const cooling=await db.query(`SELECT profile_id FROM llm_profile_health WHERE profile_id=ANY($1::bigint[]) AND open_until>now()`,[profiles.slice(index).map(p=>p.id)]);
+        const unavailable=new Set(cooling.rows.map(r=>Number(r.profile_id)));
+        const available=profiles.findIndex((p,i)=>i>=index&&!unavailable.has(p.id));
+        if(available<0)throw new Error('模型配置均处于熔断冷却中，请稍后重试或在模型管理中恢复');
+        index=available;
         await reserveRequest(db,profiles[index]!,request.signal);
         request.signal?.throwIfAborted();
         const source=sources[index]!;
@@ -106,6 +113,7 @@ export function makeModelResolver(db:Database,build=buildModelSource):ModelResol
         return {model:source.model,thinkingLevel:purpose==='compaction'?'off':source.thinkingLevel??'off'};
       }});
     return {modelRuntime:runtime,model:runtime.getModel('series-router',`task-${taskID}-${role}`)!,streaming:profiles[0]?.streaming!==false,modelPolicy:{
+      isStreaming(){return profiles[index]?.streaming!==false;},
       setRuntimeID(id){runtimeID=id;},
       setScope(value){scope={...value};},
       setPurpose(value){purpose=value;},
@@ -130,14 +138,15 @@ export function makeModelResolver(db:Database,build=buildModelSource):ModelResol
         signal?.throwIfAborted();
         if(!lastError||lastError.startsWith(USAGE_STORAGE_ERROR))return false;
         const p=profiles[lastResponseIndex]!;
-        const hard=/401|403|invalid.?api.?key|unauthori|insufficient|quota|credit|balance/i.test(lastError);
-        const globalRule=retryPolicy.connect??{};
-        const configured=p.retry?.connect?.attempts??0;
-        const retryLimit=configured===-1?0:Math.max(0,Math.min(20,configured||Number(globalRule.attempts)||3));
-        if(!hard && retries<retryLimit){
-          retries++;const fixed=p.retry?.connect?.interval_ms||Number(globalRule.interval_ms)||0;
-          await delay(Math.min(fixed||Math.min(250*2**(retries-1),4000),10_000),undefined,{signal});return true;
+        const classification=classifyModelError(lastError);
+        const hard=classification.credential;
+        const rule=retryRule(p.retry?.connect,retryPolicy.connect);
+        if(classification.transient && retries<rule.attempts){
+          retries++;await delay(rule.delay(retries),undefined,{signal});return true;
         }
+        // Invalid payloads cannot be fixed by replaying or selecting another
+        // provider. Keep the original error and do not poison provider health.
+        if(!hard&&!classification.transient)return false;
         const health=await db.query<{fails:number;trips:number}>(`SELECT fails,trips FROM llm_profile_health WHERE profile_id=$1`,[p.id]);
         const fails=Number(health.rows[0]?.fails??0)+1,trips=Number(health.rows[0]?.trips??0);
         const threshold=Number(retryPolicy.breaker?.attempts)||3;

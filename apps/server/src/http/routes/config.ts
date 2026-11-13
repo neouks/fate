@@ -1,7 +1,7 @@
 import {registerAgentManagementRoutes} from './agents-management.js';
 import {resourceUsageList,emptyResourceUsage} from '../../db/resource-usage.js';
 import {skillFilePath,parseSkillDocument,loadBoundSkills} from '../../agent/skill-files.js';
-import {validateServerTransport} from '../../pi/mcpTransport.js';
+import {profilePolicy,validateProfilePolicy,validateRetryRule,rejectRetiredRetry} from '../../pi/profile-policy.js';
 import {configuredRuntimeResources,resourcePolicy,invalidateRuntimeResources,validateRuntimeResources} from '../../engine/runtime-resources.js';
 import {catalogTools} from '../../agent/tool-catalog.js';
 import {roleContextPolicy,CONTEXT_DEFAULTS} from '../../agent/context-policy.js';
@@ -18,6 +18,7 @@ import type { FastifyInstance } from "fastify";
 import { describeModelError, profileFetch, testProfileConnection, type ProfileLike } from "../../pi/providerFromProfile.js";
 import type { Agent, LLMProfile } from "../../db/platform.js";
 import { ActiveLLMProfileDeleteError, LLMProfileNotFoundError } from "../../db/platform.js";
+import {validateServerTransport} from '../../pi/mcpTransport.js';
 
 function agentDTO(a: Agent): Record<string, unknown> {
   return { ...a };
@@ -47,6 +48,8 @@ function profileDTO(p: LLMProfile): Record<string, unknown> {
     max_tokens_field: p.maxTokensField,
     session_header_key: p.sessionHeaderKey,
     retry: p.retry,
+    effective:profilePolicy(p),
+    inactive_fields:['retry.empty','retry.stream'],
   };
 }
 
@@ -109,6 +112,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
           maxTokensField: String(b["max_tokens_field"] ?? r["max_tokens_field"] ?? ""),
           sessionHeaderKey: String(b["session_header_key"] ?? r["session_header_key"] ?? ""),
           sessionHeaderValue: 'connectivity-probe',
+          supportsImages:(b["supports_images"]??r["supports_images"])===true,
         };
       } else return { ok: false, error: "模型配置不存在，请重新打开配置页面" };
     }
@@ -122,12 +126,13 @@ export function registerConfigRoutes(app: FastifyInstance): void {
         reasoningEffort: String(b["reasoning_effort"] ?? ""),
         proxy: String(b["proxy"] ?? ""), streaming: b["streaming"] !== false,
         maxTokensField: String(b["max_tokens_field"] ?? ""),
-        sessionHeaderKey: String(b["session_header_key"] ?? ""), sessionHeaderValue: 'connectivity-probe',
+        sessionHeaderKey: String(b["session_header_key"] ?? ""), sessionHeaderValue: 'connectivity-probe', supportsImages:b['supports_images']===true,
       };
     }
     if (!profile.model || !profile.baseURL) {
       return { ok: false, error: "缺少 model 或 base_url" };
     }
+    validateProfilePolicy(profile);
     const result = await testProfileConnection(profile,app.db);
     // 前端契约：一个字都不回的配置直接判失败（网络异常在 pi 层可能只产空回复）。
     if (result.ok && (result.reply ?? "") === "") {
@@ -215,7 +220,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       platform().workers(),
       platform().getSetting("active_task"),
     ]);
-    return { workers,runtime_resource_policy:await configuredRuntimeResources(app.db),
+    return { workers,llm_pool_enabled:await platform().getBool('llm_pool_enabled',false),llm_pool_bind_fallback:await platform().getBool('llm_pool_bind_fallback',false),runtime_resource_policy:await configuredRuntimeResources(app.db),
       planner_context_budget_tokens:Number((await platform().getSetting('planner_context_budget_tokens'))??CONTEXT_DEFAULTS.planner),
       worker_context_budget_tokens:Number((await platform().getSetting('worker_context_budget_tokens'))??CONTEXT_DEFAULTS.worker),
       pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{runtime_resource_policy:'queued and next admission; existing executions are not preempted',workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission",planner_context_budget_tokens:'next planner session',worker_context_budget_tokens:'next worker session'}, active_task: activeTask ?? "" };
@@ -224,6 +229,8 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   const setSettings = async (req: { body?: unknown }, reply: { code(c: number): { send(v: unknown): unknown } }): Promise<unknown> => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const out: Record<string, unknown> = {};
+    const poolKeys=['llm_pool_enabled','llm_pool_bind_fallback'] as const;
+    for(const key of poolKeys)if(b[key]!==undefined&&typeof b[key]!=='boolean')return reply.code(400).send({error:`${key} 必须为布尔值`});
     let resources:ReturnType<typeof resourcePolicy>|undefined;
     if(b.runtime_resource_policy!==undefined){try{resources=resourcePolicy(b.runtime_resource_policy);validateRuntimeResources(app.db,resources);}catch(error){return reply.code(400).send({error:(error as Error).message});}}
     for(const [key,allowed] of Object.entries({pi_context_policy:['domain','native'],pi_mcp_loading:['deferred','direct']})){
@@ -237,6 +244,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     }
     // Both role settings are validated before either is changed.
     await app.db.transaction(async tx=>{
+      for(const key of poolKeys)if(b[key]!==undefined){await tx.platform().setSetting(key,String(b[key]));out[key]=b[key];out.applies='next_session';}
       if(resources){await tx.platform().setSetting('runtime_resource_policy',JSON.stringify(resources));out.runtime_resource_policy=resources;}
       for(const {key} of contextKeys)if(b[key]!==undefined){
         await tx.platform().setSetting(key,String(b[key]));
@@ -265,6 +273,17 @@ export function registerConfigRoutes(app: FastifyInstance): void {
 
   registerAgentManagementRoutes(app);
 
+  app.post('/api/llm/preview',async req=>{
+    const b=(req.body??{}) as Record<string,unknown>;
+    const p={model:String(b.model??''),format:String(b.format??'openai'),thinkingType:String(b.thinking_type??''),reasoningEffort:String(b.reasoning_effort??''),
+      contextWindowK:Number(b.context_window_k??0),maxTokens:Number(b.max_tokens??0),maxTokensField:String(b.max_tokens_field??''),
+      ratePerSecond:Number(b.rate_per_second??0),ratePerMinute:Number(b.rate_per_minute??0),sessionHeaderKey:String(b.session_header_key??''),proxy:String(b.proxy??'')};
+    validateProfilePolicy(p);
+    return {...profilePolicy(p),streaming:b.streaming!==false,supportsImages:b.supports_images===true,
+      minRequestIntervalMs:Math.max(p.ratePerSecond>0?1000/p.ratePerSecond:0,p.ratePerMinute>0?60000/p.ratePerMinute:0),
+      outputField:p.maxTokensField|| (p.format==='openai-responses'?'max_output_tokens':p.format==='anthropic'||profilePolicy(p).deepseek?'max_tokens':'sdk_auto')};
+  });
+
   // ─── LLM profiles ──────────────────────────────────────────────────────────
 
   app.get("/api/llm/profiles", async () => {
@@ -275,7 +294,9 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   app.post("/api/llm/profiles", async (req) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const retry = (b["retry"] ?? {}) as Record<string, unknown>;
-    const id = await platform().saveProfile({
+    const previous=Number(b.id)>0?await platform().profileByID(Number(b.id)):null;
+    for(const key of ['empty','stream'] as const)rejectRetiredRetry(retry[key],previous?.retry?.[key],`retry.${key}`);
+    const input = {
       id: b["id"] === undefined || b["id"] === null ? undefined : Number(b["id"]),
       name: String(b["name"] ?? ""),
       format: String(b["format"] ?? "openai"),
@@ -284,25 +305,30 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       model: String(b["model"] ?? ""),
       apiKey: typeof b["api_key"] === "string" ? b["api_key"] : "",
       apiKeyHint: typeof b["api_key_hint"] === "string" ? b["api_key_hint"] : "",
-      ratePerSecond: Number(b["rate_per_second"]) || 0,
-      ratePerMinute: Number(b["rate_per_minute"]) || 0,
-      contextWindowK: Number(b["context_window_k"]) || 0,
+      ratePerSecond: Number(b["rate_per_second"] ?? 0),
+      ratePerMinute: Number(b["rate_per_minute"] ?? 0),
+      contextWindowK: Number(b["context_window_k"] ?? 0),
       supportsImages: typeof b["supports_images"]==='boolean'?b["supports_images"]:undefined,
       thinkingType: typeof b["thinking_type"] === "string" ? b["thinking_type"] : "",
       reasoningEffort: typeof b["reasoning_effort"] === "string" ? b["reasoning_effort"] : "",
-      priority: Number(b["priority"]) || 0,
+      priority: Number(b["priority"] ?? 0),
       poolExclude: b["pool_exclude"] === true,
       streaming: b["streaming"] !== false,
-      maxTokens: Number(b["max_tokens"]) || 0,
+      maxTokens: Number(b["max_tokens"] ?? 0),
       maxTokensField: typeof b["max_tokens_field"] === "string" ? b["max_tokens_field"] : "",
       sessionHeaderKey: typeof b["session_header_key"] === "string" ? b["session_header_key"] : "",
       retry: {
         connect: (retry["connect"] ?? {}) as { attempts?: number; interval_ms?: number },
-        empty: (retry["empty"] ?? {}) as { attempts?: number; interval_ms?: number },
-        stream: (retry["stream"] ?? {}) as { attempts?: number; interval_ms?: number },
+        empty: (previous?.retry?.empty ?? {}) as { attempts?: number; interval_ms?: number },
+        stream: (previous?.retry?.stream ?? {}) as { attempts?: number; interval_ms?: number },
       },
-    });
-    return { id };
+    };
+    if(!input.name.trim()||!input.model.trim())throw Object.assign(new Error('名称和模型不能为空'),{statusCode:400});
+    if(!Number.isSafeInteger(input.priority)||Math.abs(input.priority)>2147483647)throw Object.assign(new Error('候补优先级必须是有效整数'),{statusCode:400});
+    validateProfilePolicy(input);
+    validateRetryRule(retry.connect);
+    const id=await platform().saveProfile(input);
+    return { id,effective:profilePolicy(input),inactive_fields:['retry.empty','retry.stream'] };
   });
 
   app.delete("/api/llm/profiles/:id", async (req, reply) => {

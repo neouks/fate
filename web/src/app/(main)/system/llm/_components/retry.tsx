@@ -1,13 +1,6 @@
 "use client";
 
-// LLM 重试配置的共用件：五层重试各自的「次数 + 间隔」。
-//
-// 五层从内到外：建连(SDK) → 空响应(SDK) → 同 provider 安全窗口 → 轮询熔断 → 意图重跑。
-// 前三层跟着端点走，所以每个模型配置都能覆盖全局默认；后两层是进程级的，只有全局一份。
-//
-// 所有输入都遵循同一套「留空 = 不配置」语义，与后端 db.RetryRule 一致：
-//   次数   空/0 = 用内置默认 | -1 = 关闭这层重试 | >0 = 用这个次数
-//   间隔   空/0 = 用这层原本的指数退避 | >0 = 改用这个固定毫秒间隔
+// 仅展示运行端已接入的请求重试与持久熔断；历史字段留在接口中兼容。
 
 import * as React from "react";
 
@@ -52,65 +45,28 @@ type LayerMeta = {
 
 export const RETRY_LAYERS = {
   connect: {
-    title: "建连重试",
-    where: "SDK · 拿到 200 之前",
+    title: "模型请求重试",
+    where: "宿主 · 原生模型请求边界",
     trigger:
-      "连不上或还没拿到 200：连接重置 / 读写超时 / DNS 失败等网络层错误，以及 HTTP 408、429、500、502、503、504。",
+      "连接重置、超时、DNS 失败、断流等暂时故障，以及 HTTP 408、409、429 和 5xx。",
     skips: "其余状态码（400 / 401 / 403 / 404 / 413 / 422 等）都是确定性拒绝，重发也一样失败，直接上抛。",
-    desc: "原样重发同一个请求。流一旦开始（已经拿到 200），中途断开就不归这层管了。",
+    desc: "在 pi 原生边界继续模型请求，保留已提交工具结果，不从头重跑意图。空响应不自动重试。",
     attemptsLabel: "重试次数",
     defAttempts: 3,
-    defInterval: "0.5s→1s→2s 指数（封顶 8s）",
+    defInterval: "0.25s→0.5s→1s 指数（封顶 4s）",
     offHint: "-1 = 一次都不重试，失败立刻上抛",
   },
-  empty: {
-    title: "空响应重试",
-    where: "SDK · 仅 openai 格式",
-    trigger:
-      "HTTP 200、finish_reason 是正常 stop，但整条响应一个内容块都没有——网关空帧、思考字段丢帧、采样打嗝都会长这样。",
-    skips: "因 max_tokens 截断而没有内容的不算（那要靠调高输出上限解决，重发只会再撞一次）。",
-    desc: "重发整个 prompt，所以在长上下文上比较贵，次数不宜给大。",
-    attemptsLabel: "重试次数",
-    defAttempts: 2,
-    defInterval: "0.5s→1s→2s 指数（封顶 8s）",
-    offHint: "-1 = 空响应直接原样交出",
-  },
-  stream: {
-    title: "同 provider 安全窗口重试",
-    where: "本项目 · 未交付输出前",
-    trigger:
-      "流已经建立（拿到 200）之后才出问题：连接中途断开、供应商 overloaded、流内的 429 / 5xx 错误事件——且一个 token 都还没交给调用方。",
-    skips:
-      "额度耗尽（402 / insufficient_quota，交给轮询换配置）、上下文过长（413 / context length，交给压缩）、400 / 401 / 403 / 404 / 422 确定性拒绝，都不重试。",
-    desc: "在同一个配置上重放同一个请求。因为还没交付任何输出，重放不会重复模型输出或工具执行。",
-    attemptsLabel: "重试次数",
-    defAttempts: 2,
-    defInterval: "0.5s→1s 指数（封顶 4s）",
-    offHint: "-1 = 断流直接交给外层的意图重跑",
-  },
   breaker: {
-    title: "轮询熔断",
-    where: "本项目 · 进程级，全局一份",
+    title: "候补熔断",
+    where: "数据库共享 · 每个配置独立累计",
     trigger:
       "瞬时失败（429、5xx、网络错误）连续累计到阈值时熔断；余额不足（402）、密钥失效（401 / 403）、模型不存在（404）这类确定性失败不看阈值，第一次就熔断。",
     skips: "成功一次即清零，所以偶尔抽风的配置不会被慢慢攒到熔断。",
-    desc: "熔断后进入冷却，冷却期内轮询直接跳过这个配置。状态落库，重启不丢。",
+    desc: "熔断后进入冷却，冷却期内候补直接跳过这个配置。状态落库，重启不丢。",
     attemptsLabel: "连续失败几次熔断",
     defAttempts: 3,
     defInterval: "1min→5min→30min 梯度",
     offHint: "-1 = 瞬时失败永不熔断（确定性失败仍然熔断）",
-  },
-  intent: {
-    title: "意图重跑",
-    where: "本项目 · 进程级，全局一份",
-    trigger:
-      "前面几层都没兜住：worker 以 model_error 收场——内层重试全部用尽，或者流已经开始交付输出后才断掉（那时重放不安全，只能整条重来）。",
-    skips: "额度耗尽已经由轮询换配置处理，不在这里重跑；任务被暂停 / 终止 / 进入收尾时立即让位，不占用退避时间。",
-    desc: "整条意图从头再跑一遍。它是最外层，一次重跑意味着里面几层的次数会再乘一遍。",
-    attemptsLabel: "重跑次数",
-    defAttempts: 2,
-    defInterval: "固定 3s",
-    offHint: "-1 = 不重跑，该意图直接判为 blocked",
   },
 } satisfies Record<string, LayerMeta>;
 
@@ -150,6 +106,7 @@ function NumField({
       id={id}
       type="number"
       min={min}
+      max={min===-1?20:3600000}
       className="w-28 shrink-0"
       value={text}
       placeholder={placeholder}
@@ -198,7 +155,7 @@ export function RetryRuleFields({
         {!compact && <p className="text-muted-foreground text-xs">{meta.desc}</p>}
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center gap-2">
           <Label htmlFor={`${idPrefix}-${layer}-n`} className="text-muted-foreground text-xs">
             {meta.attemptsLabel}
           </Label>
@@ -210,7 +167,7 @@ export function RetryRuleFields({
             onChange={(n) => onChange({ ...value, attempts: n })}
           />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center gap-2">
           <Label htmlFor={`${idPrefix}-${layer}-ms`} className="text-muted-foreground text-xs">
             间隔 ms
           </Label>
@@ -229,7 +186,7 @@ export function RetryRuleFields({
   );
 }
 
-/** 模型配置抽屉里的三层覆盖（跟着端点走的那三层）。 */
+/** 模型配置抽屉里的模型请求重试覆盖。 */
 export function ProfileRetryFields({
   value,
   onChange,
@@ -243,10 +200,10 @@ export function ProfileRetryFields({
         <Label className="text-sm">重试覆盖</Label>
         <p className="text-muted-foreground text-xs">
           只对这个配置生效，覆盖「重试与退避」里的全局默认。每格留空 = 跟随全局；次数填 -1 = 关掉这层重试；
-          间隔填了就用固定间隔取代指数退避。熔断与意图重跑是进程级的，只能在全局那页调。
+          间隔填了就用固定间隔取代指数退避。熔断策略在全局配置。空响应、断流分层及意图重跑旧选项已停用。
         </p>
       </div>
-      {(["connect", "empty", "stream"] as const).map((k) => (
+      {(["connect"] as const).map((k) => (
         <div key={k} className="border-t pt-3 first:border-t-0 first:pt-0">
           <RetryRuleFields
             compact
@@ -288,9 +245,9 @@ export function RetryPolicyPanel() {
     setSaving(true);
     try {
       // 后端会把越界值夹回区间并回传，直接用回传值刷新，所见即所存。
-      const saved = await api.saveLLMRetryPolicy(policy);
+      const saved = await api.saveLLMRetryPolicy({connect:policy.connect,breaker:policy.breaker});
       setPolicy({ ...ZERO_POLICY, ...saved });
-      toast.success("已保存，即时生效（正在跑的这一轮调用仍用旧参数）");
+      toast.success("已保存，下次会话装配时生效；运行中的会话保持原参数");
     } catch (e) {
       toast.error(`保存失败：${(e as Error).message}`);
     } finally {
@@ -311,12 +268,8 @@ export function RetryPolicyPanel() {
   return (
     <div className="grid gap-4">
       <div className="rounded-lg border bg-muted/30 p-3 text-muted-foreground text-xs leading-relaxed">
-        一次模型调用的失败会依次经过五层重试，由内到外：
-        <span className="text-foreground"> 建连 → 空响应 → 同 provider 安全窗口 → 轮询熔断 → 意图重跑</span>
-        。内层用尽才轮到外层，所以次数是
-        <span className="text-foreground">相乘</span>
-        的——把每层都拉满，一次抖动能烧掉几十次请求。
-        全部留空即当前默认值，与没有这页时的行为完全一致。前三层可以在每个模型配置里单独覆盖。
+        仅配置模型请求重试与故障候补熔断。次数 0 使用默认值，-1 关闭对应重试或暂时故障熔断；间隔 0 使用默认退避。
+        不自动重跑业务意图。旧版空响应、断流分层、意图重跑参数保留历史数据，已移除无效编辑入口。
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -330,7 +283,7 @@ export function RetryPolicyPanel() {
           {saving ? <Loader2Icon className="animate-spin" /> : <SaveIcon />}
           保存
         </Button>
-        <Button variant="outline" onClick={() => setPolicy(ZERO_POLICY)} disabled={saving}>
+        <Button variant="outline" onClick={() => setPolicy(p=>({...p,connect:ZERO_RULE,breaker:ZERO_RULE}))} disabled={saving}>
           全部恢复默认
         </Button>
       </div>

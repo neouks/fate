@@ -1,3 +1,4 @@
+import {applyDeepSeekThinking,profilePolicy,validateProfilePolicy} from './profile-policy.js';
 import type {Database} from '../db/index.js';
 import {meterProvider} from './usage-meter.js';
 // LLM profile → pi-ai provider/model 构造（index.ts 的模型解析器与 /api/llm/test 共享）。
@@ -72,21 +73,22 @@ function configuredStreams(module:unknown,profile:ProfileLike,api:string){
       if(profile.streaming===false)fetcher=nonStreamingFetch((fetcher??globalThis.fetch) as typeof fetch,api);
       const previous=original.onPayload as ((payload:unknown,model:unknown)=>unknown|Promise<unknown>)|undefined;
       const onPayload=async(payload:unknown,selectedModel:unknown)=>{
-        const next=(await previous?.(payload,selectedModel))??payload;
+        let next=(await previous?.(payload,selectedModel))??payload;
         if(!next||typeof next!=='object')return next;
+        next=applyDeepSeekThinking(next as Record<string,unknown>,profile,original,api);
         const requested=Number(original.maxTokens);
         const explicitLimit=Number.isFinite(requested)&&requested>0;
         if(profile.maxTokens<=0&&!explicitLimit){
           // OpenAI accepts an omitted limit. PI's model-capacity default must not
           // turn an unset profile limit into an application output budget.
-          if(api==='anthropic-messages')return next;
+          if(api==='anthropic-messages'&&!profilePolicy(profile).deepseek)return next;
           const unlimited={...next as Record<string,unknown>};
           for(const key of ['max_tokens','max_completion_tokens','max_output_tokens',profile.maxTokensField??''])delete unlimited[key];
           return unlimited;
         }
         // Preserve pi's protocol compatibility detection (e.g. DeepSeek uses
         // max_tokens). A configured field remains an explicit user override.
-        const nativeField=['max_tokens','max_completion_tokens','max_output_tokens'].find(key=>Object.hasOwn(next,key));
+        const nativeField=['max_tokens','max_completion_tokens','max_output_tokens'].find(key=>Object.hasOwn(next as object,key));
         const field=profile.maxTokensField?.trim()||nativeField||(api==='anthropic-messages'?'max_tokens':api==='openai-responses'?'max_output_tokens':'max_completion_tokens');
         const result={...next as Record<string,unknown>};
         for(const key of ['max_tokens','max_completion_tokens','max_output_tokens'])delete result[key];
@@ -108,15 +110,11 @@ export function buildModelSource(profile: ProfileLike): Promise<ModelSource> {
   profile = { ...profile, apiKey: profile.apiKey.trim(), baseURL: profile.baseURL.trim(), model: profile.model.trim() };
   const api = profile.format === "anthropic" ? "anthropic-messages" : profile.format === "openai-responses" ? "openai-responses" : "openai-completions";
   if (profile.format && !["openai", "anthropic", "openai-responses"].includes(profile.format)) throw new Error(`不支持的 LLM 协议：${profile.format}`);
-  const effort = profile.reasoningEffort || profile.thinkingType || "off";
-  const thinkingLevel = (["off", "minimal", "low", "medium", "high", "xhigh"].includes(effort) ? effort : effort === "disabled" ? "off" : "medium") as ModelSource["thinkingLevel"];
-  // Capability and the selected level are different. Current DeepSeek hybrid
-  // models default to thinking on; PI emits thinking.type=disabled only when
-  // the model advertises the capability. Never silently turn an explicit off
-  // configuration into server-default reasoning (including summary calls).
-  const deepSeekHybrid=api==='openai-completions'&&/^deepseek-(?:flash|v4(?:\.1)?-(?:flash|pro))$/i.test(profile.model);
+  validateProfilePolicy(profile);
+  const policy=profilePolicy(profile);
+  const thinkingLevel=policy.level;
   const providerId = `series-p${profile.id}`;
-  const contextWindow = profile.contextWindowK > 0 ? profile.contextWindowK * 1000 : 128_000;
+  const contextWindow = policy.contextWindow;
   const model = {
     id: profile.model,
     name: profile.name !== "" ? profile.name : profile.model,
@@ -128,7 +126,10 @@ export function buildModelSource(profile: ProfileLike): Promise<ModelSource> {
     contextWindow,
     maxTokens: profile.maxTokens > 0 ? profile.maxTokens : 8192,
     // 思考档位：profile.thinking_type 非空即启用（pi 统一档位映射到 provider 原生参数）。
-    reasoning: deepSeekHybrid || thinkingLevel !== "off",
+    reasoning: policy.deepseek || thinkingLevel !== "off",
+    ...(policy.deepseek ? {thinkingLevelMap:{xhigh:'max'},compat:api==='openai-completions'
+      ? {thinkingFormat:'deepseek',supportsReasoningEffort:true,requiresReasoningContentOnAssistantMessages:true,maxTokensField:'max_tokens'}
+      : api==='anthropic-messages'?{forceAdaptiveThinking:true}:{}}:{}),
   } as Record<string, unknown>;
   const provider = createProvider({
     id: providerId,
@@ -155,7 +156,7 @@ export function buildModelSource(profile: ProfileLike): Promise<ModelSource> {
 export async function testProfileConnection(
   profile: ProfileLike,
   db?:Database,
-): Promise<{ ok: boolean; latency_ms: number; model: string; reply?: string; error?: string }> {
+): Promise<{ ok: boolean; latency_ms: number; model: string; reply?: string; error?: string; effective?: ReturnType<typeof profilePolicy>; diagnostic?: string }> {
   const start = Date.now();
   try {
     const source = await buildModelSource(profile);
@@ -165,12 +166,12 @@ export async function testProfileConnection(
     const result = await models.completeSimple(
       source.model,
       { systemPrompt: "You are a connectivity probe. Reply with the single word: pong", messages: [{ role: "user", content: "ping" }] },
-      { maxTokens: 512 },
+      { signal:AbortSignal.timeout(60_000), maxTokens: profile.maxTokens > 0 ? Math.min(profile.maxTokens,4096) : 4096, ...(source.thinkingLevel !== 'off' ? {reasoning:source.thinkingLevel} : {}) },
     );
-    if(result.stopReason==='error')throw new Error(result.errorMessage??'模型请求失败');
+    if(result.stopReason==='error'||result.stopReason==='aborted')throw new Error(result.errorMessage??'模型请求失败');
     const reply = (result.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
     if(!reply)throw new Error("模型没有返回有效文本");
-    return { ok: true, latency_ms: Date.now() - start, model: profile.model, reply };
+    return { ok: true, latency_ms: Date.now() - start, model: profile.model, reply, effective:profilePolicy(profile), diagnostic:'参数与运行共用解析；本次文本连通性测试最多 4096 输出 Token，不验证限速、候补、图片或完整窗口容量' };
   } catch (err) {
     return { ok: false, latency_ms: Date.now() - start, model: profile.model, error: describeModelError(err, profile.apiKey.trim()) };
   }
