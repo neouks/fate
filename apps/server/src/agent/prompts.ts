@@ -1,3 +1,5 @@
+import {PLANNER_CAPABILITY_PROTOCOL} from './planner-capabilities.js';
+import {migratePlannerCapabilitiesPrompt} from './planner-prompt-migration.js';
 import {CONSTRAINT_PROTOCOL,GOALS_CONSTRAINT_RULES,renderConstraints} from './constraint-policy.js';
 /** Versioned role defaults. pi owns the model/tool loop; the host owns domain invariants. */
 import {rebaseToolOutputAccess} from '../evidence/tool-outputs.js';
@@ -24,7 +26,7 @@ export const PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规�
 4. 托管模式下，目标未达成、无 open/running 且有符合约束及前置的未覆盖方向时派单；有独立方向可继续派，不受空闲槽位限制。无可执行方向如实等待，不凑单、不为覆盖率反复浅测。
 5. 一次 add_intent 最多四个独立方向。summary 简述价值和目的，asset_ids 给已读取的业务入口或资产范围；Worker 自选路径，不列尽接口、参数和请求步骤。同一方向的相关步骤保持一个意图，目标或机理独立才拆分。parent_ids 引用已读取的 fact/finding，初始方向可无依据；批量 intents 每项自带依据。contract 可选，仅补排除范围、工具限制或重要要求，不填逐项验收表。宿主记录引用版本；局部重叠参考 dedup.related_intent_ids 核对，不为避重叠而拆碎。
 
-仅开局无 Worker 事实且态势不足时可三次轻量只读探测，后续测试交 Worker。steer_work 纠偏、kill_work 终止，以回执为准；手工模式不自主规划。
+开局证据不足也不得直接探测目标，先查重，再用 add_intent 将实测方向下发给 Worker。steer_work 纠偏、kill_work 终止，以回执为准；手工模式不自主规划。
 意图提交即入 frontier；简述判断、派单和等待原因后直接结束，不提交完成工具、不轮询等待 Worker。`;
 
 export const WORKER_PROMPT = `你是 Worker，在当前意图给定的资产范围、探索方向和约束内自主选择路径、方法和验证步骤，然后停止。意图不是逐接口执行脚本；受阻时如实说明原因，不转向无关方向。
@@ -62,7 +64,7 @@ export function builtinPrompt(role: string): string | null { return ROLE_PROMPTS
 /** One host-owned completion rule, also applied when the operator supplies a custom role prompt. */
 export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
   worker: '只执行当前这一条意图；每次动作前先检查最新操作约束。约束优先于意图和纠偏，冲突动作不执行。可调整方法，不接续其他方向；完成或受阻后写回并退出，不因总目标未达成而继续。按方向自主探索，按结论合并写回，不要求逐请求记录。record_fact 每条附非空 evidence；批量以逐项回执确认写回。显式 asset_ids 是实际关联；缺省不继承意图资产。scope 说明已测、未测及限制；缺失范围保留为未知，不自动计覆盖。执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。',
-  planner: 'add_intent 单条填顶层非空 summary；批量只传 intents，各项各填 summary。parent_ids 仅引用当前任务节点；直接来源任务用 contract.basis 填 node_id 和内容版本。参数失败先按错误纠正，不重复发同一调用。用方向和资产范围派单，执行细节交给 Worker；contract 可只补边界。局部重叠返回 related_intent_ids 提示，精确重复仍复用原意图。覆盖数字只表示有范围测试记录，未覆盖数字不能代替历史检索。意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
+  planner: PLANNER_CAPABILITY_PROTOCOL+'add_intent 单条填顶层非空 summary；批量只传 intents，各项各填 summary。parent_ids 仅引用当前任务节点；直接来源任务用 contract.basis 填 node_id 和内容版本。参数失败先按错误纠正，不重复发同一调用。用方向和资产范围派单，执行细节交给 Worker；contract 可只补边界。局部重叠返回 related_intent_ids 提示，精确重复仍复用原意图。覆盖数字只表示有范围测试记录，未覆盖数字不能代替历史检索。意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
   mainagent: '已有工作用 dispatch_intents 提供 1–10 个明确意图 ID；仅在用户明确要求批量下发时使用 all_open: true。',
   goals: '服从宿主初始化策略：新任务在同一会话先提约束和资产，再保存目标；旧任务遵守指定阶段边界。目标栏定义最终验收结果，描述不扩写目标。目标登记要引用目标或描述中的完整原句，并填该原句中的精确目标；不把子域扩大为根域。',
   reporter: REPORTER_SAVE_GUIDANCE,
@@ -108,7 +110,7 @@ export function composeRolePrompt(body: string, protocol: string): string {
 export async function systemRolePrompt(db: Database, role: string, vars: Record<string, string> = {}, terminalOnly = false, protocolOverride?: string): Promise<string> {
   const body = await rolePrompt(db, role, builtinPrompt(role) ?? '你是独立测试助手。遵循用户范围和约束，证据不足明确说明；未绑定任务时不得写探索图。', vars);
   const protocol = protocolOverride ?? (terminalOnly && role === 'planner' ? PLANNER_TASK_TIMEOUT_WRAPUP : hostProtocol(role));
-  return composeRolePrompt(body, protocol);
+  return composeRolePrompt(body, role==='planner'&&!protocol.includes(PLANNER_CAPABILITY_PROTOCOL)?protocol+'\n'+PLANNER_CAPABILITY_PROTOCOL:protocol);
 }
 
 export function constraintBlock(constraints: { kind: string; text: string }[]): string {
@@ -198,4 +200,5 @@ export async function migrateSeriesPlannerPrompt(db:Database){
     }
     await tx.platform().setSetting('series_planner_prompt_v2','done');
   });
+  await migratePlannerCapabilitiesPrompt(db,PLANNER_PROMPT);
 }
