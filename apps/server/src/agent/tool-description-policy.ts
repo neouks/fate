@@ -10,7 +10,10 @@ export const ARTEX_CONSTRAINT_DESCRIPTION =
 export const ARTEX_INTENT_DESCRIPTION = "生成【探索方向】写入 frontier，并连入探索链路。意图是开放的探索方向，不是固定类型——用 summary 一句话自由描述要探索/验证/利用什么。\n主 Agent 成功下发后结束本轮，Worker 自动回传总结，不轮询等待。Planner 对未审批候选本轮跳过；主 Agent 可明确下发待审批资产方向，但封禁和撤回仍拒绝。未知候选先批量 check_target_access。★优先批量：一轮筛出的多个新方向放进 intents 数组一次提交（最多 4 条，比逐条调用省往返）。返回 ids 数组，与 intents 等长同序（失败项 id=0，详情见 errors；已存在的活跃同方向见 duplicates）。单条则省略 intents 直接给顶层 summary。";
 const previousConstraintDescription = '保存用户明确的操作要求，text/source_quote 必须为任务原文或本轮用户消息中的完整段落，保留例外和原有语气。不能把目标 URL 改写成仅限该地址；allow 不默认排他。';
 
+export const PREVIOUS_TRAFFIC_SEARCH_DESCRIPTION="查询记录代理已抓取的目标流量（必须指定 host；支持裸主机、主机:端口或完整 URL，可再按 URL 子串或正文关键词过滤）。指定端口时只返回该服务的流量，避免同一 IP 的不同端口串包。body_contains 会在已抓取的请求/响应头与正文中做全文搜索，支持任意子串和中文（至少 3 个字符）。仅返回极轻量索引(id/method/url/status/resp_len)，不含响应内容；结果非空后必须用 traffic_get 逐条核实请求/响应，再把确实支持当前漏洞的 ID 交给 bind_finding_traffic。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页。";
+
 export function recognizedHistoricalDescription(name:string,stored:unknown):unknown {
+  if(name==='traffic_search'&&stored===PREVIOUS_TRAFFIC_SEARCH_DESCRIPTION)return undefined;
   if(name==='add_intent'&&stored===ARTEX_INTENT_DESCRIPTION)return undefined;
   return name==='set_constraints'&&[ARTEX_CONSTRAINT_DESCRIPTION,previousConstraintDescription].includes(stored as string)?undefined:stored;
 }

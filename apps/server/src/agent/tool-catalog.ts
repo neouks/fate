@@ -1,3 +1,4 @@
+import {trafficSearchTool} from '../tools/traffic-search.js';
 import {GOALS_STAGE_TOOLS,GOALS_STAGE_PROTOCOL} from './goals-policy.js';
 import {legacyReadCandidates} from '../tools/legacy-reads.js';
 import {effectiveToolDescription} from './tool-descriptions.js';
@@ -37,7 +38,7 @@ export function roleDefinitions(db:Database,role:string,taskBound=true):ToolDefi
  const factory={worker:workerTools,planner:plannerTools,mainagent:mainTools,goals:goalsTools}[role];
  if(factory)return factory(ctx);
  const tools:ToolDefinition[]=[contextGetTool(ctx),readAttachmentTool(ctx),toolOutputTool(ctx),...conversationDomainTools(ctx,{} as never)];
- if(taskBound)tools.push(contextSearchTool(ctx),mergedAssetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
+ if(taskBound)tools.push(trafficSearchTool(ctx),contextSearchTool(ctx),mergedAssetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
  if(role==='pentest'&&taskBound)tools.push({...recordFactTool(ctx),name:'record_conversation_fact'},{...reportFindingTool(ctx),name:'report_conversation_finding'},httpRequestTool(ctx));
  return tools;
 }

@@ -6,6 +6,8 @@ import {join} from 'node:path';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall,validateToolArguments} from '@earendil-works/pi-ai';
 import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {openDatabase} from '../db/index.js';
+import {trafficSearchTool} from './traffic-search.js';
+import {PREVIOUS_TRAFFIC_SEARCH_DESCRIPTION} from '../agent/tool-description-policy.js';
 import {previewRoleTools,searchDefinition} from '../agent/tool-catalog.js';
 import {toolLoadout} from '../agent/tool-loading.js';
 import {applyToolBindings} from '../agent/tool-bindings.js';
@@ -20,6 +22,7 @@ const dsn=process.env.TEST_TOOL_CONTRACTS_DSN;
 test('catalog, native declarations and partial-read outcomes share one contract', {skip:!dsn&&'requires isolated PostgreSQL'},async t=>{
  assert.match(new URL(dsn!).pathname,/^\/test_[a-z0-9_]+$/);process.env.SERIES_PG_DSN=dsn;
  const db=await openDatabase();t.after(()=>db.close());
+ await db.query("UPDATE tools SET description=$1 WHERE key='traffic_search'",[PREVIOUS_TRAFFIC_SEARCH_DESCRIPTION]);
  const dir=await mkdtemp(join(tmpdir(),'fate-catalog-contract-'));t.after(()=>rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100}));
  const task=(await db.query(`WITH e AS (INSERT INTO explorations(goal) VALUES ('synthetic') RETURNING id)
   INSERT INTO tasks(description,goal,exploration_id) SELECT 'synthetic','synthetic',id FROM e RETURNING id,exploration_id`)).rows[0]!;
@@ -27,13 +30,13 @@ test('catalog, native declarations and partial-read outcomes share one contract'
  const long=await fact('中文😀'.repeat(5000)),short=await fact('saved local evidence');
  const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),refreshOnCreate:false});
  const faux=fauxProvider({provider:'catalog-contract-local'});runtime.registerNativeProvider(faux.provider);
- for(const role of ['worker','planner'] as const)await t.test(role+' native declarations match catalog and keep partial errors',async()=>{
+ for(const role of ['worker','planner','reporter'] as const)await t.test(role+' native declarations match catalog and keep partial errors',async()=>{
   const ctx=runContext(db,Number(task.id),Number(task.exploration_id),role);
   const preview=await previewRoleTools(db,role);
   assert(preview.resident.includes('tool_search'));
   assert.deepEqual(preview.schemas.tool_search,searchDefinition().parameters);
   assert.equal(preview.descriptions.tool_search,searchDefinition().description);
-  const tools=[contextGetTool(ctx),assetGetTool(ctx)];
+  const tools=[contextGetTool(ctx),assetGetTool(ctx),trafficSearchTool(ctx)];
   if(role==='worker'){
    tools.push(insertAssetsTool(ctx));
    const bash=await configuredBash(db,dir,{});bash.description=await platformBashDescription(ctx,bash.description,(await db.platform().getAgentByKey(role))!.interactiveShell);
@@ -52,7 +55,7 @@ test('catalog, native declarations and partial-read outcomes share one contract'
   faux.setResponses([context=>{
    requests++;
    const declared=new Map<string,any>();for(const m of context.messages as any[])if(m.role==='system')for(const tool of m.toolsAdded??[])declared.set(tool.name,tool);
-   for(const name of ['context_get','tool_search',...(role==='worker'?['insert_assets']:[])]){
+   for(const name of ['context_get','tool_search','traffic_search',...(role==='worker'?['insert_assets']:[])]){
     assert(declared.has(name),name);assert.deepEqual(declared.get(name).parameters,preview.schemas[name]);assert.equal(declared.get(name).description,preview.descriptions[name]);
    }
    return fauxAssistantMessage([fauxToolCall('context_get',args)]);

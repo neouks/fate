@@ -31,7 +31,7 @@ export function reportFindingTool(ctx: ToolRunContext) {
           evidence_version:{type:'integer',minimum:0,description:'补正必填，从 context_get 的 finding_detail 读取最新证据版本'},
           distinct_from:{type:'array',minItems:1,maxItems:50,uniqueItems:true,items:{type:'integer',minimum:1},description:'疑似重复但确认独立机理时，列已核对的本任务漏洞 ID'},
           distinct_reason:{type:'string',minLength:1,maxLength:1000,description:'与 distinct_from 不同的具体机理或影响；补资产和证据不属于独立问题'},
-          reproduction:reproductionSchema,
+          reproduction:{...reproductionSchema,description:'对象，结构为 {steps:[{action,request,response,proves,...}],...}；不是数组，steps 只能放在 reproduction 内。请求或响应可按步骤 Schema 使用来源引用。'},
           traffic_refs:{type:"array",items:{type:"object",properties:{traffic_id:{type:"string"},role:{type:"string",enum:["baseline","proof","verification","supporting"]},note:{type:"string"}},required:["traffic_id"]}},
           vulnclass: { type: "string", description: "漏洞类别，如 SQL注入/XSS/SSRF/未授权访问" },
           name: { type: "string", description: "漏洞标题（可读）" },
