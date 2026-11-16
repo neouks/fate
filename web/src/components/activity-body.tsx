@@ -6,20 +6,23 @@ import {Button} from '@/components/ui/button';
 import {api} from '@/lib/api';
 import {activityPreview,isPartialPage,ACTIVITY_PAGE_SIZE,type ActivityContentOptions,type ActivityContentPage} from '@/lib/activity-content';
 import type {Activity} from '@/lib/types';
+import {OperationInterruption} from '@/components/operation-interruption';
 
 type Read=(step:Activity,options:ActivityContentOptions)=>Promise<ActivityContentPage>;
 const Reader=React.createContext<Read>((step,options)=>api.activityContent(step.seq,options));
+const Task=React.createContext<string|undefined>(undefined);
 export function ActivityContentProvider({taskId,conversationId,children}:{taskId?:string;conversationId?:number;children:React.ReactNode}){
  const read=React.useCallback<Read>((step,options)=>step.seq>0
   ?conversationId?api.conversationContent(conversationId,step.seq,options):api.activityContent(step.seq,options,taskId)
   :step.stream_id?api.streamContent(step.stream_id,step.channel??'text',options,taskId,conversationId):Promise.reject(new Error('消息尚未保存')),[taskId,conversationId]);
- return <Reader.Provider value={read}>{children}</Reader.Provider>;
+ return <Task.Provider value={conversationId?undefined:taskId}><Reader.Provider value={read}>{children}</Reader.Provider></Task.Provider>;
 }
 
 /** One page only: advancing replaces, rather than appends to, the previous page.
  * The displayed range is never interpreted as reading or copying the full body. */
 export function ActivityBody({step,enabled=true,render,onReady,copy=false,copyText,field='detail'}:{step:Activity;field?:'detail'|'arguments';enabled?:boolean;render?:(text:string,complete:boolean)=>React.ReactNode;onReady?:()=>void;copy?:boolean;copyText?:(text:string,complete:boolean)=>string}){
  const read=React.useContext(Reader),preview=field==='detail'?activityPreview(step):undefined;
+ const taskId=React.useContext(Task);
  const [page,setPage]=React.useState<ActivityContentPage>(),[error,setError]=React.useState(''),[busy,setBusy]=React.useState(false);
  const [unavailable,setUnavailable]=React.useState(false);
  const controller=React.useRef<AbortController|null>(null),ready=React.useRef(onReady);ready.current=onReady;
@@ -43,8 +46,10 @@ export function ActivityBody({step,enabled=true,render,onReady,copy=false,copyTe
  const shown=unavailable?undefined:page??preview,partial=!!shown&&isPartialPage(shown),live=step.seq<0&&!!step.stream_id;
  const summaryOnly=field==='detail'&&shown?.field!=='metadata'&&shown?.total_chars===0&&!!step.summary;
  const text=unavailable?'':summaryOnly?step.summary:shown?.detail??(field==='arguments'?'':step.summary),complete=!!shown&&!partial;
+ const interruptedOperation=taskId&&enabled&&field==='detail'&&shown?.field!=='metadata'&&step.is_error&&/operation:(\d+) 的实际执行结果未知/.exec(text)?.[1];
  async function copyPage(){try{await navigator.clipboard.writeText(copyText&&shown?.field!=='metadata'?copyText(text,complete):text);toast.success(partial?'已复制当前片段':'已复制');}catch{toast.error('复制失败');}}
  return <div className="flex min-w-0 flex-col gap-2" data-activity-content={step.seq}>
+  {interruptedOperation&&<OperationInterruption key={`${taskId}:${interruptedOperation}`} taskId={taskId!} operationId={Number(interruptedOperation)}/>}
   {!unavailable&&(shown?.field==='metadata'?<pre className="whitespace-pre-wrap break-words">{text}</pre>:render?render(text,complete):<span className="whitespace-pre-wrap break-words">{text}</span>)}
   {summaryOnly&&<p className="text-xs text-muted-foreground">原文为空，当前显示活动摘要。</p>}
   {!unavailable&&(partial||step.detail_truncated||page?.field==='metadata')&&<p className="text-xs text-muted-foreground" role="status">{live&&!page?'实时输出片段 · ':''}原文 {shown?.total_chars?`${(shown.offset+1).toLocaleString()}–${shown.next_offset.toLocaleString()} / ${shown.total_chars.toLocaleString()} 字符`:'当前片段'}{partial?'（未显示全文）':''}</p>}

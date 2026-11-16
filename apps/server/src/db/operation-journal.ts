@@ -180,8 +180,9 @@ export async function readOperations(ctx:ToolRunContext,args:{intent_id?:number;
     [ctx.taskID,intentID??null,args.id??null,after,limit+1])).rows;
   const items=await Promise.all(rows.slice(0,limit).map(async r=>{
     const {result,task_id,...rest}=r;
+    const diagnostic=r.status==='uncertain'?await operationInterruption(ctx.db,r):undefined;
     return {...rest,...(args.id?{result:deserializeResult(result)}:{}),
-      ...(r.status==='uncertain'?{interruption:await operationInterruption(ctx.db,r)}:{}),
+      ...(diagnostic?{interruption:{...diagnostic,description:interruptionText(Number(r.id),diagnostic,undefined,r.started_at,r.finished_at)}}:{}),
       ref:`operation:${r.id}`,id:Number(r.id),intent_id:Number(r.intent_id)};
   }));
   return {items,next_cursor:rows.length>limit?items.at(-1)!.id:null,

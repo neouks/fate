@@ -20,10 +20,10 @@ export function interruption(error:unknown,phase:OperationInterruption['phase'],
   return {reason:signal?.aborted?(typeof signal.reason==='string'?signal.reason:'aborted'):phase==='receipt_persistence'?'receipt_error':'exception',
     phase,message:error instanceof Error?error.message:String(error),recorded_at:new Date().toISOString(),source:'executor'};
 }
-export function interruptionText(id:number,value:OperationInterruption,blocked:boolean,started?:unknown,finished?:unknown):string {
+export function interruptionText(id:number,value:OperationInterruption,blocked:boolean|undefined,started?:unknown,finished?:unknown):string {
   const date=(v:unknown)=>v instanceof Date?v.toISOString():typeof v==='string'?v:undefined;
   return [
-    blocked?'本次工具调用在执行前被拦截，未执行。':'本次工具已进入执行阶段，但未保存完整返回；此前请求或写入可能已经发生。',
+    blocked===undefined?'原操作缺少完整返回，已执行步骤及外部结果仍待核对。':blocked?'本次工具调用在执行前被拦截，未执行。':'本次工具已进入执行阶段，但未保存完整返回；此前请求或写入可能已经发生。',
     `operation:${id} 的实际执行结果未知；不自动重放。`,
     `中断原因：${reasons[value.reason]??value.reason}；阶段：${value.phase==='tool_execution'?'工具执行中':value.phase==='receipt_persistence'?'工具已返回，保存结果时失败':'历史记录不足，无法确定执行步骤'}。`,
     date(started)?`原操作开始：${date(started)}`:null,
