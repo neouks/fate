@@ -10,11 +10,8 @@ import type {Database} from '../db/index.js';
 import type {ToolDefinition} from '@earendil-works/pi-coding-agent';
 
 export function compactToolSchema(tool:ToolDefinition):ToolDefinition {
- if(!['insert_assets','add_intent'].includes(tool.name))return tool;
+ if(tool.name!=='add_intent')return tool;
  const schema=structuredClone(tool.parameters) as any;
- if(tool.name==='insert_assets'&&schema.properties?.assets){
-  delete schema.properties.items;delete schema.oneOf;schema.required=['assets'];
- }
  if(tool.name==='add_intent'){
   const descriptions:Record<string,string>={summary:'必填非空方向与终点',parent_ids:'当前任务已读 fact/finding ID；来源任务用 contract.basis',parent_id:'当前任务单个依据 ID',asset_ids:'资产 ID',priority:'省略/0→5',
    contract:'可选约定及去重',basis:'直接来源任务的证据放这里；使用已读 fact/finding ID 及实际内容版本，不使用回执版本',allowed_tools:'精确执行工具名；不限制写回和已绑定 Skill 文档的读取',intents:'1–4 条，单条也放在数组内；每项必填非空 summary'};
@@ -43,11 +40,11 @@ export async function legacyToolSession(file:string):Promise<boolean>{
  finally{lines.close();input.destroy();}
 }
 /** Pure loadout shared with preview. Filtering never introduces a tool absent from the bound set. */
-export function toolLoadout(role:string,options:Pick<AgentRunnerOptions,'customTools'|'toolAllowlist'>,settings:{direct?:boolean;legacy?:boolean;legacyParameters?:string[];referenced?:string[];custom?:string[];fallback?:string}={}) {
+export function toolLoadout(role:string,options:Pick<AgentRunnerOptions,'customTools'|'toolAllowlist'>,settings:{direct?:boolean;legacy?:boolean;referenced?:string[];custom?:string[];fallback?:string}={}) {
  const allowed=[...new Set(options.toolAllowlist??[])].filter(n=>roleAllowsTool(role,n)&&!RETIRED_TOOLS.has(n));
  const compatibility=allowed.filter(n=>TOOL_ALIASES[n]&&(settings.legacy||settings.referenced?.includes(n)||!allowed.includes(TOOL_ALIASES[n]!)));
  const names=allowed.filter(n=>!TOOL_ALIASES[n]||compatibility.includes(n));
- const customTools=(options.customTools??[]).filter(t=>names.includes(t.name)).map(t=>settings.legacy||settings.legacyParameters?.includes(t.name)?t:compactToolSchema(t));
+ const customTools=(options.customTools??[]).filter(t=>names.includes(t.name)).map(compactToolSchema);
  const deferred=settings.direct?[]:names.filter(n=>!n.includes('*')&&!n.startsWith('mcp__')&&!isCoreTool(role,n)&&!compatibility.includes(n)&&!settings.referenced?.includes(n)&&!settings.custom?.includes(n));
  const initialActive=names.filter(n=>!deferred.includes(n));
  const policy:ToolLoading={version:TOOL_POLICY_VERSION,initialActive,deferred,compatibility,referencedActive:names.filter(n=>settings.referenced?.includes(n)),...(settings.fallback?{fallback:settings.fallback}:{})};
@@ -68,7 +65,6 @@ export async function prepareToolLoading(db:Database,role:string,options:ToolLoa
  // registration set; it cannot introduce a capability or revive a disabled one.
  const candidates=[...new Set([...Object.keys(TOOL_ALIASES),...(options.toolAllowlist??[])])].filter(name=>/^[a-zA-Z0-9_]+$/.test(name));
  const referenced=candidates.filter(name=>sources.some(text=>new RegExp(`\\b${name}\\b`).test(text)));
- const legacyParameters=sources.some(text=>/\binsert_assets\b/.test(text)&&/\bitems\b/.test(text))?['insert_assets']:[];
  // Absent catalog rows are not permission to restore historical capabilities.
  const bindings=(await db.query("SELECT key FROM tools WHERE kind='builtin' AND enabled AND agents ? $1",[role])).rows.map(r=>String(r.key));
  const extra=(await applyToolBindings(db,role,options.legacyTools??[])).filter(t=>
@@ -76,5 +72,5 @@ export async function prepareToolLoading(db:Database,role:string,options:ToolLoa
  options={...options,customTools:[...options.customTools??[],...extra],toolAllowlist:[...options.toolAllowlist??[],...extra.map(t=>t.name)]};
  const custom=(await db.query("SELECT key FROM tools WHERE kind<>'builtin' AND enabled AND agents ? $1",[role])).rows.map(r=>String(r.key));
  const allowed=await applyToolBindings(db,role,(options.toolAllowlist??[]).map(name=>({name})));
- return toolLoadout(role,{...options,toolAllowlist:allowed.map(t=>t.name)},{direct,legacy,legacyParameters,referenced,custom,fallback:legacy?'旧会话保留兼容工具名称和参数':fallback});
+ return toolLoadout(role,{...options,toolAllowlist:allowed.map(t=>t.name)},{direct,legacy,referenced,custom,fallback:legacy?'旧会话保留兼容工具名称':fallback});
 }

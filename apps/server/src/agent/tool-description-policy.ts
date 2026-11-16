@@ -39,6 +39,7 @@ export function describeToolContract(name: string, description: string): string 
     + ' Worker 每条事实必填非空 evidence；批量逐项核对结果，整批失败返回工具错误。';
   if (name === 'insert_assets') return description + ' 整批失败返回工具错误，部分成功只重试失败项。';
   if (name === 'register_user_target') return description + ' evidence 引用完整原句或独立目标地址行。精确域名用 subdomain；root_domain 仅用于原文明确的通配根域。';
+  if (name === 'context_get') return description + ' 任一项失败则调用标为失败，成功项仍保留；长正文需选择 field，按 read_options 选择读取。';
   if (name === 'context_search') return description + ' source=operations/needs 不支持图谱筛选 q/types/state/asset_id。';
   return description;
 }

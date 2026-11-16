@@ -8,6 +8,7 @@ import {ownObservations} from '../db/worker-drafts.js';
 import {createHash} from 'node:crypto';
 import type {ToolRunContext} from './context.js';
 import {domainTool} from './define.js';
+import {ToolResultError} from './errors.js';
 import {graphSources,resolveGraphNode,authorizedNodes} from '../db/graph_view.js';
 import {nodeDetailTool} from './graph.js';
 import {progressSummary,resultSummary,stopSummary} from '../agent/context-projection.js';
@@ -278,6 +279,8 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
         items.push({ref:item.ref,view,field:coordinate.field,version,source_task_id:sourceTask,inherited:sourceTask!==ctx.taskID,content,total_chars:total,offset_unit:coordinate.unit,next_offset:nextOffset,read_receipt:readReceipt,...(evidenceScope?{evidence_scope:evidenceScope}:{}),...historySegment,...(nextItem?{next_item:nextItem}:{}),...(view==='parents'||view==='members'||dispatchPage?{page_cursor:pageCursor,next_cursor:nextOffset!==null?null:nextCursor}:{} )});
       }catch(error){items.push({ref:item.ref,error:error instanceof Error?error.message:String(error),...(error instanceof ReadSelectionRequired?{error_code:error.code,read_options:error.read_options}: {})});}
     }
+    const failed=items.filter(item=>'error' in item).length;
+    if(failed)throw new ToolResultError(`${failed}/${items.length} 个引用读取失败；成功项已保留，请核对失败项及 read_options。`,{items});
     return {items};
   }},c);}
 
