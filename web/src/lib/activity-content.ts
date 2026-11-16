@@ -1,8 +1,8 @@
 import type {Activity} from './types';
 
 export const ACTIVITY_PAGE_SIZE=8192;
-export type ActivityContentPage={detail:string;offset:number;next_offset:number;total_chars:number;has_more:boolean;version?:string;field?:'detail'|'summary'|'metadata';offset_unit?:'unicode_codepoints'};
-export type ActivityContentOptions={offset?:number;version?:string;field?:'detail'|'summary'|'metadata';signal?:AbortSignal};
+export type ActivityContentPage={detail:string;offset:number;next_offset:number;total_chars:number;has_more:boolean;version?:string;field?:'detail'|'summary'|'metadata'|'arguments';offset_unit?:'unicode_codepoints'};
+export type ActivityContentOptions={offset?:number;version?:string;field?:'detail'|'summary'|'metadata'|'arguments';signal?:AbortSignal};
 export function activityContentQuery(options:ActivityContentOptions,task?:string){
  const query=new URLSearchParams({page:'1',offset:String(options.offset??0),limit:String(ACTIVITY_PAGE_SIZE)});
  if(task)query.set('task',task);if(options.version)query.set('version',options.version);if(options.field)query.set('field',options.field);

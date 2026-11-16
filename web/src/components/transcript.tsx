@@ -261,14 +261,15 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
   const running=live&&!result&&!stopped;
   const state=stopped?'stopped':result?(result.is_error?'failed':'completed'):running?'running':'unknown';
   const raw=use&&use.summary.startsWith(toolName)?use.summary.slice(toolName.length).trimStart():use?.summary??'';
-  const cmd=toolInputText(toolName,raw);
+  const invalidArguments=!!result?.is_error&&/^Invalid arguments for tool "/.test(result.detail??result.summary)&&(result.detail??result.summary).includes('\n\nReceived arguments:\n');
+  const cmd=invalidArguments?'参数 JSON 解析失败':toolInputText(toolName,raw);
   const diagnostic=isTerminal&&!stopped&&result?.is_error
     ? terminalDiagnostic(use?.detail&&!use.detail_truncated?toolInputText(toolName,use.detail):undefined,toolOutcomeText(result))
     : undefined;
   const status={running:'执行中…',unknown:'结果未记录',completed:'已完成',failed:'失败',stopped:'已停止'}[state];
   const statusClass=state==='completed'?'text-[var(--status-success)]':state==='failed'?'text-destructive':'text-muted-foreground';
   const StatusIcon=state==='completed'?CheckIcon:state==='failed'?XIcon:state==='stopped'?CircleStopIcon:CircleHelpIcon;
-  const parts=[...(use?[{step:use,label:'命令'}]:[]),...(result?[{step:result,label:stopped?'输出（已停止）':result.is_error?'输出 ✕':'输出 ✓'}]:[])];
+  const parts=[...(invalidArguments?[{step:result!,label:'原始参数（JSON 解析失败）',field:'arguments' as const}]:use?[{step:use,label:'命令',field:'detail' as const}]:[]),...(result?[{step:result,field:'detail' as const,label:stopped?'输出（已停止）':result.is_error?'输出 ✕':'输出 ✓'}]:[])];
   return <div ref={root} data-source-call={focused||undefined} data-activity-id={use?.seq??result?.seq} data-terminal={isTerminal} data-tool-status={state} className={cn('execution-tool',focused&&'rounded-md border border-primary bg-accent/30 p-2')}>
     {focused&&<Badge variant="outline">{focusLabel}</Badge>}
     <button type="button" onClick={()=>setOpen(v=>!v)} aria-expanded={open} aria-controls={panelId} aria-busy={running} title={toolName} className="execution-process-trigger">
@@ -280,9 +281,9 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
     </button>
     {diagnostic&&<p role="status" className="text-sm text-muted-foreground">{diagnostic.label}{diagnostic.code!==undefined&&` · 退出码 ${diagnostic.code}`}{open&&` · ${diagnostic.detail}`}</p>}
     {open&&<div id={panelId} data-search-body className="execution-tool-detail"><div className="execution-terminal-surface" data-terminal={isTerminal}>
-      {parts.map(({step,label})=><section key={step.seq} data-search-activity={step.seq} className="execution-terminal-part" aria-label={label}>
+      {parts.map(({step,label,field})=><section key={`${step.seq}:${field??'detail'}`} data-search-activity={step.seq} className="execution-terminal-part" aria-label={label}>
         <div className="execution-terminal-label">{label}</div>
-        <ActivityBody step={step} onReady={located} copy copyText={(text,complete)=>complete&&step===use&&focusLabel!=='搜索结果'?toolInputText(toolName,text):text} render={(text,complete)=><pre>{complete&&step===use&&focusLabel!=='搜索结果'?toolInputText(toolName,text):text}</pre>}/>
+        <ActivityBody step={step} field={field} onReady={located} copy copyText={(text,complete)=>complete&&step===use&&focusLabel!=='搜索结果'?toolInputText(toolName,text):text} render={(text,complete)=><pre>{complete&&step===use&&focusLabel!=='搜索结果'?toolInputText(toolName,text):text}</pre>}/>
       </section>)}
     </div></div>}
   </div>;

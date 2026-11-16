@@ -9,6 +9,8 @@ assert.ok(origin,'FATE_TEST_ORIGIN is required');
 const screenshots=process.env.FATE_SCREENSHOTS;
 if(screenshots)mkdirSync(screenshots,{recursive:true});
 const ts='2026-11-12T00:00:00Z',turn_id='synthetic-process';
+const rawArgs='{"facts":[{"evidence":"'+('中文😀'.repeat(3000))+'", {"broken":true}]}';
+const parseError='Invalid arguments for tool "record_fact": Expected property name\n\nReceived arguments:\n'+rawArgs;
 const task={id:'501',name:'执行过程合成任务',description:'本地合成资料',goal:'核对样本文本',status:'paused',paused:true,created_at:ts,updated_at:ts,exploration_id:301};
 const node={id:'201',type:'intent',state:'done',payload:JSON.stringify({summary:'核对合成文件'}),origin:'planner',ts};
 const browser=await chromium.launch({channel:'chrome',headless:true});
@@ -17,7 +19,7 @@ try{
   for(const chat of [false,true]){
    const worker=chat?'auto':'work#1',endStatus=theme==='dark'?'failed':width===390?'stopped':'completed';
    const act=(seq,kind,summary,extra={})=>({seq,kind,summary,detail:summary,ts,worker,intent_id:chat?undefined:'201',turn_id,metadata:{turn_id},...extra});
-   const initial=[act(1,'thinking','先核对已有记录，避免重复读取。',{detail:undefined,stream_id:'thought-1'}),act(2,'tool_use','context_get {"ref":"node:201"}',{tool:'context_get',tool_use_id:'call-1',detail:undefined}),act(3,'tool_result','已读取结果',{tool:'context_get',tool_use_id:'call-1',is_error:true,detail:undefined})];
+   const initial=[act(1,'thinking','先核对已有记录，避免重复读取。',{detail:undefined,stream_id:'thought-1'}),act(2,'tool_use','record_fact {}',{tool:'record_fact',tool_use_id:'call-1',detail:'{}'}),act(3,'tool_result',parseError.slice(0,150),{tool:'record_fact',tool_use_id:'call-1',is_error:true,detail:parseError.slice(0,8192),detail_truncated:true})];
    initial.push(act(4,'tool_use','bash {"command":"fixture"}',{tool:'bash',tool_use_id:'cancelled'}),act(5,'tool_result','Command aborted',{tool:'bash',tool_use_id:'cancelled',is_error:true}));
    const final=act(7,'text','最终答复保持原字号。',{metadata:{turn_id,final_answer:true}});
    const end=act(8,'result','执行结束',{metadata:{turn_id,event_type:'lifecycle',status:endStatus}});
@@ -27,6 +29,7 @@ try{
    await context.addCookies([{name:'series_token',value:'fixture',url:origin},{name:'theme_mode',value:theme,url:origin}]);
    await context.addInitScript(()=>{
     localStorage.setItem('series_token','fixture');window.fixtureStreams=[];
+    Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{window.fixtureCopied=text;}}});
     window.EventSource=class extends EventTarget {
      static CLOSED=2;readyState=1;onmessage=null;
      constructor(url){super();this.url=url;window.fixtureStreams.push(this);setTimeout(()=>this.dispatchEvent(new Event('open')),0);}
@@ -51,6 +54,10 @@ try{
      const offset=Number(u.searchParams.get('offset')||0),text=offset?'第二页原文。':'完整推理第一页。';
      return ok({detail:text,offset,next_offset:offset?8200:8192,total_chars:8200,has_more:!offset,version:'v1',field:'detail'});
     }
+    if(p==='/api/exploration/activity/3'||p==='/api/conversations/801/messages/3'){
+     const field=u.searchParams.get('field')||'detail',source=Array.from(field==='arguments'?rawArgs:parseError),offset=Number(u.searchParams.get('offset')||0),next=Math.min(source.length,offset+8192);
+     return ok({detail:source.slice(offset,next).join(''),offset,next_offset:next,total_chars:source.length,has_more:next<source.length,version:'7',field});
+    }
     if(p.includes('/tokens/'))return ok({models:[],workers:[],sessions:[],total:{input:0,output:0,cache_read:0,cache_write:0,total:0}});
     if(p.endsWith('/agents'))return ok({agents:[]});
     if(p.includes('/llm')||p.includes('/profiles'))return ok([]);
@@ -71,6 +78,16 @@ try{
    assert.equal(await row.evaluate(el=>getComputedStyle(el).paddingTop),'4px');
    assert.equal(await segment.locator('.execution-tool > button').first().getAttribute('aria-expanded'),'false');
    await trigger.getByText('· 1 次异常',{exact:true}).waitFor();
+   const badCall=segment.locator('[data-tool-status="failed"]').first();await badCall.locator(':scope > button').click();
+   const input=badCall.getByRole('region',{name:'原始参数（JSON 解析失败）'});
+   await input.getByRole('button',{name:'下一页'}).waitFor();
+   assert.equal(await input.locator('pre').innerText(),Array.from(rawArgs).slice(0,8192).join(''));
+   await input.getByRole('button',{name:'下一页'}).click();
+   await input.getByRole('button',{name:'上一页'}).waitFor();
+   const last=Array.from(rawArgs).slice(8192).join('');assert.equal(await input.locator('pre').innerText(),last);
+   await input.getByRole('button',{name:'复制当前片段'}).click();assert.equal(await page.evaluate(()=>window.fixtureCopied),last);
+   await badCall.locator(':scope > button').click();
+
    const cancelled=segment.locator('[data-tool-status="stopped"]');
    await cancelled.getByRole('button').click();
    await cancelled.getByText('输出（已停止）',{exact:true}).waitFor();

@@ -3,8 +3,14 @@ import type {ToolRunContext} from '../tools/context.js';
 import {recordExchange} from './store.js';
 import {targetFetch,targetErrorCode} from './target-transport.js';
 import {ToolResultError} from '../tools/errors.js';
+import {validateToolArguments} from '@earendil-works/pi-ai';
 export interface EvidenceRequestInput {url:string;method?:string;headers?:Record<string,string>;body?:string;follow_redirects?:boolean;}
+export const HTTP_REQUEST_SCHEMA={type:'object',additionalProperties:false,
+ description:'HTTP/HTTPS 请求，固定 60 秒时限；不支持 timeout_ms 等额外参数。',
+ properties:{url:{type:'string',format:'uri',pattern:'^[Hh][Tt][Tt][Pp][Ss]?://[^/?#\\s]+',description:'完整 HTTP/HTTPS URL'},method:{type:'string',pattern:"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"},headers:{type:'object',additionalProperties:{type:'string'}},body:{type:'string'},follow_redirects:{type:'boolean',description:'默认 true；false 仅读首跳并返回 redirect_location'}},required:['url']};
 export async function evidenceRequest(ctx:ToolRunContext,input:EvidenceRequestInput,signal?:AbortSignal,check?:(input:Record<string,unknown>)=>Promise<void>){
+ input=validateToolArguments({name:'http_request',description:'',parameters:HTTP_REQUEST_SCHEMA},
+  {type:'toolCall',id:'validation',name:'http_request',arguments:input as unknown as Parameters<typeof validateToolArguments>[1]['arguments']}) as EvidenceRequestInput;
  let url=input.url,method=input.method??'GET',body=input.body;
  const headers={...input.headers};
  const trafficIDs:string[]=[];

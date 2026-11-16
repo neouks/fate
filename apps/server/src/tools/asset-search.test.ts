@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import {validateToolArguments} from '@earendil-works/pi-ai';
 import {openDatabase} from '../db/index.js';
 import {migrateAssetCoverageBinding} from '../db/asset-migration.js';
 import {mergedAssetSearchTool} from './asset-search-compat.js';
@@ -37,7 +38,7 @@ test('Worker asset coverage filters share scope, pagination, and live permission
     await db.query('INSERT INTO task_asset_links(task_id,asset_id,tested) VALUES ($1,$2,$3)', [taskID,asset.id,legacy]);
     return Number(asset.id);
   };
-  const tested = await add(own.id,'verified');
+  const tested = await add(own.id,'verified-rcservice');
   const legacy = await add(own.id,'legacy','scope.example.test',true);
   const inherited = await add(source.id,'inherited');
   const outside = await add(own.id,'outside','outside.example.test');
@@ -54,6 +55,16 @@ test('Worker asset coverage filters share scope, pagination, and live permission
     const result = await entry.execute('fixture',params,undefined,undefined,{} as never);
     return {error:result.isError===true,body:JSON.parse((result.content[0] as {text:string}).text)};
   };
+  // Native JSON Schema -> merged tool -> DSL -> PostgreSQL, without model retries.
+  for (const dsl of ['url contains "rcservice"', 'url = "rcservice"', 'url="rcservice"']) {
+    const args=validateToolArguments(tool,{type:'toolCall',id:'screenshot',name:'asset_search',arguments:{dsl,limit:50}});
+    const result=await invoke(args);
+    assert.equal(result.error,false);
+    assert.equal(result.body.total,1);
+    assert.deepEqual(result.body.assets.map((a:{id:number})=>a.id),[tested]);
+  }
+  const hostile=await invoke({dsl:'url contains '+JSON.stringify("\" OR 1=1 --")});
+  assert.equal(hostile.error,false);assert.equal(hostile.body.total,0);
   const option = {type:'endpoint',untested:true};
   const filter = {dsl:'type==endpoint AND tested==false'};
   const first = await invoke({...option,limit:1});

@@ -15,9 +15,11 @@ const arrays: Record<string, string> = {
 	technologies: "technologies",
 	tech: "technologies",
 };
+const fields = new Set([...Object.keys(strings), ...Object.keys(numbers), ...Object.keys(arrays), 'task_id', 'company_id', 'tested']);
 export class AssetQueryError extends Error {
 	statusCode = 400;
 }
+export const ASSET_DSL_HELP = '字符串/数组：= 或 contains 包含匹配，== 精确匹配；字符串 != 为不包含，数组 != 为不含该精确元素。数值：=、==、!=、>、>=、<、<=。task_id/company_id 仅 =、==；tested 仅 =、==、!= true/false（任务覆盖状态）。支持空格、AND/OR、括号；值含空格时用双引号。例：url contains "sample" AND type==endpoint。常用字段：domain、ip、url、port、method、status_code、technology。';
 type Token = { kind: string; field?: string; op?: string; value?: string };
 export function compileAssetDSL(
 	input: string,
@@ -30,10 +32,15 @@ export function compileAssetDSL(
 	let i = 0;
 	const word = () => {
 		if (input[i] === '"') {
-			const start = ++i;
-			while (i < input.length && input[i] !== '"') i++;
-			if (i === input.length) throw new AssetQueryError("DSL 缺少结束引号");
-			return input.slice(start, i++);
+			i++;
+			let value = '';
+			while (i < input.length) {
+				const char = input[i++]!;
+				if (char === '"') return value;
+				if (char === '\\' && ['"', '\\'].includes(input[i] ?? '')) value += input[i++]!;
+				else value += char;
+			}
+			throw new AssetQueryError("DSL 缺少结束引号");
 		}
 		const start = i;
 		while (i < input.length && !/[\s()]/u.test(input[i]!)) i++;
@@ -48,18 +55,22 @@ export function compileAssetDSL(
 			tokens.push({ kind: input[i++]! });
 			continue;
 		}
-		const m = /^([a-zA-Z_]\w*)(==|!=|>=|<=|=|>|<)/.exec(input.slice(i));
+		const m = /^([a-zA-Z_]\w*)(?:\s*(==|!=|>=|<=|=|>|<)|\s+(contains)\b)/i.exec(input.slice(i));
 		if (m) {
 			i += m[0].length;
+			while (i < input.length && /\s/u.test(input[i]!)) i++;
 			const value = word();
 			if (!value) throw new AssetQueryError("DSL 表达式缺少值");
 			tokens.push({
 				kind: "value",
 				field: m[1]!.toLowerCase(),
-				op: m[2],
+				op: (m[2] ?? m[3])!.toLowerCase(),
 				value,
 			});
 		} else {
+			const unsupported = /^([a-zA-Z_]\w*)\s+([a-zA-Z_]\w*)\b/.exec(input.slice(i));
+			if (unsupported && fields.has(unsupported[1]!.toLowerCase()) && !/^(AND|OR)$/i.test(unsupported[2]!))
+				throw new AssetQueryError(`DSL 不支持运算符 ${unsupported[2]}；包含匹配用 = 或 contains，精确匹配用 ==`);
 			const value = word();
 			tokens.push({
 				kind: /^(AND|OR)$/i.test(value) ? value.toUpperCase() : "value",
@@ -79,8 +90,10 @@ export function compileAssetDSL(
 	};
 	const leaf = (t: Token) => {
 		const f = t.field ?? "",
-			op = t.op ?? "=",
+			op = t.op === 'contains' ? '=' : t.op ?? "=",
 			v = t.value ?? "";
+		if (t.op === 'contains' && !Object.hasOwn(strings, f) && !Object.hasOwn(arrays, f))
+			throw new AssetQueryError(`字段 ${f} 不支持 contains；仅字符串和数组支持包含匹配`);
 		if (!f) {
 			const q = param(`%${v}%`);
 			return (
@@ -107,6 +120,8 @@ export function compileAssetDSL(
 				")"
 			);
 		}
+		if (["task_id", "company_id"].includes(f) && !["=", "=="].includes(op))
+			throw new AssetQueryError(`${f} 仅支持 =、==`);
 		if (f === "task_id") return `${param(integer(v))}=ANY(${alias}.task_ids)`;
 		if (f === "company_id") return `${alias}.company_id=${param(integer(v))}`;
 		if (f === "tested" && coverage) {

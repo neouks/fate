@@ -3,12 +3,14 @@ import { ToolResultError } from "./errors.js";
 import type { ToolRunContext } from "./context.js";
 import { writeAssets } from "../db/asset-write.js";
 import { ASSET_TYPES, queryAssets, type AssetRow } from "../db/asset-query.js";
+import { ASSET_DSL_HELP } from "../db/asset-dsl.js";
 import {unicodeLength,unicodeSlice} from '../unicode.js';
 import {assertToolBinding} from '../agent/tool-registry.js';
 const string = { type: "string" },
 	strings = { type: "array", items: string },
 	objects = { type: "array", items: { type: "object" } };
 const nonBlank = {type:"string",pattern:"\\S"};
+const ipAddress = {type:'string',anyOf:[{format:'ipv4'},{format:'ipv6'}],description:'IPv4/IPv6 地址；域名使用 domain'};
 const requiredAssetFields = (...fields: string[]) => ({
   required: fields,
   properties: Object.fromEntries(fields.map(field => [field, nonBlank])),
@@ -37,7 +39,7 @@ export const assetInputSchema = {
 			anyOf: [strings, string],
 			description: "DNS 值数组；旧字符串兼容为单项数组",
 		},
-		ip: string,
+		ip: ipAddress,
 		bound_domains: strings,
 		open_ports: {
 			type: "array",
@@ -58,7 +60,7 @@ export const assetInputSchema = {
 		app_icp: string,
 		company_id: { type: "integer", minimum: 1 },
 		url: nonBlank,
-		service_ip: string,
+		service_ip: ipAddress,
 		service_name: string,
 		port: { type: "integer", minimum: 1, maximum: 65535 },
 		technologies: strings,
@@ -128,8 +130,7 @@ export function insertAssetsTool(ctx: ToolRunContext) {
 const searchProperties = {
 	dsl: {
 		type: "string",
-		description:
-			"如 type==endpoint AND tested==false；tested 为任务覆盖状态，只接受 true/false。其他常用字段 port、domain、ip、url、method、status_code、technology；支持 AND/OR/括号",
+		description: ASSET_DSL_HELP,
 	},
 	type: { type: "string", enum: ASSET_TYPES, description: "资产类型精确过滤；也可写入 dsl，如 type==endpoint。与 dsl 同时提供时取交集。" },
 	untested: { type: "boolean", description: "true 查询覆盖范围内缺少明确测试记录的资产，可与 type、dsl 组合。与 DSL 的 tested==false 同口径，均要求覆盖度已启用且角色已绑定未测资产查询。" },

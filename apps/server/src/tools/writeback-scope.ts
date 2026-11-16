@@ -4,7 +4,7 @@ export const writebackScopeSchema = {
   type:'object',additionalProperties:false,
   description:'本条结论的实际验证范围；可汇总多个相关接口和请求，不按每个参数拆节点。缺省保存为范围未说明，不计覆盖。',
   properties:{
-    tested:{type:'string',minLength:1,maxLength:4000,description:'实际检查的范围和方法，不能直接复制意图计划充当已执行范围'},
+    tested:{type:'string',minLength:1,pattern:'\\S',maxLength:4000,description:'实际检查的范围和方法，不能直接复制意图计划充当已执行范围'},
     not_tested:{type:'string',maxLength:4000,description:'尚未验证的相关部分；未测不能表述为已否定'},
     limitations:{type:'string',maxLength:4000,description:'结论适用条件或限制，例如身份、协议、代理、样本范围'},
   },required:['tested'],

@@ -15,7 +15,7 @@ export const DIRECTION_PREVIOUS_TOOL_DESCRIPTIONS:Record<string,string> = {"add_
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
   add_intent: '真正派单必须调用本工具并核对成功回执，文字计划不会创建意图。派单单位是独立业务问题；入口发现、资料收集、对照验证、边界检查和补证是同一方向内的工作阶段，不分别派单。同一问题的不同入口和参数变体由一个 Worker 探索；提交前合并共享问题或依赖中间产出的条目。Planner 负责方向，Worker 自选入口、工具、方法和顺序；同方向已有 Worker 时优先协调，不因一个新入口重复派单。初期探索按方向，明确线索复核和用户指定步骤可具体。验收关注结论、证据和覆盖，不预设结论；默认省略 allowed_tools，不抄写能力目录，也不把只读要求转换成工具白名单；不凭空增加固定采样数、请求数或步骤。按有价值的方向派单：summary 简述目的，asset_ids 给入口范围，parent_ids 引用依据；Worker 自选步骤，contract 仅按需补边界。不按接口或参数拆单；局部重叠见 dedup.related_intent_ids，派前核对已有方向。Main 以宿主下发回执为准。',
   dispatch_intents: '请求宿主下发已有待执行意图，仅 Main 可用；执行前检查任务状态和意图归属。',
-  record_fact: '边发现边按结论写回，成功立即入图；同一结论的相关观察合并，不按请求拆节点。asset_ids 明确实际涉及资产，缺省不继承意图范围；scope 简述实际验证、未测和限制，observation_type 区分实测、推断、负面或未知。缺项仍保存但不计覆盖，evidence 保留真实证据。',
+  record_fact: '保存新增事实，相关观察合并为同一结论。单条传 summary 等顶层字段；批量只传 facts 数组，不混用。asset_ids 仅列实际涉及资产，缺省不继承意图范围；scope 描述实际验证范围。核对逐项回执。',
   asset_search: '检索本任务及直接来源资产摘要。普通检索提供 DSL，untested=true 查无明确范围测试记录的资产，不代表从未测试；legacy_tested 提示历史范围待核实。用 next_offset 续页，详情用 asset_get。',
   asset_get: '按 ids 和字段组读取资产；identity/fingerprint 默认返回，dns/params/auth/extra 按需选择。field 使用 JSON Pointer；next 参数原样续读 Unicode 正文。',
   insert_assets: '边发现边用 assets 数组登记资产。按 Schema 填写各类型字段：record_value 必须为数组，endpoint 使用 url/method/params，HTTP service 使用 url 和指纹，app 使用 app_name。results/errors 逐项返回，成功即入图，探索结论用 record_fact。',
@@ -47,6 +47,8 @@ export const REVIEWED_CONVERGENCE_PROVE_GOAL='当你判断某个发现/事实证
 TOOL_DESCRIPTIONS.add_intent+=' '+CONVERGENCE_ADD_INTENT_HINT;
 TOOL_DESCRIPTIONS.prove_goal=CONVERGENCE_PROVE_GOAL_HINT;
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
+  // Exact known test placeholder only; preserve intentional custom descriptions.
+  if(name==='record_fact'&&['EDITED DESC','边发现边按结论写回，成功立即入图；同一结论的相关观察合并，不按请求拆节点。asset_ids 明确实际涉及资产，缺省不继承意图范围；scope 简述实际验证、未测和限制，observation_type 区分实测、推断、负面或未知。缺项仍保存但不计覆盖，evidence 保留真实证据。'].includes(String(stored)))stored=undefined;
   if(stored===PRE_CONVERGENCE_TOOL_DESCRIPTIONS[name] || name==='prove_goal'&&stored===REVIEWED_CONVERGENCE_PROVE_GOAL)stored=undefined;
   if(name==='report_finding'&&isPreviousFindingDescription(stored))stored=undefined;
   if(name==='report_conversation_finding'&&stored==='绑定任务的 Pentest 原子提交有证据的漏洞')stored=undefined;

@@ -54,21 +54,28 @@ export function contentQuery(query:Record<string,unknown>){
  };
  const offset=integer('offset',0),limit=integer('limit',ACTIVITY_PREVIEW_CHARS);
  if(limit<1||limit>ACTIVITY_PREVIEW_CHARS)throw fail(`limit 必须为 1–${ACTIVITY_PREVIEW_CHARS}`);
- const field=query.field??'detail';if(!['detail','summary','metadata'].includes(String(field)))throw fail('无效活动字段');
+ const field=query.field??'detail';if(!['detail','summary','metadata','arguments'].includes(String(field)))throw fail('无效活动字段');
  const version=query.version;if(version!==undefined&&(typeof version!=='string'||!/^\d{1,20}$/.test(version)))throw fail('无效原文版本');
- return {offset,limit,field:field as 'detail'|'summary'|'metadata',version:version as string|undefined};
+ return {offset,limit,field:field as 'detail'|'summary'|'metadata'|'arguments',version:version as string|undefined};
 }
 
 export async function readActivityContent(db:Database,scope:StreamScope,where:string,params:unknown[],query:Record<string,unknown>){
  const page=contentQuery(query),table=scope==='task'?'activity':'conversation_activities';
  // Explicit compatibility entry point. First-party views use bounded pages.
  if(!page){const r=await db.query(`SELECT detail FROM ${table} WHERE ${where}`,params);if(!r.rowCount)throw fail('活动不存在或未获授权',404);return {detail:String(r.rows[0]!.detail??'')};}
- const field=page.field==='metadata'?'metadata::text':page.field;
+ // Failed JSON is already retained verbatim in the native result. Project it
+ // here so historical calls also work, with the same authorization and paging.
+ const marker="E'\\n\\nReceived arguments:\\n'";
+ const field=page.field==='arguments'
+  ?`CASE WHEN kind='tool_result' AND is_error AND starts_with(detail,'Invalid arguments for tool "') AND strpos(detail,${marker})>0
+    THEN substring(detail FROM strpos(detail,${marker})+char_length(${marker})) END`
+  :page.field==='metadata'?'metadata::text':page.field;
  const values=[...params,page.offset+1,page.limit];
  const r=await db.query(`SELECT substring(COALESCE(${field},'') FROM $${values.length-1}::int FOR $${values.length}::int) detail,
-  char_length(COALESCE(${field},'')) total_chars,xmin::text version FROM ${table} WHERE ${where}`,values);
+  char_length(COALESCE(${field},'')) total_chars,(${field}) IS NOT NULL available,xmin::text version FROM ${table} WHERE ${where}`,values);
  if(!r.rowCount)throw fail('活动不存在或未获授权',404);
- const row=r.rows[0]!;if(page.version!==undefined&&page.version!==row.version)throw fail('原文版本已变化，请从第一页重新读取',409);
+ const row=r.rows[0]!;if(page.field==='arguments'&&!row.available)throw fail('此记录没有可读取的失败原始参数');
+ if(page.version!==undefined&&page.version!==row.version)throw fail('原文版本已变化，请从第一页重新读取',409);
  const total=Number(row.total_chars),next=Math.min(total,page.offset+page.limit);
  if(page.offset>total)throw fail('读取位置超出原文范围');
  return {detail:String(row.detail),field:page.field,offset:page.offset,next_offset:next,total_chars:total,has_more:next<total,version:String(row.version),offset_unit:'unicode_codepoints'};
