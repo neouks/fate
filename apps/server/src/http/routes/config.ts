@@ -1,4 +1,8 @@
+import {executionSettings,EXECUTION_DEFAULTS,resolveShell,pythonInterpreter,runProgram} from '../../config/execution.js';
+import {normalizeProbeProxy} from './global-proxy.js';
+import {registerWebSearchRoutes} from './web-search.js';
 import {registerAgentManagementRoutes} from './agents-management.js';
+import {registerGlobalProxyRoutes} from './global-proxy.js';
 import {resourceUsageList,emptyResourceUsage} from '../../db/resource-usage.js';
 import {skillFilePath,parseSkillDocument,loadBoundSkills} from '../../agent/skill-files.js';
 import {profilePolicy,validateProfilePolicy,validateRetryRule,rejectRetiredRetry} from '../../pi/profile-policy.js';
@@ -54,6 +58,8 @@ function profileDTO(p: LLMProfile): Record<string, unknown> {
 }
 
 export function registerConfigRoutes(app: FastifyInstance): void {
+  registerGlobalProxyRoutes(app);
+  registerWebSearchRoutes(app);
   app.get('/api/tasks/:id/runtime-config',async(req,reply)=>{const id=Number((req.params as {id:string}).id);if(!await app.db.tasks().getTask(id))return reply.code(404).send({error:'task not found'});return runtimeConfiguration(app.db,{taskID:id});});
   app.get('/api/conversations/:id/runtime-config',async(req,reply)=>{const id=Number((req.params as {id:string}).id);if(!(await app.db.query('SELECT id FROM conversations WHERE id=$1',[id])).rowCount)return reply.code(404).send({error:'conversation not found'});return runtimeConfiguration(app.db,{conversationID:id});});
   // ─── LLM 测试连接：按 body 参数（或已存 profile id）构造 provider 做一次最小补全 ───
@@ -225,20 +231,40 @@ export function registerConfigRoutes(app: FastifyInstance): void {
 
   // ─── settings KV（保留键的最小面）─────────────────────────────────────────
 
-  app.get("/api/settings", async () => {
+  const readSettings=async () => {
     const [workers, activeTask] = await Promise.all([
       platform().workers(),
       platform().getSetting("active_task"),
     ]);
-    return { workers,llm_pool_enabled:await platform().getBool('llm_pool_enabled',false),llm_pool_bind_fallback:await platform().getBool('llm_pool_bind_fallback',false),runtime_resource_policy:await configuredRuntimeResources(app.db),
+    return { ...await executionSettings(app.db),workers,web_search_enabled:await platform().getBool('web_search_enabled',false),web_search_backend:'deepseek',llm_pool_enabled:await platform().getBool('llm_pool_enabled',false),llm_pool_bind_fallback:await platform().getBool('llm_pool_bind_fallback',false),runtime_resource_policy:await configuredRuntimeResources(app.db),
       planner_context_budget_tokens:Number((await platform().getSetting('planner_context_budget_tokens'))??CONTEXT_DEFAULTS.planner),
       worker_context_budget_tokens:Number((await platform().getSetting('worker_context_budget_tokens'))??CONTEXT_DEFAULTS.worker),
-      pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{runtime_resource_policy:'queued and next admission; existing executions are not preempted',workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission",planner_context_budget_tokens:'next planner session',worker_context_budget_tokens:'next worker session'}, active_task: activeTask ?? "" };
-  });
+      pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{traffic_capture:'next proxy request',global_proxy:'next target request',agent_traffic_binding:'next reporter session; revocation immediate',constraints_inject_planner:'next model request',constraints_inject_worker:'next model request',shell_mode:'next session',python_interpreter:'next script call',runtime_resource_policy:'queued and next admission; existing executions are not preempted',workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission",planner_context_budget_tokens:'next planner session',worker_context_budget_tokens:'next worker session'}, active_task: activeTask ?? "" };
+  };
+  app.get("/api/settings",readSettings);
+  app.post("/api/settings/python/detect",async()=>({python_interpreter:pythonInterpreter()}));
 
   const setSettings = async (req: { body?: unknown }, reply: { code(c: number): { send(v: unknown): unknown } }): Promise<unknown> => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const out: Record<string, unknown> = {};
+    if(!b||typeof b!=='object'||Array.isArray(b))return reply.code(400).send({error:'请求体必须为对象'});
+    const known=new Set([...Object.keys(EXECUTION_DEFAULTS),'web_search_enabled','web_search_backend','llm_pool_enabled','llm_pool_bind_fallback','runtime_resource_policy','pi_context_policy','pi_mcp_loading','task_concurrency_enabled','task_concurrency_limit','workers','active_task','planner_context_budget_tokens','worker_context_budget_tokens']);
+    for(const key of Object.keys(b))if(!known.has(key))return reply.code(400).send({error:`不支持的设置：${key}`});
+    for(const [key,value] of Object.entries(EXECUTION_DEFAULTS))if(b[key]!==undefined&&typeof b[key]!==typeof value)return reply.code(400).send({error:`${key} 类型无效`});
+    try{
+      if(b.global_proxy!==undefined)normalizeProbeProxy(b.global_proxy);
+      if(b.shell_mode!==undefined)resolveShell(String(b.shell_mode));
+      if(typeof b.python_interpreter==='string'&&b.python_interpreter.trim()){
+        const python=pythonInterpreter(b.python_interpreter);const probe=await runProgram(python,['-c','import sys; print(sys.version_info.major)'],{cwd:app.dataDir,timeoutMs:5000});
+        if(probe.exitCode!==0||probe.output.trim()!=='3')throw new Error('需要可用的 Python 3 解释器');
+      }
+      for(const key of ['workers','task_concurrency_limit'])if(b[key]!==undefined&&(!Number.isSafeInteger(b[key])||Number(b[key])<1))throw new Error(`${key} 必须为正整数`);
+      if(b.active_task!==undefined&&typeof b.active_task!=='string')throw new Error('active_task 必须为字符串');
+      if(b.task_concurrency_enabled!==undefined&&typeof b.task_concurrency_enabled!=='boolean')throw new Error('task_concurrency_enabled 必须为布尔值');
+    }catch(error){return reply.code(400).send({error:(error as Error).message});}
+
+    if(b.web_search_enabled!==undefined&&typeof b.web_search_enabled!=='boolean')return reply.code(400).send({error:'web_search_enabled 必须为布尔值'});
+    if(b.web_search_backend!==undefined&&b.web_search_backend!=='deepseek')return reply.code(400).send({error:'网络搜索使用 DeepSeek 官方搜索'});
     const poolKeys=['llm_pool_enabled','llm_pool_bind_fallback'] as const;
     for(const key of poolKeys)if(b[key]!==undefined&&typeof b[key]!=='boolean')return reply.code(400).send({error:`${key} 必须为布尔值`});
     let resources:ReturnType<typeof resourcePolicy>|undefined;
@@ -252,8 +278,14 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       if(typeof b[key]!=='number')return reply.code(400).send({error:`${key} 必须为整数`});
       try{roleContextPolicy(role,0,String(b[key]));}catch(error){return reply.code(400).send({error:(error as Error).message});}
     }
+    if(b.workers!==undefined){try{await app.db.plannerLockPool(Math.min(128,Number(b.workers)));}catch(error){return reply.code(400).send({error:(error as Error).message});}}
     // Both role settings are validated before either is changed.
     await app.db.transaction(async tx=>{
+      if(b.workers!==undefined)await tx.platform().setWorkers(Number(b.workers));
+      for(const key of ['pi_context_policy','pi_mcp_loading','task_concurrency_enabled','task_concurrency_limit','active_task'])if(b[key]!==undefined)await tx.platform().setSetting(key,String(b[key]));
+      for(const key of Object.keys(EXECUTION_DEFAULTS))if(b[key]!==undefined)await tx.platform().setSetting(key,String(b[key]).trim());
+      if(b.web_search_enabled!==undefined){await tx.platform().setSetting('web_search_enabled',String(b.web_search_enabled));out.web_search_enabled=b.web_search_enabled;}
+      if(b.web_search_backend!==undefined){await tx.platform().setSetting('web_search_backend','deepseek');out.web_search_backend='deepseek';}
       for(const key of poolKeys)if(b[key]!==undefined){await tx.platform().setSetting(key,String(b[key]));out[key]=b[key];out.applies='next_session';}
       if(resources){await tx.platform().setSetting('runtime_resource_policy',JSON.stringify(resources));out.runtime_resource_policy=resources;}
       for(const {key} of contextKeys)if(b[key]!==undefined){
@@ -262,21 +294,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       }
     });
     if(resources)await invalidateRuntimeResources(app.db);
-    for(const key of ['pi_context_policy','pi_mcp_loading'])if(b[key]!==undefined){await platform().setSetting(key,String(b[key]));out[key]=b[key];out.applies='next_session';}
-    if(b["task_concurrency_enabled"]!==undefined)await platform().setSetting("task_concurrency_enabled",String(b["task_concurrency_enabled"]===true));
-    if(b["task_concurrency_limit"]!==undefined){const n=Number(b["task_concurrency_limit"]);if(!Number.isInteger(n)||n<1)return reply.code(400).send({error:"task_concurrency_limit 必须为正整数"});await platform().setSetting("task_concurrency_limit",String(n));}
-    if (b["workers"] !== undefined) {
-      const n = Number(b["workers"]);
-      if (!Number.isInteger(n) || n <= 0) return reply.code(400).send({ error: "workers 必须 >0" });
-      try{await app.db.plannerLockPool(Math.min(128,n));}catch(error){return reply.code(400).send({error:(error as Error).message});}
-      await platform().setWorkers(n);
-      out["workers"] = n;
-    }
-    if (typeof b["active_task"] === "string") {
-      await platform().setSetting("active_task", b["active_task"]);
-      out["active_task"] = b["active_task"];
-    }
-    return out;
+    return {...await readSettings(),...out};
   };
   app.post("/api/settings", async (req, reply) => setSettings(req, reply));
   app.put("/api/settings", async (req, reply) => setSettings(req, reply));

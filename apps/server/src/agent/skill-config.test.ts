@@ -66,7 +66,7 @@ test('seven roles respect explicit resources, per-tool disable and direct-mode f
  }} as unknown as Parameters<typeof roleResources>[0];
  for(const role of ['goals','planner','mainagent','worker','auto','pentest','reporter']){
   const resources=await roleResources(db,role,'/local/skills');assert.deepEqual(resources.allowedSkills,['bound']);
-  if(['goals','planner','reporter'].includes(role)){assert.equal(resources.mcpEntries,undefined);continue;}
+  if(['goals','reporter'].includes(role)){assert.equal(resources.mcpEntries,undefined);continue;}
   assert.deepEqual(resources.mcpEntries?.map(e=>e.name),['enabled']);assert.equal(resources.mcpEntries?.[0]?.config.exposure,'deferred');assert.equal((resources.mcpEntries?.[0]?.config.toolExposure as Record<string,string>).forbidden,'hidden');
  }
  searchEnabled=false;assert.equal((await roleResources(db,'worker')).mcpEntries?.[0]?.config.exposure,'direct');

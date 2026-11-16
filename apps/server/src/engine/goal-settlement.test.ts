@@ -34,6 +34,13 @@ test('idle unfinished tasks hold without restarting, accepted goals settle witho
  assert.equal((await db.tasks().getTask(a.task))!.status,'needs_attention');
  assert.equal((await db.query('SELECT 1 FROM engine_task_leases WHERE task_id=$1',[a.task])).rowCount,0);
  await engine.run(a.task);assert.equal(requests,0,'raw run cannot implicitly revive a held task');
+ const pending=await fixture(),pendingEvidence=await pending.graph.addNode('fact',{evidence:'A/B observed'},0,'confirmed','fixture',[]);
+ await proposeGoalAcceptance(db,pending.task,pending.goal,pendingEvidence);
+ const pendingRt=await internals.loadRuntime(pending.task);pendingRt.lease=await internals.coordinator.acquire(pending.task);pendingRt.started=true;
+ assert.equal(await internals.holdUnfinishedTask(pendingRt),true);
+ assert.match(String((await db.query('SELECT status_reason FROM tasks WHERE id=$1',[pending.task])).rows[0]!.status_reason),/等待人工确认/);
+ assert.equal((await pending.graph.executionCounts()).met,0);
+ await engine.run(pending.task);assert.equal(requests,0,'waiting for human confirmation cannot restart probing');
  const b=await fixture(),evidence=await b.graph.addNode('fact',{evidence:'synthetic observation'},0,'confirmed','fixture',[]);
  await proposeGoalAcceptance(db,b.task,b.goal,evidence);
  assert.equal(await db.tasks().setTaskStatusGuarded(b.task,'done'),false);

@@ -1,3 +1,5 @@
+import {REPORTER_TRAFFIC_TOOLS} from '../tools/reporter-traffic.js';
+import {webSearchAllowed} from '../tools/web-search.js';
 import {roleAllowsTool} from './planner-capabilities.js';
 import {RETIRED_TOOLS,TOOL_ALIASES} from './tool-registry.js';
 import { effectiveToolDescription } from './tool-descriptions.js';
@@ -17,7 +19,11 @@ export async function applyToolBindings<T extends { name: string }>(db: import("
     const description=byKey.get(tool.name)?.description;
     if ('description' in tool) Object.assign(tool, {description:roleToolDescription(tool.name,effectiveToolDescription(tool.name, String(tool.description ?? ''), description),role)});
   }
+  const searchAllowed = tools.some(t=>t.name==='web_search') ? await webSearchAllowed(db,role) : false;
+  const autoTraffic=tools.some(t=>REPORTER_TRAFFIC_TOOLS.includes(t.name))?await db.platform().getBool('agent_traffic_binding',false):false;
   return tools.filter((t) => {
+    if(REPORTER_TRAFFIC_TOOLS.includes(t.name)&&!autoTraffic)return false;
+    if(t.name==='web_search'&&!searchAllowed)return false;
     if(!roleAllowsTool(role,t.name)||RETIRED_TOOLS.has(t.name))return false;
     const canonical=byKey.get(TOOL_ALIASES[t.name]??'');
     if(canonical&&(canonical.enabled===false||!Array.isArray(canonical.agents)||!canonical.agents.includes(role)))return false;

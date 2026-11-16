@@ -1,3 +1,4 @@
+import {targetProxy} from '../egress/upstream.js';
 import type {ToolRunContext} from '../tools/context.js';
 import {recordExchange} from './store.js';
 import {targetFetch,targetErrorCode} from './target-transport.js';
@@ -18,7 +19,7 @@ export async function evidenceRequest(ctx:ToolRunContext,input:EvidenceRequestIn
   let response:Awaited<ReturnType<typeof targetFetch>>|undefined;
   const chunks:Buffer[]=[];let length=0,truncated=false;
   try {
-   response=await targetFetch(url,{method,headers,body,signal,redirect:'manual'});
+   response=await targetFetch(url,{method,headers,body,signal,redirect:'manual'},await targetProxy(ctx.db));
    const reader=response.body?.getReader();
    try{while(reader){const next=await reader.read();if(next.done)break;const remaining=8*1024*1024-length;if(next.value.length>remaining){chunks.push(Buffer.from(next.value.subarray(0,remaining)));truncated=true;break;}chunks.push(Buffer.from(next.value));length+=next.value.length;}}finally{await reader?.cancel().catch(()=>{});}
   } catch(error) {

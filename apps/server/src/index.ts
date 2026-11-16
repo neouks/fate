@@ -1,3 +1,4 @@
+import {captureConsole} from './http/routes/logs.js';
 import {configureUsageOutbox,replayUsageOutbox,closeUsageOutbox} from './pi/usage-meter.js';
 import { makeModelResolver } from "./pi/modelResolver.js";
 // SERIES TS 后端入口：解析启动参数，打开数据库（含幂等迁移），构造引擎（模型源 =
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
   mkdirSync(flags.dataDir, { recursive: true });
 
   const db = await openDatabase();
+  const closeLogs=captureConsole(db);
   configureUsageOutbox(db,flags.dataDir);
   await replayUsageOutbox(db);
   let replaying=false;
@@ -120,6 +122,7 @@ async function main(): Promise<void> {
       try{await closeUsageOutbox(db);break;}
       catch{console.error('[shutdown] 用量尚未持久保存，等待存储恢复');await new Promise(resolve=>setTimeout(resolve,5000));await replayUsageOutbox(db).catch(()=>undefined);}
     }
+    await closeLogs();
     await db.close().catch(() => undefined);
     process.exit(0);
   };

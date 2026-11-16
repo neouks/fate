@@ -1,3 +1,4 @@
+import {formatSkillsForPrompt} from '@earendil-works/pi-coding-agent';
 import {roleAllowsTool,roleToolRejection,PLANNER_CAPABILITY_PROTOCOL} from '../agent/planner-capabilities.js';
 import {classifyResourceCall,type ResourceCall,type McpOwner} from './resource-usage.js';
 import {loadBoundSkills} from '../agent/skill-files.js';
@@ -76,6 +77,8 @@ export type ToolGuard = (ctx: ToolGuardContext) => ToolGuardDecision | undefined
 
 /** wrapup 决定：预算到点时给出收尾提示，本层注入并只允许有限轮收尾 */
 export interface WrapupDecision {
+  /** One bounded host receipt check may continue the current execution phase. */
+  continueExecution?: boolean;
 	/** 注入给模型的收尾提示（作为 custom_message 进入上下文） */
 	prompt: string;
 }
@@ -202,6 +205,7 @@ export interface AgentRunnerOptions {
 	inMemory?: boolean;
 	/** skills 根目录（SKILL.md 发现目录）；给出时注入会话技能（agentskills 渐进披露） */
 	skillsDir?: string;
+  liveAllowedSkills?:()=>Promise<string[]>;
 	/** MCP 服务器配置（DB mcp_servers 映射）；非空时挂 pi 的 MCP 扩展 */
 	mcpEntries?: Array<{ name: string; config: Record<string, unknown> }>;
   mcpResourceTools?: string[];
@@ -267,7 +271,7 @@ export class AgentRunner {
       const allowed=(name:string)=>roleAllowsTool('planner',name);
       const filter=(names:string[]|undefined)=>names?.filter(allowed)??[];
       opts={...opts,toolAllowlist:filter(opts.toolAllowlist),
-        customTools:opts.customTools?.filter(t=>allowed(t.name)),mcpEntries:[],mcpResourceTools:[],
+        customTools:opts.customTools?.filter(t=>allowed(t.name)),
         systemPrompt:(opts.systemPrompt??'').includes(PLANNER_CAPABILITY_PROTOCOL)?opts.systemPrompt:(opts.systemPrompt??'')+'\n'+PLANNER_CAPABILITY_PROTOCOL,
         toolLoading:opts.toolLoading?{...opts.toolLoading,initialActive:filter(opts.toolLoading.initialActive),
           deferred:filter(opts.toolLoading.deferred),compatibility:filter(opts.toolLoading.compatibility),referencedActive:filter(opts.toolLoading.referencedActive)}:undefined};
@@ -316,13 +320,33 @@ export class AgentRunner {
           context.abort();
         }finally{invalidateNativeEntries();}
       });
-      api.on('before_agent_start',event=>{
+      api.on('before_agent_start',async event=>{
+        if(opts.liveAllowedSkills){const names=await opts.liveAllowedSkills();event.systemPromptOptions.skills=event.systemPromptOptions.skills.filter(s=>names.includes(s.name));}
         if(opts.contextLayout)event.systemPromptOptions.sections.cwd='实际工作目录见本次宿主执行上下文的 cwd；相对路径由工具在该目录解析。';
+      });
+      api.on('context_with_system',async(event,context)=>{
+        try{
+          let messages=event.messages;
+          if(opts.liveAllowedSkills&&opts.skillsDir){
+            const names=await opts.liveAllowedSkills();
+            const skills=formatSkillsForPrompt(loadBoundSkills(opts.skillsDir,names).skills,'read').trim();
+            messages=messages.map(m=>m.role==='system'&&m.sections?{...m,sections:{...m.sections,skills:skills||null}}:m);
+          }
+          if(opts.mcpGuard&&opts.resourceOwners?.size){
+            const revoked=new Set<string>();
+            for(const [name,owner]of opts.resourceOwners){try{await opts.mcpGuard(owner.server,'tools/call',owner.tool);}catch{revoked.add(name);}}
+            if(revoked.size){
+              api.setActiveTools(api.getActiveTools().filter(name=>!revoked.has(name)));
+              messages=messages.map(m=>m.role==='system'&&m.toolsAdded?{...m,toolsAdded:m.toolsAdded.filter(t=>!revoked.has(t.name))}:m);
+            }
+          }
+          return {messages};
+        }catch(error){hostContextFailure.error=new Error('资源授权检查失败，停止模型请求',{cause:error});context.abort();return {messages:event.messages};}
       });
       api.on('context', async (event,context) => {
         try {
         // Keep legacy feedback in the audit session, never in Agent coordination.
-        const messages=[...(opts.projectMessages?.(event.messages)??event.messages)];
+        let messages=[...(opts.projectMessages?.(event.messages)??event.messages)];
         if(opts.contextLayout)messages.push({role:'custom',customType:'host_task_context',display:false,timestamp:Date.now(),content:hostTaskContext(opts.cwd,opts.taskContext)});
         const current=await opts.boundaryContext?.();
         if(current)messages.push({role:'custom',customType:'blackboard_boundary',content:current,display:false,timestamp:Date.now()});
@@ -363,6 +387,8 @@ export class AgentRunner {
     const permitted=(name:string)=>roleAllowsTool(opts.platform?.role,name)&&(declared.includes(name)||name.startsWith('mcp__')&&declared.includes('mcp__*'));
 
 		const settings = SettingsManager.inMemory({
+      // The host owns model requests, usage accounting and task lifetime.
+      cacheWarming: 'off',
       ...(opts.toolLoading?{defaultTools:declared.filter(n=>!opts.toolLoading!.deferred.includes(n)&&!n.includes('*'))}:{}),
 			// pi owns conversation compaction; graph compaction remains a separate domain projection.
 			retry: { enabled: false },
@@ -418,16 +444,18 @@ export class AgentRunner {
 						if (this_wrapupUsed(opts) >= maxTurns) return undefined;
 						const decision = await opts.wrapup?.(wrapupContext('settled'));
 						if (!decision) return undefined;
-            closing.reason ??= 'settled';
-						enterClosing();
+            if(!decision.continueExecution){
+              closing.reason ??= 'settled';
+              enterClosing();
+            }
 						incWrapup(opts);
 						return {
 							continue: true,
 							entries: [
 								{
 									type: 'custom_message' as const,
-									customType: 'server_wrapup',
-									content: closingPrompt(decision.prompt),
+									customType: decision.continueExecution ? 'server_receipt_check' : 'server_wrapup',
+									content: decision.continueExecution ? decision.prompt : closingPrompt(decision.prompt),
 									display: true,
 								},
 							],
@@ -771,7 +799,8 @@ export class AgentRunner {
       })().catch(()=>{ /* The hard deadline remains authoritative. */ });
     }, this.opts.maxDurationMs - Math.min(30_000, this.opts.maxDurationMs * 0.1)) : undefined;
 		try {
-			await this.session.prompt(text,{images});
+			await this.assertSkillInput(text);
+      await this.session.prompt(text,{images});
 			const result = await finished;
       await this.activityDelivery.drain();
       if(this.hostContextFailure.error)throw this.hostContextFailure.error;
@@ -786,13 +815,20 @@ export class AgentRunner {
 		}
 	}
 
+  private async assertSkillInput(text:string){
+    const name=/^\/skill:([^\s]+)/.exec(text)?.[1];
+    if(name&&this.opts.liveAllowedSkills&&!(await this.opts.liveAllowedSkills()).includes(name))throw new Error('Skill 已禁用或解除角色绑定');
+  }
+
 	/** 运行中注入 steering 消息（当前回合工具跑完后、下一次 LLM 调用前生效） */
 	async steer(text: string): Promise<'queued' | 'handled'> {
+    await this.assertSkillInput(text);
 		return (await this.session.steer(text)) as 'queued' | 'handled';
 	}
 
 	/** 排队 follow-up（本轮彻底结束后再生效） */
 	async followUp(text: string): Promise<'queued' | 'handled'> {
+    await this.assertSkillInput(text);
 		return (await this.session.followUp(text)) as 'queued' | 'handled';
 	}
 

@@ -1,3 +1,4 @@
+import {targetProxy,upstreamAgent} from './upstream.js';
 import {mkdir,chmod} from 'node:fs/promises';
 import {Proxy} from 'http-mitm-proxy';
 import type {IContext} from 'http-mitm-proxy/dist/lib/types.js';
@@ -38,10 +39,11 @@ export async function startRecordingGateway(db:Database,host:string,port:number,
    if(scope.tagged)await authorizeTaskRequest(db,scope.taskID,url.hostname,Number(url.port)||(url.protocol==='https:'?443:80),scope.scope);
    if(ctx.proxyToServerRequestOptions){
     Object.assign(ctx.proxyToServerRequestOptions,TARGET_TLS_OPTIONS);
+    const upstream=await targetProxy(db);if(upstream){const agent=upstreamAgent(upstream,ctx.isSSL);ctx.proxyToServerRequestOptions.agent=agent;ctx.proxyToClientResponse.once('close',()=>agent.destroy());}
     ctx.proxyToServerRequestOptions.headers=Object.fromEntries(Object.entries(clean(req.headers)).filter(([,v])=>v!==undefined).map(([k,v])=>[k,Array.isArray(v)?v.join(', '):String(v)]));
    }
    // Only tagged traffic has a trustworthy task attribution. Read recording switch per request.
-   if(scope.tagged&&await db.platform().getSetting('traffic_capture')!=='false'){
+   if(scope.tagged&&await db.platform().getSetting('traffic_capture')==='true'){
     const request:Buffer[]=[],response:Buffer[]=[];let reqLength=0,respLength=0,truncated=false;
     const collect=(parts:Buffer[],chunk:Buffer,size:number)=>{const left=Math.max(0,CAP-size);if(chunk.length>left)truncated=true;if(left)parts.push(Buffer.from(chunk.subarray(0,left)));};
     ctx.onRequestData((_c,chunk,next)=>{collect(request,chunk,reqLength);reqLength+=chunk.length;next(null,chunk);});

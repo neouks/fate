@@ -34,7 +34,9 @@ export async function proposeGoalAcceptance(db:Database,taskID:number,goalID:num
   }
   if(coverage){await tx.exploration(Number(task.exploration_id)).link(evidenceID,'proves',goalID);await tx.exploration(Number(task.exploration_id)).setNodeState(goalID,'met');}
   const counts=await tx.exploration(Number(task.exploration_id)).executionCounts();
-  return {goal_id:goalID,acceptance_id:String(proof!.id),met:proof!.status==='approved',verification:proof!.status==='approved'?(method==='coverage'?'host_verified':'human_verified'):'awaiting_confirmation',all_goals_met:counts.goalsReady&&counts.goals>0&&counts.met===counts.goals,goals:counts.goals,met_count:counts.met,remaining:counts.goals-counts.met};
+  return {goal_id:goalID,acceptance_id:String(proof!.id),met:proof!.status==='approved',verification:proof!.status==='approved'?(method==='coverage'?'host_verified':'human_verified'):'awaiting_confirmation',
+    ...(proof!.status==='pending'?{next_action:'await_human_confirmation',execution_guidance:'本目标证据已提交，待确认不是证据不足。没有新的具体缺口、矛盾或条件变化时结束本轮，不重复提交或派单；其他未回答目标仍按各自证据处理。'}:{}),
+    all_goals_met:counts.goalsReady&&counts.goals>0&&counts.met===counts.goals,goals:counts.goals,met_count:counts.met,remaining:counts.goals-counts.met};
  });
 }
 export async function goalAcceptanceDetails(db:Database,taskID:number,goalID:number){

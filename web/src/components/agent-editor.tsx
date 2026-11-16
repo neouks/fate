@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSettingsPanelActive } from "@/components/system-settings/panel-scope";
 import { toast } from "sonner";
 import { EyeIcon, GitCompareIcon, InfoIcon, PencilIcon, RotateCcwIcon, SaveIcon, Trash2Icon, XIcon } from "lucide-react";
 
@@ -36,6 +37,7 @@ const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get"]);
 // drawer (and reused full-page for deep links). Tabs: 配置与提示词 / MCP / Skill /
 // Tools. Config + prompt save as before; visibility + tool bindings toggle live.
 export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?: () => void }) {
+  const panelActive = useSettingsPanelActive();
   const [detail, setDetail] = React.useState<AgentDetail | null>(null);
   const [versions, setVersions] = React.useState<PromptVersion[]>([]);
   const [variables, setVariables] = React.useState<PromptVar[]>([]);
@@ -74,8 +76,13 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
     api.mcpServers().then(setMcp).catch(() => {});
     api.skills().then(setSkills).catch(() => {});
     api.tools().then(setTools).catch(() => {});
-    api.settings().then(setSettings).catch(() => {});
   }, []);
+  React.useEffect(() => {
+    if (!panelActive) return;
+    let current = true;
+    api.settings().then(value => { if (current) setSettings(value); }).catch(() => { if (current) setSettings(null); });
+    return () => { current = false; };
+  }, [panelActive]);
   // global gates: traffic tools need 流量捕获, web search needs the master switch.
   const captureOn = !!settings?.traffic_capture;
   const webSearchGlobalOn = !!settings?.web_search_enabled;

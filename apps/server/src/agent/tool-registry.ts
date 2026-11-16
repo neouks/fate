@@ -11,7 +11,7 @@ export const TOOL_ALIASES: Record<string,string> = {
 };
 export const RETIRED_TOOLS = new Set(['get_finding_retest_context','record_finding_retest_result','checkpoint_intent','complete_intent']);
 export const DOMAIN_TOOL_NAMES = [
-  'context_search','context_get','graph_overview','asset_search','asset_get','insert_assets',
+  'traffic_search','search_finding_traffic','bind_finding_traffic','web_search','context_search','context_get','graph_overview','asset_search','asset_get','insert_assets',
   'record_fact','report_finding','list_findings','http_request','add_intent','dispatch_intents',
   'prove_goal','kill_work','steer_work','add_task_scope','todo_write','set_goals','set_constraints','register_user_target',
   'list_tasks','get_task','list_llm_profiles','spawn_task','pause_task','resume_task','add_task_hint',
@@ -28,10 +28,10 @@ const core:Record<string,string[]>={
   goals:[...common,'set_goals','set_constraints','register_user_target'],
   auto:[...common,'list_tasks','get_task','spawn_task','pause_task','resume_task'],
   pentest:[...common,'http_request','record_conversation_fact','report_conversation_finding'],
-  reporter:[...common,'get_finding','update_finding_report'],
+  reporter:[...common,'get_finding','update_finding_report','search_finding_traffic','bind_finding_traffic'],
 };
 export function isCoreTool(role:string,name:string) {
-  return NATIVE_TOOLS.includes(name)||name==='tool_search'||core[role]?.includes(name)===true;
+  return NATIVE_TOOLS.includes(name)||name==='tool_search'||name==='web_search'||core[role]?.includes(name)===true;
 }
 export function toolIdentity(name:string,kind='builtin') {
   const status=kind!=='builtin'?'active':RETIRED_TOOLS.has(name)?'retired':TOOL_ALIASES[name]?'compatibility':supported.has(name)?'active':'unsupported';

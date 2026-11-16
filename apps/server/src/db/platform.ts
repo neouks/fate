@@ -1,5 +1,7 @@
 import {migrateSeriesGoals} from '../agent/goals-series-migration.js';
 import {migrateDirectionWriteback} from '../agent/direction-migration.js';
+import {migrateDirectionAutonomy} from '../agent/direction-autonomy-migration.js';
+import {migratePlannerConvergence} from '../agent/planner-convergence-migration.js';
 import {TOOL_POLICY_VERSION,ACTIVE_ROLES} from '../agent/tool-registry.js';
 import {migrateConstraintProvenance} from './constraint-provenance.js';
 import {migrateIsolatedGoalsPrompt} from '../agent/goals-migration.js';
@@ -898,7 +900,7 @@ export async function seedBuiltins(db: Database): Promise<void> {
     VALUES ('reporter','Reporter','assistant',false,true,'parallel','none',5) ON CONFLICT(key) DO NOTHING`);
   await seedBuiltinTools(db);
   await db.query(`INSERT INTO settings(key,value) SELECT 'tool_catalog_before_'||$1,jsonb_agg(to_jsonb(t) ORDER BY key)::text FROM tools t WHERE kind='builtin' ON CONFLICT(key) DO NOTHING`,[TOOL_POLICY_VERSION]);
-  await db.query(`INSERT INTO tools(key,system,kind,description,schema,agents,enabled) VALUES('tool_search',true,'builtin','按需发现已绑定工具；使用英文工具名或关键词','{}',$1::jsonb,true) ON CONFLICT(key) DO NOTHING`,[JSON.stringify(ACTIVE_ROLES)]);
+  await db.query(`INSERT INTO tools(key,system,kind,description,schema,agents,enabled) VALUES('tool_search',true,'builtin','按需发现已绑定工具；使用工具名或中英文关键词','{}',$1::jsonb,true) ON CONFLICT(key) DO NOTHING`,[JSON.stringify(ACTIVE_ROLES)]);
   await db.transaction(async tx=>{
     // Retire the active catalog entries, preserving customized historical metadata.
     const retired=['checkpoint_intent','complete_intent'];
@@ -910,11 +912,15 @@ export async function seedBuiltins(db: Database): Promise<void> {
   });
   const store = new PlatformStore(db);
   const extensionTools:Array<[string,string,string[]]>=[
+   ['web_search','DeepSeek 官方网络搜索',['worker','planner','mainagent','auto','pentest','reporter']],
    ...['shell_open','shell_send','shell_read','shell_close','shell_list'].map(key=>[key,'当前 PI 执行会话的交互终端',['worker','planner','mainagent']] as [string,string,string[]]),
    ['context_search','检索授权探索节点、执行结果与冷图原文',['worker','planner','mainagent','pentest','auto','goals','reporter']],
    ['context_get','按稳定引用分页读取节点详情与血缘',['worker','planner','mainagent','pentest','auto','goals','reporter']],
    ['read_tool_output','续读完整工具 JSON 原文',['goals','planner','mainagent','worker','auto','pentest','reporter']],
    ['http_request','执行授权 HTTP 请求并保存证据',['worker','pentest']],
+   ['traffic_search','检索当前任务已保存的 HTTP 流量',['worker','planner','mainagent','pentest','reporter']],
+   ['search_finding_traffic','报告 Agent 查找已有匹配流量',['reporter']],
+   ['bind_finding_traffic','报告 Agent 绑定已核对流量',['reporter']],
    ['traffic_body','分页读取流量证据',['worker','pentest','reporter']],
    ['read_attachment','分页读取当前会话附件',['worker','mainagent','auto','pentest','reporter']],
    ['get_finding','读取漏洞和证据版本',['reporter','auto','pentest']],
@@ -992,18 +998,19 @@ export async function seedBuiltins(db: Database): Promise<void> {
   await migrateAssetCoverageBinding(db);
   await migrateSeriesPlannerPrompt(db);
   await migrateDirectionWriteback(db);
+  await migrateDirectionAutonomy(db);
+  await migratePlannerConvergence(db);
   await migrateSeriesGoals(db);
 
   // 5. 内置 MCP 只是配置预设：disabled 且不授予任何 agent。ON CONFLICT 保证重启不覆盖用户改动。
   await db.query(
     `INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
      VALUES
-       ('playwright', 'stdio', 'npx', '["@playwright/mcp","--headless"]', '{}', false),
-       ('web_search', 'stdio', 'npx', '["-y","@zhafron/mcp-web-search"]', '{}', false),
-       ('chrome-devtools', 'stdio', 'npx', '["-y","chrome-devtools-mcp","--slim","--headless"]', '{}', false)
+       ('playwright', 'stdio', 'npx', '["-y","@playwright/mcp","--headless","--isolated"]', '{}', false),
+       ('web_search', 'stdio', 'npx', '["-y","@zhafron/mcp-web-search"]', '{"FATE_MCP_FETCH_PROXY":"1"}', false),
+       ('chrome-devtools', 'stdio', 'npx', '["-y","chrome-devtools-mcp","--slim","--headless","--isolated"]', '{}', false)
      ON CONFLICT (name) DO NOTHING`,
   );
-  // 注：ScopeSentry 占位 MCP（空 URL、disabled）由 schema.sql §F 直接播种，psql 裸初始化也有。
 
   // 6. 内置 skill 可见性（插缺不覆盖：用户关掉的不会被重启复活）
   for (const [skillName, agentKeys] of Object.entries(BUILTIN_SKILL_VISIBILITY)) {

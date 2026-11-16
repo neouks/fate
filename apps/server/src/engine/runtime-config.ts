@@ -73,7 +73,8 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
  const guard=options.guard;
  const loadDomainState=async()=>options.goalsPhase ? {...await options.loadDomainState?.()} : ({...await domainState(db,role,taskID,options.intentID),...await options.loadDomainState?.()});
  let runner!:AgentRunner;
- runner=await AgentRunner.create({...options,signal,loadDomainState,platform:{role,taskID,conversationID,policy:configured.platform_policy},
+ runner=await AgentRunner.create({...options,signal,loadDomainState,
+  liveAllowedSkills:options.skillsDir?async()=>{const rows=(await db.query('SELECT v.skill_name FROM agent_skill_visibility v JOIN agents a ON a.id=v.agent_id WHERE a.key=$1 AND a.enabled AND v.enabled',[role])).rows;return (options.allowedSkills??[]).filter(name=>rows.some(row=>row.skill_name===name));}:undefined,platform:{role,taskID,conversationID,policy:configured.platform_policy},
   onRequestSize:async (size,purpose)=>{
    await options.onRequestSize?.(size,purpose);
    const updated=await db.query(`UPDATE runtime_role_configs SET effective=effective||jsonb_build_object(
@@ -103,12 +104,16 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
    await options.discoveryGuard?.(name);
   },
   mcpGuard:async(server,method,tool)=>{
-   if(!['tools/call','resources/read','prompts/get'].includes(method))return;
+   if(method.startsWith('notifications/')||method==='ping')return;
+   const discovery=['initialize','tools/list'].includes(method);
    const allowed=await db.query(`SELECT 1 FROM mcp_servers m JOIN agents a ON a.key=$1
-    WHERE m.name=$2 AND m.enabled AND a.enabled AND (
-      EXISTS(SELECT 1 FROM agent_visibility v WHERE v.agent_id=a.id AND v.resource_kind='mcp' AND v.resource_id=m.id AND v.enabled AND v.mcp_tool_name=$3)
+    WHERE m.name=$2 AND m.enabled AND a.enabled
+    AND NOT EXISTS(SELECT 1 FROM agent_visibility v WHERE v.agent_id=a.id AND v.resource_kind='mcp' AND v.resource_id=m.id AND v.mcp_tool_name='' AND NOT v.enabled)
+    AND (
+      ($4::boolean AND EXISTS(SELECT 1 FROM agent_visibility v WHERE v.agent_id=a.id AND v.resource_kind='mcp' AND v.resource_id=m.id AND v.enabled))
+      OR ($5::boolean AND EXISTS(SELECT 1 FROM agent_visibility v WHERE v.agent_id=a.id AND v.resource_kind='mcp' AND v.resource_id=m.id AND v.enabled AND v.mcp_tool_name=$3))
       OR (EXISTS(SELECT 1 FROM agent_visibility v WHERE v.agent_id=a.id AND v.resource_kind='mcp' AND v.resource_id=m.id AND v.enabled AND v.mcp_tool_name='')
-       AND NOT EXISTS(SELECT 1 FROM agent_visibility v WHERE v.agent_id=a.id AND v.resource_kind='mcp' AND v.resource_id=m.id AND NOT v.enabled AND v.mcp_tool_name=$3)))`,[role,server,tool??'']);
+       AND NOT EXISTS(SELECT 1 FROM agent_visibility v WHERE v.agent_id=a.id AND v.resource_kind='mcp' AND v.resource_id=m.id AND NOT v.enabled AND v.mcp_tool_name=$3)))`,[role,server,tool??'',discovery,method==='tools/call']);
    if(!allowed.rowCount)throw new Error('MCP 服务或工具已禁用或解除角色绑定');
    await options.mcpGuard?.(server,method,tool);
   }});

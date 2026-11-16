@@ -1,3 +1,7 @@
+import {workerMandate,plannerDispatchReminder} from './direction-autonomy.js';
+import {plannerConvergenceState} from './planner-convergence.js';
+import {configuredBash,resolveShell} from '../config/execution.js';
+import {targetProxy} from '../egress/upstream.js';
 import {roleToolRejection} from './planner-capabilities.js';
 import {withRuntimeResources,type RuntimeResourceLease} from '../engine/runtime-resources.js';
 import {ConstraintBoundary} from './constraint-boundary.js';
@@ -221,13 +225,15 @@ export function workerEgressBashTool(runDir:string,egressAddr:string|undefined,t
   if(!egressAddr)return undefined;
   return createBashToolDefinition(runDir,{spawnHook:ctx=>({...ctx,env:{...ctx.env,...executionEnvironment(egressAddr,taskID,scope??`worker:${intentID}`)}})}) as unknown as ToolDefinition;
 }
-async function executionTools(ctx:ToolRunContext,cwd:string,input:{egressAddr?:string;egressScope?:string;signal?:AbortSignal;extraGuard?:ToolGuard}){
+export async function executionTools(ctx:ToolRunContext,cwd:string,input:{egressAddr?:string;egressScope?:string;signal?:AbortSignal;extraGuard?:ToolGuard}){
   const env=executionEnvironment(input.egressAddr,ctx.taskID,input.egressScope??`${ctx.role}:${ctx.intentID??0}`);
-  const bash=createBashToolDefinition(cwd,{spawnHook:spawn=>({...spawn,env:{...spawn.env,...env}})}) as unknown as ToolDefinition;
+  if(!input.egressAddr){const proxy=await targetProxy(ctx.db);for(const key of ['HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'])env[key]=proxy;}
+  const shell=resolveShell(await ctx.db.platform().getSetting('shell_mode')??'auto');
+  const bash=await configuredBash(ctx.db,cwd,env);
   const interactive=(await ctx.db.platform().getAgentByKey(ctx.role))?.interactiveShell===true;
   bash.description=await platformBashDescription(ctx,bash.description,interactive);
-  return {tools:[bash,...await customWorkerTools(ctx,cwd,bash,input.extraGuard)],
-    names:interactive?TERMINAL_TOOLS:[],extensions:interactive?[terminalExtension(cwd,env,input.signal)]:[]};
+  return {tools:[bash,...await customWorkerTools(ctx,cwd,bash,input.extraGuard,env)],
+    names:interactive?TERMINAL_TOOLS:[],extensions:interactive?[terminalExtension(cwd,env,input.signal,shell)]:[]};
 }
 /** Main and Planner use the same execution lifecycle boundary as Worker. */
 function roleExecutionGuard(ctx:ToolRunContext,extra?:ToolGuard):ToolGuard{
@@ -265,7 +271,7 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
     intentID: intent.id,
     hooks: input.hooks,
   });
-  const constraints=new ConstraintBoundary(db,expID,text=>input.onActivity?.({kind:'host_status',phase:'constraints',text},{worker:workerName,intentID:intent.id}));
+  const constraints=new ConstraintBoundary(db,expID,text=>input.onActivity?.({kind:'host_status',phase:'constraints',text},{worker:workerName,intentID:intent.id}),'worker');
   const tools = await applyToolBindings(db, "worker", workerTools(ctx));
   const disabledBuiltin = await disabledBuiltinTools(db);
   const rc = await agentRunConfig(db, "worker");
@@ -277,9 +283,7 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
   const assets = anchored.length > 0 ? await db.assets().getByIDs(anchored) : [];
   const assetsJSON=clampOutput(JSON.stringify({total:assets.length,items:assets.slice(0,20).map(a=>({id:a.id,type:a.type,url:a.url,method:a.method,host:a.domain||a.ip||a.app_name})),...(assets.length?{detail_tool:'asset_get'}:{})}));
   const system = await systemRolePrompt(db, "worker");
-  const taskContext =
-    `\n\n【当前意图 #${intent.id} 执行约定】\n${JSON.stringify(contract)}` +
-    `\n\n【锚定资产索引】\n${assetsJSON}`;
+  const taskContext = workerMandate(intent.id,intent.payload,contract,assetsJSON);
 
   // 首条 user：全局态势（可降级，刻意不含 coverage）。
   const overview = await workerLaunchContext(ctx,intent.id);
@@ -446,7 +450,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
   const { db, taskID, expID, goal, model, dataDir, todos } = input;
   const planningRoundID=input.planningRoundID??randomUUID();
   const ctx: ToolRunContext = runContext(db, taskID, expID, "planner", { todos, hooks: input.hooks,planningRoundID });
-  const constraints=new ConstraintBoundary(db,expID,text=>input.onActivity?.({kind:'host_status',phase:'constraints',text},{worker:'planner'}));
+  const constraints=new ConstraintBoundary(db,expID,text=>input.onActivity?.({kind:'host_status',phase:'constraints',text},{worker:'planner'}),'planner');
   const executionGuard=roleExecutionGuard(ctx,input.extraGuard);
   const tools = await applyToolBindings(db, "planner", plannerTools(ctx).filter((t) => !input.terminalOnly || !["add_intent", "add_task_scope", "steer_work", "kill_work"].includes(t.name)));
   const disabled = await disabledBuiltinTools(db, "planner");
@@ -469,6 +473,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
   mkdirSync(workDir, { recursive: true });
   // Planner never initializes terminal, custom executable or MCP capabilities.
   const plannerCounter = withUsageCounter(input.onActivity);
+  let dispatchReminded=false;
   let sessionEntries:()=>readonly import('@earendil-works/pi-coding-agent').SessionEntry[]=()=>[];
   let finalActivity:Extract<RunnerActivity,{kind:'assistant_message_end'}>|undefined;
   const runner = await createTrackedRunner(db,taskID,"planner",{
@@ -485,7 +490,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
       const task=(await db.query('SELECT *,task_display_status(id) AS display_status FROM tasks WHERE id=$1 AND deleted_at IS NULL',[taskID])).rows[0];
       if(!task||Number(task.exploration_id)!==expID)throw new Error('Planner 任务已删除或归属变化');
       const state=plannerCurrentState(await buildGraphOverview(ctx,{currentOnly:true}),todos.get(expID));
-      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.display_status,paused:task.display_status==='paused',...state,grounding:plannerGroundingContext(await plannerGrounding(ctx,sessionEntries()))})+'\n'+await contextNeedBoundary(ctx);
+      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.display_status,paused:task.display_status==='paused',...state,grounding:plannerGroundingContext(await plannerGrounding(ctx,sessionEntries()))})+'\n【证据收敛与待确认状态】\n'+JSON.stringify(await plannerConvergenceState(db,taskID,expID))+'\n'+await contextNeedBoundary(ctx);
     },
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
@@ -498,7 +503,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db, "planner", agentEnv.skillsDir),
     signal: input.signal, ...plannerBudget,
-    toolAllowlist: ["read", ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
+    toolAllowlist: ["read", "mcp__*", ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     resumeSessionPath:active?.file??plannerSessionFile(dataDir,expID),
     canonicalSessionPath:plannerSessionFile(dataDir,expID),flushNativeSession:active?.flush,
     onSessionCompacted:async manager=>{await active?.rebase(manager,()=>syncPlannerHistory(db,taskID,expID,plannerSessionFile(dataDir,expID),input.signal));},
@@ -507,7 +512,13 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     compactionSettings:contextPolicy.compactionSettings,
     summaryTargetTokens:contextPolicy.summaryTargetTokens,
     compactionInstructions:PLANNER_COMPACTION_RULES+'\n'+CONTEXT_RETENTION_RULES,
-    wrapup: ({reason}) => reason==='settled'?undefined:{prompt:input.wrapupPromptOverride??(input.terminalOnly?PLANNER_TASK_TIMEOUT_WRAPUP:prc.wrapupPrompt||'预算将尽，停止新探测，保存已确定的规划并简述结果。')},
+    wrapup: async ({reason}) => {
+      if(reason!=='settled')return {prompt:input.wrapupPromptOverride??(input.terminalOnly?PLANNER_TASK_TIMEOUT_WRAPUP:prc.wrapupPrompt||'预算将尽，停止新探测，保存已确定的规划并简述结果。')};
+      if(input.terminalOnly||dispatchReminded)return;
+      dispatchReminded=true;
+      const prompt=await plannerDispatchReminder(db,taskID,expID);
+      return prompt?{prompt,continueExecution:true}:undefined;
+    },
     maxWrapupTurns: prc.wrapupMaxTurns || 1,
     onActivity: (a) => {
       // Model text is retained by native PI, but isn't a verified execution result.

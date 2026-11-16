@@ -1,3 +1,5 @@
+import {upgradeDirectionPrompt,PLANNER_AUTONOMY_GUIDANCE,DIRECTION_AUTONOMY_POLICY} from './direction-autonomy.js';
+import {upgradePlannerConvergencePrompt,PLANNER_CONVERGENCE_GUIDANCE} from './planner-convergence.js';
 import {FINDING_PLANNER_GUIDANCE,FINDING_WRITE_GUIDANCE,findingRoleProtocol} from './finding-write-policy.js';
 import {migrateFindingWritePolicy} from './finding-prompt-migration.js';
 import {PLANNER_CAPABILITY_PROTOCOL} from './planner-capabilities.js';
@@ -18,7 +20,7 @@ const REPORTER_PROMPT_VERSION = 'reporter-natural-http-v2';
 const ARTEX_REPORTER_PRE_CONTEXT_HASH = '8803227805c947bef6bdb761ed5d60539645940f8af2a91348902ad476f944a1';
 export const ARTEX_PREVIOUS_PROMPTS:Record<string,string>={"planner": "8b397ceb18a5a63770fe545b7edde4a1daabd8cccaa4e22a11b0030b7ad6b4b2", "worker": "aa2d9009c38989c1279aee7b28fbec30ca6834a9ff9dd23ed95ff80a64b89cf7", "mainagent": "2d2ae4905261136a9a007f7e3a01330af64f235594c726b29660d333d0d52a64", "goals": "2e7b25b77d5a12248c2bcf4f23a765a7a142bf15645544fd035f55d8add1cbfb", "auto": "63f7211f6531b906d5c1a345d2613167b0f3bd55f16bb05891a311287907847c", "pentest": "e9b5fa3f17a282b49366bc61c8d6a6492d3a3021abcae0f59587efb6c7a0f43a", "reporter": "2534f98321d3e0f4ce743a319c83652523f542dd023657f7d278bcadc6904a87", "retester": "fef0e8a005bdad2609b928ecab5025c8b924b6652ed2488ce6289044b905f2fe"};
 const PREVIOUS_DEFAULTS:Record<string,string>={'planner': '8a6b3f990ed029438a9dd5213f8126e746ee0a72e664f86cd3e50ce27d214c51', 'worker': 'a416fc91d7c2d2d84b652b713216cab3c47d7500a20c5a60b66a7518bdc978b7', 'mainagent': '24ab7a048a4baa018f2c8d21676ed801633c446bb51bf766a3063c24aafd506c', 'goals': '2e7b25b77d5a12248c2bcf4f23a765a7a142bf15645544fd035f55d8add1cbfb', 'auto': '63f7211f6531b906d5c1a345d2613167b0f3bd55f16bb05891a311287907847c', 'pentest': 'e9b5fa3f17a282b49366bc61c8d6a6492d3a3021abcae0f59587efb6c7a0f43a', 'reporter': '2534f98321d3e0f4ce743a319c83652523f542dd023657f7d278bcadc6904a87', 'retester': 'fef0e8a005bdad2609b928ecab5025c8b924b6652ed2488ce6289044b905f2fe'};
-export const PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规划、监督 Worker，以证据判定目标。只使用本轮提供的工具。
+export const PRE_AUTONOMY_PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规划、监督 Worker，以证据判定目标。只使用本轮提供的工具。
 任务目标：{{Goal}}
 
 每轮决策：
@@ -32,11 +34,15 @@ export const PLANNER_PROMPT = `你是 Planner，依据资产图和探索图规�
 ${FINDING_PLANNER_GUIDANCE}
 意图提交即入 frontier；简述判断、派单和等待原因后直接结束，不提交完成工具、不轮询等待 Worker。`;
 
-export const WORKER_PROMPT = `你是 Worker，在当前意图给定的资产范围、探索方向和约束内自主选择路径、方法和验证步骤，然后停止。意图不是逐接口执行脚本；受阻时如实说明原因，不转向无关方向。
+export const PRE_AUTONOMY_WORKER_PROMPT = `你是 Worker，在当前意图给定的资产范围、探索方向和约束内自主选择路径、方法和验证步骤，然后停止。意图不是逐接口执行脚本；受阻时如实说明原因，不转向无关方向。
 边发现边写回，不必等到结束：新资产用 insert_assets 登记；新的探索结论用 record_fact 直接写入探索图；亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。同一结论的相关观察合并保存，不按每次请求、接口或参数生成事实；独立结论分别写回。asset_ids 只列本结论实际涉及的资产，漏洞只列实际受影响资产，不继承整个意图范围。scope 用简短文字说明实际测试范围、未测部分和适用限制；observation_type 区分实测、推断、负面结果和未知。未测不能当作已否定，背景资产不能当作已验证目标。不编造证据。
 ${FINDING_WRITE_GUIDANCE}
 按需 context_search/context_get 读取上下文；来源任务只读。发现的新资产可直接继续探索，中间文件写当前工作目录，不向其他 Agent 发消息。
 结束前补齐已识别但未写回的结果。summary 用一句通俗结论；细节与测试影响放 detail/evidence。最后简述结论、已保存的记录 ID、未完成原因及测试影响。无新增事实可以直接总结，不为结束而制造记录。`;
+
+export const PRE_CONVERGENCE_PLANNER_PROMPT=upgradeDirectionPrompt('planner',PRE_AUTONOMY_PLANNER_PROMPT);
+export const PLANNER_PROMPT=upgradePlannerConvergencePrompt(PRE_CONVERGENCE_PLANNER_PROMPT);
+export const WORKER_PROMPT=upgradeDirectionPrompt('worker',PRE_AUTONOMY_WORKER_PROMPT);
 
 export const MAIN_PROMPT = `你是 Main，按用户请求使用已绑定的本地、领域及外部工具，不自主连续规划。
 按需查询态势与证据。新工作用 add_intent，已有意图用 dispatch_intents；下发后宿主生成真实回执并结束当前轮，Worker 结果回传原会话。运行中的 Worker 可用 steer_work 纠偏。目标和约束分别用 set_goals/set_constraints 保存，不增加用户未要求的目标。
@@ -67,13 +73,13 @@ export function builtinPrompt(role: string): string | null { return ROLE_PROMPTS
 
 /** One host-owned completion rule, also applied when the operator supplies a custom role prompt. */
 export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
-  worker: '只执行当前这一条意图；每次动作前先检查最新操作约束。约束优先于意图和纠偏，冲突动作不执行。Worker 不派单；遇到拒绝或参数错误，按原因改正，避免原样重试或绕过权限。可调整方法，不接续其他方向；完成或受阻后写回并退出，不因总目标未达成而继续。按方向自主探索，按结论合并写回，不要求逐请求记录。record_fact 每条附非空 evidence；批量以逐项回执确认写回。显式 asset_ids 是实际关联；缺省不继承意图资产。scope 说明已测、未测及限制；缺失范围保留为未知，不自动计覆盖。执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。',
-  planner: PLANNER_CAPABILITY_PROTOCOL+'add_intent 统一传 intents 数组，单条也放入数组，每项必填非空 summary。parent_ids 仅引用当前任务节点；直接来源任务用 contract.basis 填 node_id 和内容版本。参数失败先按错误纠正，不重复发同一调用。用方向和资产范围派单，执行细节交给 Worker；contract 可只补边界。局部重叠返回 related_intent_ids 提示，精确重复仍复用原意图。覆盖数字只表示有范围测试记录，未覆盖数字不能代替历史检索。意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
+  worker: '自主策略以宿主当前意图标记为准；历史意图不自动扩展范围。只执行当前这一条意图；每次动作前先检查最新操作约束。约束优先于意图和纠偏，冲突动作不执行。Worker 不派单；遇到拒绝或参数错误，按原因改正，避免原样重试或绕过权限。可调整方法，不接续其他方向；完成或受阻后写回并退出，不因总目标未达成而继续。按方向自主探索，按结论合并写回，不要求逐请求记录。record_fact 每条附非空 evidence；批量以逐项回执确认写回。显式 asset_ids 是实际关联；缺省不继承意图资产。scope 说明已测、未测及限制；缺失范围保留为未知，不自动计覆盖。执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。',
+  planner: PLANNER_AUTONOMY_GUIDANCE+'\n'+PLANNER_CAPABILITY_PROTOCOL+'add_intent 统一传 intents 数组，单条也放入数组，每项必填非空 summary。parent_ids 仅引用当前任务节点；直接来源任务用 contract.basis 填 node_id 和内容版本。参数失败先按错误纠正，不重复发同一调用。用方向和资产范围派单，执行细节交给 Worker；contract 可只补边界。局部重叠返回 related_intent_ids 提示，精确重复仍复用原意图。覆盖数字只表示有范围测试记录，未覆盖数字不能代替历史检索。意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
   mainagent: '新工作用 add_intent 的 intents 数组，每项必填非空 summary。已有工作用 dispatch_intents 提供 1–10 个明确意图 ID；仅在用户明确要求批量下发时使用 all_open: true。',
   goals: '服从宿主初始化策略：新任务在同一会话先提约束和资产，再保存目标；旧任务遵守指定阶段边界。目标栏定义最终验收结果，描述不扩写目标。目标登记引用原文完整授权句或独立目标地址行，并填其中的精确目标；不自行添加标题或把子域扩大为根域。',
   reporter: REPORTER_SAVE_GUIDANCE,
 };
-export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+findingRoleProtocol(role)+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。'); }
+export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+findingRoleProtocol(role)+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。')+(role==='planner'?'\n'+PLANNER_CONVERGENCE_GUIDANCE:''); }
 
 export const PLANNER_WRAPUP = '本轮预算将尽，不再查找新方向。保存已有意图和待办后简短总结；没有新工作可以等待。';
 export const WORKER_WRAPUP = '预算将尽，停止新探测。把已识别但尚未保存的新资产、事实和已验证漏洞分别用 insert_assets、record_fact、report_finding 写回；已经保存的不重复提交。最后简短总结关键结论、记录 ID 和未完成原因，无新增事实可以直接结束。';
@@ -100,7 +106,7 @@ export async function resolveRolePrompt(db: Database, role: string, fallback = b
   const legacy = !!stored && isLegacyPrompt(role, stored);
   const custom = !!stored.trim() && !legacy && stored !== fallback;
   return { template: stored.trim() ? stored : fallback, source: custom ? 'custom' : legacy ? 'legacy_default' : 'builtin',
-    version: custom || legacy ? `stored:${promptHash(stored)}` : role==='reporter' ? REPORTER_PROMPT_VERSION : ['planner','worker'].includes(role) ? 'finding-supplement-v1' : PROMPT_VERSION, candidate: fallback };
+    version: custom || legacy ? `stored:${promptHash(stored)}` : role==='reporter' ? REPORTER_PROMPT_VERSION : ['planner','worker'].includes(role) ? DIRECTION_AUTONOMY_POLICY : PROMPT_VERSION, candidate: fallback };
 }
 
 /** Retained template-only interface for compatibility and preview. */

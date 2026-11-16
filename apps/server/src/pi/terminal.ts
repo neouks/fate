@@ -1,3 +1,4 @@
+import type {ShellChoice} from '../config/execution.js';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import * as pty from 'node-pty';
@@ -18,7 +19,7 @@ export class TerminalSessions {
   private cleanup?:Promise<void>;
   private timer:ReturnType<typeof setInterval>;
   private controller=new AbortController();
-  constructor(private cwd:string,private env:Record<string,string>,private signal?:AbortSignal){
+  constructor(private cwd:string,private env:Record<string,string>,private signal?:AbortSignal,private shell?:ShellChoice){
     this.timer=setInterval(()=>{for(const t of this.sessions.values())if(Date.now()-t.lastUse>(t.closed?300_000:1800_000)){void this.close(t.id);this.sessions.delete(t.id);}},60_000);this.timer.unref();
     signal?.addEventListener('abort',this.onAbort,{once:true});
     if(signal?.aborted)void this.shutdown();
@@ -29,8 +30,8 @@ export class TerminalSessions {
     this.signal?.throwIfAborted();signal?.throwIfAborted();
     if(this.closed)throw new Error('终端会话已结束');
     if([...this.sessions.values()].filter(t=>!t.closed).length>=8)throw new Error('当前会话最多 8 个终端');
-    const shell=process.env.SHELL||'/bin/sh';
-    const child=pty.spawn(shell,args.command?['-lc',args.command]:['-l'],{cwd:this.cwd,env:this.env,name:'xterm-256color',rows:Math.min(200,Math.max(1,args.rows??24)),cols:Math.min(500,Math.max(1,args.cols??80))});
+    const shell=this.shell?.path||process.env.SHELL||'/bin/sh';
+    const child=pty.spawn(shell,args.command?[...(this.shell?.args??['-lc']),args.command]:(this.shell?.interactiveArgs??['-l']),{cwd:this.cwd,env:this.env,name:'xterm-256color',rows:Math.min(200,Math.max(1,args.rows??24)),cols:Math.min(500,Math.max(1,args.cols??80))});
     let finish!:()=>void;
     const t:Terminal={id:randomUUID(),process:child,buffer:'',start:0,cursor:0,lastData:Date.now(),lastUse:Date.now(),closed:false,done:new Promise<void>(r=>{finish=r;})};
     this.sessions.set(t.id,t);
@@ -94,8 +95,8 @@ export function terminalToolDefinitions(manager?:TerminalSessions){
   ] as const;
   return definitions.map(([name,description,properties,required,run])=>defineTool({name,label:name,description,executionMode:'sequential',parameters:{type:'object',properties,required} as never,async execute(_id,args,signal){try{return {content:[{type:'text' as const,text:JSON.stringify(await run(args,signal))}],details:undefined};}catch(e){return {content:[{type:'text' as const,text:JSON.stringify({error:e instanceof Error?e.message:String(e)})}],isError:true,details:undefined};}}}));
 }
-export function terminalExtension(cwd:string,env:Record<string,string>,signal?:AbortSignal):ExtensionFactory{
- return api=>{const manager=new TerminalSessions(cwd,env,signal);
+export function terminalExtension(cwd:string,env:Record<string,string>,signal?:AbortSignal,shell?:ShellChoice):ExtensionFactory{
+ return api=>{const manager=new TerminalSessions(cwd,env,signal,shell);
   for(const tool of terminalToolDefinitions(manager))api.registerTool(tool);
   api.on('session_shutdown',()=>manager.shutdown());
  };

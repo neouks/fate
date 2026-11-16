@@ -4,14 +4,15 @@ import {createServerTransport} from './mcpTransport.js';
 import type {AgentRunnerOptions} from './runner.js';
 
 export const MCP_RESOURCE_TOOLS=['list_mcp_resources','list_mcp_resource_templates','read_mcp_resource'];
-export const TOOL_SEARCH_HINT=' 未出现在本轮工具声明中的能力，必须先用此工具按精确英文工具名或关键词检索，成功加载后再调用；仅在提示词中出现不代表已激活。只有获授权的工具会被加载。';
+export const TOOL_SEARCH_HINT=' 未出现在本轮工具声明中的能力，必须先用此工具按工具名或中英文关键词检索，成功加载后再调用；仅在提示词中出现不代表已激活。只有获授权的工具会被加载。';
 
 /** Stable per-session instructions for custom system prompts, which bypass pi's
  * default tool guidance. Names come only from the permitted registration set. */
 export function toolDiscoveryInstructions(opts:Pick<AgentRunnerOptions,'toolLoading'|'mcpEntries'>){
-  if(!opts.toolLoading?.deferred.length&&!hasDeferredMcp(opts))return '';
+  const mcpGuidance=opts.mcpEntries?.length?'\n<mcp_authorization>管理员已显式启用并绑定本会话的 MCP。这些 MCP 是当前角色获授权可直接调用的能力：按用户目标及角色职责发现和使用，不能仅因工具来自 MCP 就转交给其他 Agent。规划所需的资料查询、本地辅助或用户明确要求的 MCP 调用可自行完成；任务范围、工具权限与关闭/解绑检查仍然适用。Skill 中提及但未绑定的 MCP 不因此获得权限。</mcp_authorization>\n':'';
+  if(!opts.toolLoading?.deferred.length&&!hasDeferredMcp(opts))return mcpGuidance;
   const names=[...opts.toolLoading?.deferred??[]].sort();
-  return '\n<tool_loading>\n以本轮工具声明为当前可调用集合；提示词、黑板或旧会话提及的工具名不代表已激活。未在声明中的能力先用 tool_search 的 query=精确英文工具名检索，成功加载后再调用，不直接试调用。禁用或撤销的能力不能恢复。'+(names.length?' 本会话获准的内部按需工具：'+names.join(', ')+'。':'')+'\n</tool_loading>';
+  return '\n<tool_loading>\n以本轮工具声明为当前可调用集合；提示词、黑板或旧会话提及的工具名不代表已激活。未在声明中的能力先用 tool_search 按工具名或中英文关键词检索，成功加载后再调用，不直接试调用。禁用或撤销的能力不能恢复。'+(names.length?' 本会话获准的内部按需工具：'+names.join(', ')+'。':'')+'\n</tool_loading>'+mcpGuidance;
 }
 
 export function hasDeferredMcp(opts:Pick<AgentRunnerOptions,'mcpEntries'>) {
@@ -28,7 +29,7 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
         const transport=createServerTransport(entry.config as unknown as Record<string,unknown>,cwd,auth);
         const pending=new Map<string,string>(),send=transport.send.bind(transport),start=transport.start.bind(transport);
         states.set(entry.name,'connecting');
-        transport.start=async()=>{try{await start();}catch(error){states.set(entry.name,'failed');throw error;}};
+        transport.start=async()=>{try{await opts.mcpGuard?.(entry.name,'initialize');await start();}catch(error){states.set(entry.name,'failed');throw error;}};
         transport.onError(()=>states.set(entry.name,'failed'));
         transport.onClose(()=>states.set(entry.name,'disconnected'));
         transport.onMessage(message=>{
@@ -95,7 +96,6 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
                 const rejection=roleToolRejection(opts.platform?.role,query.trim());
                 if(rejection)throw new Error(rejection);
               }
-              if(!/[a-z0-9]/i.test(query))throw new Error('原生搜索暂不支持中文分词；请用英文工具名或关键词重试，例如 asset search、shell terminal、traffic。');
               const next=new Set<string>();
               for(const t of target.getAllTools()){
                 if(!roleAllowsTool(opts.platform?.role,t.name))continue;

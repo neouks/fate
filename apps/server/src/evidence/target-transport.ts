@@ -1,9 +1,10 @@
-import {Agent, fetch} from 'undici';
+import {fetch} from 'undici';
+import {targetDispatcher} from '../egress/upstream.js';
 
 // SERIES traffic.go uses SslInsecure for test targets. Keep this scoped to
 // target transport: model providers, MCP and process-wide TLS remain unchanged.
 export const TARGET_TLS_OPTIONS = Object.freeze({rejectUnauthorized:false});
-const dispatcher = new Agent({connect:TARGET_TLS_OPTIONS});
+
 
 export function targetErrorCode(error: unknown): string {
   if (error instanceof TargetTransportError) return error.code;
@@ -22,10 +23,10 @@ export class TargetTransportError extends Error {
   }
 }
 
-export async function targetFetch(url:string, init:{method:string;headers:Record<string,string>;body?:string;signal?:AbortSignal;redirect:'manual'}) {
+export async function targetFetch(url:string, init:{method:string;headers:Record<string,string>;body?:string;signal?:AbortSignal;redirect:'manual'},proxy='') {
   const timeout=AbortSignal.timeout(60_000);
   const signal=init.signal?AbortSignal.any([init.signal,timeout]):timeout;
-  try { return await fetch(url,{...init,signal,dispatcher}); }
+  try { return await fetch(url,{...init,signal,dispatcher:targetDispatcher(proxy)}); }
   catch(error){
     init.signal?.throwIfAborted();
     const code=timeout.aborted?'ETIMEDOUT':targetErrorCode(error);

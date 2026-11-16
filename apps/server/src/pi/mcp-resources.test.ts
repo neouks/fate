@@ -81,15 +81,15 @@ test('native pi deferred MCP discovery, call, restore and live revocation',async
   enabled=false;faux.setResponses([fauxAssistantMessage([fauxToolCall('mcp__fixture__fixture_echo',{text:'revoked'})]),fauxAssistantMessage('结束')]);
   runner=await AgentRunner.create(options);
   try{await runner.prompt('恢复后检查撤销');assert.deepEqual(calls,['fixture_echo']);assert.ok(activities.some(a=>a.kind==='tool_end'&&a.isError));}finally{await runner.dispose();}
- }finally{await rm(dir,{recursive:true,force:true});}
+ }finally{await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}
 }));
 
-test('unavailable MCP does not block native internal deferred search; Chinese-only query explains retry',async()=>{
+for(const query of ['本地回显','local_echo'])test(`unavailable MCP does not block native internal discovery: ${query}`,async()=>{
  const dir=await mkdtemp(join(tmpdir(),'fate-mcp-offline-'));
  const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),refreshOnCreate:false});
  const faux=fauxProvider({provider:'offline-local'});runtime.registerNativeProvider(faux.provider);const activities:RunnerActivity[]=[];let calls=0;
- const options={cwd:dir,agentDir:dir,inMemory:true,modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Local fixture.',toolAllowlist:['local_echo','mcp__*'],toolLoading:{version:'lean-tools-v1',initialActive:['mcp__*'],deferred:['local_echo'],compatibility:[]},mcpEntries:[{name:'offline',config:{transport:'http',url:'http://127.0.0.1:1',exposure:'deferred'}}],customTools:[{name:'local_echo',label:'Local echo',description:'Echo local synthetic text',parameters:{type:'object',properties:{}},execute:async()=>{calls++;return{content:[{type:'text',text:'local-ok'}],details:{}};}}],onActivity:(a:RunnerActivity)=>{activities.push(a);}};
- faux.setResponses([fauxAssistantMessage([fauxToolCall('tool_search',{query:'本地回显'})]),fauxAssistantMessage([fauxToolCall('tool_search',{query:'local_echo'})]),fauxAssistantMessage([fauxToolCall('local_echo',{})]),fauxAssistantMessage('done')]);
+ const options={cwd:dir,agentDir:dir,inMemory:true,modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Local fixture.',toolAllowlist:['local_echo','mcp__*'],toolLoading:{version:'lean-tools-v1',initialActive:['mcp__*'],deferred:['local_echo'],compatibility:[]},mcpEntries:[{name:'offline',config:{transport:'http',url:'http://127.0.0.1:1',exposure:'deferred'}}],customTools:[{name:'local_echo',label:'Local echo',exposure:'deferred' as const,description:'本地回显合成文本。Echo local synthetic text',parameters:{type:'object',properties:{}},execute:async()=>{calls++;return{content:[{type:'text',text:'local-ok'}],details:{}};}}],onActivity:(a:RunnerActivity)=>{activities.push(a);}};
+ faux.setResponses([fauxAssistantMessage([fauxToolCall('tool_search',{query})]),fauxAssistantMessage([fauxToolCall('local_echo',{})]),fauxAssistantMessage('done')]);
  const runner=await AgentRunner.create(options as Parameters<typeof AgentRunner.create>[0]);
- try{await runner.prompt('local fixture');assert.equal(calls,1);assert.ok(activities.some(a=>a.kind==='tool_end'&&a.isError&&a.text?.includes('英文')));assert.ok(activities.some(a=>a.kind==='tool_end'&&!a.isError&&a.text?.includes('MCP 发现未完成')));}finally{await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}
+ try{assert.ok(!runner.activeToolNames.includes('local_echo'));await runner.prompt('local fixture');assert.ok(runner.activeToolNames.includes('local_echo'));assert.equal(calls,1);const searches=activities.filter(a=>a.kind==='tool_end'&&a.toolName==='tool_search');assert.equal(searches.length,1);for(const result of searches){assert.ok(!result.isError);assert.match(result.text??'',/local_echo/);}assert.ok(activities.some(a=>a.kind==='tool_end'&&!a.isError&&a.text?.includes('MCP 发现未完成')));}finally{await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}
 });

@@ -1,12 +1,12 @@
 import {FINDING_PLANNER_GUIDANCE} from './finding-write-policy.js';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {PLANNER_PROMPT,hostProtocol,systemRolePrompt} from './prompts.js';
+import {PLANNER_PROMPT,PRE_AUTONOMY_PLANNER_PROMPT,hostProtocol,systemRolePrompt} from './prompts.js';
 import {migratePlannerCapabilitiesPrompt} from './planner-prompt-migration.js';
 import {PLANNER_CAPABILITY_PROTOCOL} from './planner-capabilities.js';
 import type {Database} from '../db/index.js';
 
-const old=PLANNER_PROMPT.replace(FINDING_PLANNER_GUIDANCE+'\n','').replace('开局证据不足也不得直接探测目标，先查重，再用 add_intent 将实测方向下发给 Worker。','仅开局无 Worker 事实且态势不足时可三次轻量只读探测，后续测试交 Worker。');
+const old=PRE_AUTONOMY_PLANNER_PROMPT.replace(FINDING_PLANNER_GUIDANCE+'\n','').replace('开局证据不足也不得直接探测目标，先查重，再用 add_intent 将实测方向下发给 Worker。','仅开局无 Worker 事实且态势不足时可三次轻量只读探测，后续测试交 Worker。');
 function fixture(template:string){
  const settings=new Map<string,string>();let writes=0,saved='';
  const tx={platform:()=>({getSetting:async(k:string)=>settings.get(k),setSetting:async(k:string,v:string)=>settings.set(k,v)}),query:async(sql:string,args:unknown[]=[])=>{

@@ -120,7 +120,7 @@ test('OpenAI-compatible streaming rejects empty add_intent and accepts a correct
   } finally {
     server.closeAllConnections();
     await new Promise<void>(resolve=>server.close(()=>resolve()));
-    await rm(dir,{recursive:true,force:true});
+    await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});
   }
 });
 
@@ -294,7 +294,7 @@ test('native PI stops repeated empty add_intent even after an intervening read',
     assert.ok(activities.some(activity=>activity.kind==='host_status'&&activity.phase==='tool_retries_exhausted'));
   } finally {
     await runner.dispose();
-    await rm(dir,{recursive:true,force:true});
+    await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});
   }
 });
 
@@ -335,5 +335,5 @@ test('Worker closes repeated permission errors in one batch and can still write 
       assert.equal(faux.state.callCount,3);
       assert.equal(activities.filter(activity=>activity.kind==='host_status'&&activity.phase==='tool_retries_exhausted').length,1);
     } finally {await runner.dispose();}
-  } finally {await rm(dir,{recursive:true,force:true});}
+  } finally {await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });

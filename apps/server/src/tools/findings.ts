@@ -219,7 +219,7 @@ export function proveGoalTool(ctx: ToolRunContext) {
       name: "prove_goal",
       description:
         "提交 goal_id 的证据供验收。明确的资产覆盖度 100% 由宿主核验；其他目标返回 awaiting_confirmation，等待人工确认，不能宣称已达成或重复提交催促。" +
-        "调用前必须核对覆盖度与漏洞总数（量化验收），不允许在明显未测完时提前收官。",
+        "仅当用户目标明确要求覆盖度或数量时核对对应实测值；其他目标不追加全站覆盖要求。已有事实与漏洞可共同支持结论，不必合并成单一事实或再次取样；note 说明已有依据与范围。",
       promptSnippet: "提交目标证据供宿主或人工验收",
       parameters: {
         type: "object",

@@ -1,3 +1,4 @@
+import {registerLogRoutes} from './routes/logs.js';
 import {usageOutboxMetrics} from '../pi/usage-outbox.js';
 import {registerFindingReproductionRoutes} from './routes/finding-reproduction.js';
 import {monitorEventLoopDelay} from 'node:perf_hooks';
@@ -154,6 +155,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerAssetRoutes(app);
   app.addHook('preHandler',async req=>{const key=(req.params as {key?:string})?.key;if(req.url.startsWith('/api/agents/')&&key)assertActiveRole(key);});
   registerConfigRoutes(app);
+  registerLogRoutes(app);
   registerEvidenceRoutes(app);
   registerFindingReproductionRoutes(app);
   registerRetestRoutes(app);

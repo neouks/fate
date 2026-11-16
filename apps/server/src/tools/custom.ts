@@ -1,3 +1,4 @@
+import {pythonInterpreter,runProgram,configuredBash} from '../config/execution.js';
 import {evidenceRequest} from "../evidence/http.js";
 import { defineTool, createBashToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ToolRunContext } from "./context.js";
@@ -22,9 +23,10 @@ export async function boundCustomTools(db: import('../db/index.js').Database, ro
 }
 
 /** Custom tools enter the same pi tool pipeline and execution lifecycle as native tools. */
-export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?: ToolDefinition, guard?: ToolGuard): Promise<ToolDefinition[]> {
+export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?: ToolDefinition, guard?: ToolGuard,executionEnv?:Record<string,string>): Promise<ToolDefinition[]> {
   const catalog = await boundCustomTools(ctx.db, ctx.role);
-  const shell = bash ?? createBashToolDefinition(cwd) as unknown as ToolDefinition;
+  const env=executionEnv??Object.fromEntries(Object.entries(process.env).filter((e):e is [string,string]=>e[1]!==undefined));
+  const shell = bash ?? await configuredBash(ctx.db,cwd,env);
   return catalog
     .map((tool) => defineTool({
       name: tool.key, label: tool.key, description: tool.description,
@@ -50,7 +52,10 @@ export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?:
         if (tool.kind === "script") {
           const code = String(spec["code"] ?? "");
           if (!code.trim()) throw new Error("脚本 code 为空");
-          command = `printf %s ${shellQuote(JSON.stringify(args))} | python3 -c ${shellQuote(code)}`;
+          await check('bash',{custom_tool:tool.key});
+          const python=pythonInterpreter(await ctx.db.platform().getSetting('python_interpreter')??'');
+          const result=await runProgram(python,['-c',code],{cwd,env,signal,timeoutMs:timeout,input:JSON.stringify(args)});
+          return {content:[{type:'text' as const,text:clampOutput(result.output)}],isError:result.exitCode!==0,details:undefined};
         } else if (tool.kind === "command" && spec["legacy_shell_args"] === true && tool.executable) {
           // Executable is configured by the operator; model supplies an argument string.
           command = `${shellQuote(tool.executable)} ${String(args["args"] ?? "")}`;

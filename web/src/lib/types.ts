@@ -1559,3 +1559,20 @@ export interface FindingReproduction {entry_point:string;prerequisites:string[];
 export interface FindingReportSections {description:string;impact:string[];remediation:string[];discovery?:{vulnerability?:string;asset?:string}}
 export interface FindingStepImage {id:string;step_id?:string|null;caption:string;mime:string;position:number}
 export interface FindingReproductionDetail {reproduction:FindingReproduction|null;report_sections:FindingReportSections|null;report_revision:number;evidence_version:number;markdown:string;images:FindingStepImage[];versions:Array<{revision:number;evidence_version:number;created_at:string}>;job?:{id:number;conversation_id:number;status?:string;error?:string}}
+
+export interface WebSearchSettings {
+  agent_roles: string[];
+  effective_agent_roles: string[];
+  web_search_enabled: boolean;
+  web_search_backend: "deepseek";
+  deepseek_key_set: boolean;
+  ready: boolean;
+  credential_source: string;
+}
+export interface WebSearchTest {
+  ok: boolean;
+  error?: string;
+  count?: number;
+  latency_ms?: number;
+  results?: Array<{ title: string; url: string; summary: string; snippet: string; date: string | null }>;
+}

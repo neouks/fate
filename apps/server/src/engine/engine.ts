@@ -1182,7 +1182,9 @@ export class Engine {
       if(rt.work.size||rt.executions.size||await db.exploration(rt.expID).hasActiveIntent())return false;
       if((await db.query("SELECT 1 FROM engine_worker_slots WHERE task_id=$1 UNION ALL SELECT 1 FROM runtime_worker_resumes WHERE task_id=$1 AND status='pending' LIMIT 1",[rt.taskID])).rowCount)return false;
       if((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1 AND acknowledged_at IS NULL LIMIT 1",[rt.expID])).rowCount)return false;
-      const row=await db.query("UPDATE tasks SET status='needs_attention',status_reason='目标尚未全部核验，当前没有可执行工作',completed_at=NULL WHERE id=$1 AND status='running' AND NOT paused AND NOT queued RETURNING id",[rt.taskID]);
+      const pendingOnly=(await db.query(`SELECT count(*)>0 AND bool_and(goal_display_state(id) IN ('met','pending_confirmation')) waiting
+        FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal'`,[rt.expID])).rows[0]?.waiting===true;
+      const row=await db.query("UPDATE tasks SET status='needs_attention',status_reason=$2,completed_at=NULL WHERE id=$1 AND status='running' AND NOT paused AND NOT queued RETURNING id",[rt.taskID,pendingOnly?'目标证据已提交，等待人工确认；无待执行工作':'目标尚未全部核验，当前没有可执行工作']);
       return !!row.rowCount;
     });
     if(!changed)return false;

@@ -83,7 +83,14 @@ export function validateServerTransport(config:Record<string,unknown>) {
 }
 export function createServerTransport(config:Record<string,unknown>,cwd:string,authProvider?:AuthProvider):McpTransport {
   const transport=validateServerTransport(config);
-  if(transport==='stdio')return new StdioTransport({command:String(config.command).replace(/^~(?=\/|$)/,homedir()),args:config.args as string[]|undefined,env:config.env as Record<string,string>|undefined,cwd:path.resolve(cwd,String(config.cwd??'.')),stderr:'pipe'});
+  if(transport==='stdio'){
+    let env=config.env as Record<string,string>|undefined;
+    if(env?.FATE_MCP_FETCH_PROXY==='1'){
+      const preload=new URL('./mcp-fetch-proxy.mjs',import.meta.url).href;
+      env={...env,NODE_USE_ENV_PROXY:'0',NODE_OPTIONS:[env.NODE_OPTIONS??process.env.NODE_OPTIONS,`--import=${preload}`].filter(Boolean).join(' ')};
+    }
+    return new StdioTransport({command:String(config.command).replace(/^~(?=\/|$)/,homedir()),args:config.args as string[]|undefined,env,cwd:path.resolve(cwd,String(config.cwd??'.')),stderr:'pipe'});
+  }
   if(!['http','sse'].includes(transport))throw new Error(`不支持的 MCP transport: ${transport}`);
   if(!config.url)throw new Error('MCP url 不能为空');
   const dispatcher=config.insecure===true?new Agent({connect:{rejectUnauthorized:false}}):undefined;

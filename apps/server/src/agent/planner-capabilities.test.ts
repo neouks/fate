@@ -13,8 +13,8 @@ import {toolLoadout,prepareToolLoading} from './tool-loading.js';
 import {plannerTools,workerTools,runContext} from '../tools/index.js';
 import {validatePlatformRunner} from '../pi/platform-policy.js';
 import type {Database} from '../db/index.js';
-const forbidden=['http_request','bash','write','edit','shell_open','shell_send','shell_read','shell_list','shell_close','mcp__*','mcp__fixture__request','custom_request'];
-const planning=['read','context_get','context_search','asset_search','add_intent','steer_work','prove_goal','todo_write'];
+const forbidden=['http_request','bash','write','edit','shell_open','shell_send','shell_read','shell_list','shell_close','custom_request'];
+const planning=['mcp__*','mcp__fixture__request','read','context_get','context_search','asset_search','add_intent','steer_work','prove_goal','todo_write'];
 const db={query:async()=>({rows:forbidden.concat(planning).map(key=>({key,agents:['planner','worker'],enabled:true}))})} as unknown as Database;
 
 test('Planner ceiling overrides catalog bindings and direct/deferred/legacy/custom loading',async()=>{
@@ -57,7 +57,7 @@ for(const deferred of [true,false])test(`native Planner denies execution/search 
    platform:{role:'planner',taskID:1,policy:{version:'domain-v1',compaction:'native',mcpLoading:'deferred'}},
    toolLoading:deferred?{version:'lean-tools-v1',initialActive:['add_intent'],deferred:['http_request','asset_get'],compatibility:[]}:undefined,
    extensionFactories:[pi=>{pi.registerTool(tool('custom_request',()=>extensionExecuted++));}],
-   mcpEntries:[{name:'must-not-connect',config:{transport:'stdio',command:'/does/not/exist',exposure:'deferred'}}],onActivity:a=>{activities.push(a);}});
+   onActivity:a=>{activities.push(a);}});
   for(const name of forbidden)assert.ok(!runner.activeToolNames.includes(name));
   await runner.prompt('new local fixture');
   assert.equal(executed,0);assert.equal(extensionExecuted,0);assert.equal(dispatched,1);assert.equal(reads,1);

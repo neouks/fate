@@ -394,7 +394,7 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
       await client.query("BEGIN");
       const owner=await client.query("SELECT id FROM agents WHERE id=$1 FOR UPDATE",[agent.id]);
       if(!owner.rowCount)throw Object.assign(new Error("Agent 不存在或已删除"),{statusCode:404});
-      await client.query(`DELETE FROM agent_visibility WHERE agent_id=$1 AND resource_kind='mcp' AND mcp_tool_name=''`, [agent.id]);
+      await client.query(`DELETE FROM agent_visibility WHERE agent_id=$1 AND resource_kind='mcp' AND (mcp_tool_name='' OR NOT(resource_id=ANY($2::bigint[])))`, [agent.id,mcp]);
       await client.query(`DELETE FROM agent_skill_visibility WHERE agent_id=$1`, [agent.id]);
       for (const id of mcp) {
         await client.query(
@@ -450,6 +450,7 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
        ON CONFLICT (agent_id, resource_kind, resource_id, mcp_tool_name) DO UPDATE SET enabled=EXCLUDED.enabled`,
       [agent.id, resourceID, visible],
     );
+    if(!visible)await db().query("UPDATE agent_visibility SET enabled=false WHERE agent_id=$1 AND resource_kind='mcp' AND resource_id=$2 AND mcp_tool_name<>''",[agent.id,resourceID]);
     return { ok: true };
   });
 

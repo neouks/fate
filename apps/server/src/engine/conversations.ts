@@ -1,3 +1,4 @@
+import {trafficSearchTool} from '../tools/traffic-search.js';
 import {acquireRuntimeResources,type RuntimeResourceLease} from './runtime-resources.js';
 import type {ActivityJournal} from './activity-outbox.js';
 import {assetGetTool} from '../tools/assets.js';
@@ -16,7 +17,7 @@ import type {Database} from '../db/index.js';
 import type {Engine,ModelResolver} from './engine.js';
 import {acquireSessionLease} from './session-lease.js';
 import {AgentRunner,type RunnerActivity} from '../pi/runner.js';
-import {agentRunConfig,agentBudgets,applyToolBindings,disabledBuiltinTools,workerEgressBashTool} from '../agent/roles.js';
+import {agentRunConfig,agentBudgets,applyToolBindings,disabledBuiltinTools,executionTools} from '../agent/roles.js';
 import {systemRolePrompt,constraintBlock,hostProtocol} from '../agent/prompts.js';
 import {roleResources} from '../agent/resources.js';
 import {skillDir} from '../config/index.js';
@@ -173,7 +174,7 @@ export class ConversationService {
    const ctx=runContext(this.db,taskID,task?.exploration_id??0,role as AgentRole,{conversationID:id,hooks:{assertOwnership:lease.assert}});
    ctx.agentSessionState=activeSession.snapshot;
    const tools:import('@earendil-works/pi-coding-agent').ToolDefinition[]=[contextGetTool(ctx),readAttachmentTool(ctx),toolOutputTool(ctx)];
-   if(task)tools.push(contextSearchTool(ctx),mergedAssetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
+   if(task)tools.push(trafficSearchTool(ctx),contextSearchTool(ctx),mergedAssetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
    const pendingReports=new Set<number>();
    // Trigger metadata is authoritative; model prose cannot silently skip a queued report.
    if(role==='reporter'&&Array.isArray(claimed.run.event_keys)){
@@ -184,8 +185,8 @@ export class ConversationService {
    }
    let reportSaved=false;
    tools.push(...conversationDomainTools(ctx,this.engine,{profileID:Number(claimed.llm_profile_id)||0,pendingReports,onSaved:()=>{reportSaved=true;}}));
-   const bash=role==='pentest'?workerEgressBashTool(cwd,this.egress,taskID,0,`conversation:${id}:${lease.token}`):undefined;
-   if(role==='pentest'&&task){const pentestTools:unknown[]=[Object.assign(recordFactTool(ctx),{name:'record_conversation_fact'}),Object.assign(reportFindingTool(ctx),{name:'report_conversation_finding'}),httpRequestTool(ctx),...(bash?[bash]:[]),...await customWorkerTools(ctx,cwd,bash)];tools.push(...pentestTools as never[]);}
+   const execution=role==='pentest'&&task?await executionTools(ctx,cwd,{egressAddr:this.egress,egressScope:`conversation:${id}:${lease.token}`,signal:controller.signal}):undefined;
+   if(role==='pentest'&&task){const pentestTools:unknown[]=[Object.assign(recordFactTool(ctx),{name:'record_conversation_fact'}),Object.assign(reportFindingTool(ctx),{name:'report_conversation_finding'}),httpRequestTool(ctx),...(execution?.tools??[])];tools.push(...pentestTools as never[]);}
    const bound=await applyToolBindings(this.db,role,tools),disabled=await disabledBuiltinTools(this.db,role),resources=await roleResources(this.db,role,skillDir());
    if(role==='reporter'&&(!bound.some(t=>t.name==='get_finding')||!bound.some(t=>t.name==='update_finding_report')))throw new Error('Reporter 的必要读取或保存工具已禁用');
    const attachment=await prepareAttachments(this.db,this.dataDir,id,claimed.run.attachments,'conversation');
@@ -199,8 +200,9 @@ export class ConversationService {
     loadDomainState:async()=>({conversation_id:id,...(role==='reporter'?{pending_report_ids:[...pendingReports],read_tool:'get_finding',save_tool:'update_finding_report'}:{})}),
     ...agentBudgets(config,{maxTurns:30,maxDurationMs:1200_000}),maxWrapupTurns:config.wrapupMaxTurns||2,
     wrapup:()=>role==='reporter'&&pendingReports.size?{prompt:config.wrapupPrompt||hostProtocol('reporter')}:undefined,
+    extensionFactories:execution?.extensions,
     systemPrompt:prompt+taskContext+(task?constraintBlock(await loadConstraints(this.db,task.exploration_id)):''),customTools:bound,legacyTools:task?legacyReadCandidates(ctx):[],
-    toolAllowlist:[...bound.map(t=>t.name),...(['auto','reporter','pentest'].includes(role)?['read',...(role==='pentest'&&task?['bash','write','edit']:[])].filter(n=>!disabled.has(n)):[]),...(role!=='reporter'&&(role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
+    toolAllowlist:[...(execution?.names??[]),...bound.map(t=>t.name),...(['auto','reporter','pentest'].includes(role)?['read',...(role==='pentest'&&task?['bash','write','edit']:[])].filter(n=>!disabled.has(n)):[]),...(role!=='reporter'&&(role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
     guard:async g=>{await activeSession!.flush();await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return;},onActivity:persist},id);
    await this.db.query('UPDATE conversations SET session_file=$2 WHERE id=$1',[id,runner.sessionFile??path.join(cwd,'session.jsonl')]);
    const triggerEvents=claimed.run.trigger_id?(await this.db.query('SELECT event_key,kind,task_id,payload FROM agent_trigger_events WHERE event_key=ANY($1::text[]) ORDER BY id',[claimed.run.event_keys??[]])).rows:null;

@@ -9,7 +9,13 @@ import {skillFilePath} from './skill-files.js';
 export async function skillReadAccess(db: Database, agentID: string | undefined, options: Pick<AgentRunnerOptions, 'cwd' | 'skillsDir' | 'allowedSkills'>, requested: string) {
   if (!options.skillsDir) return;
   const root = path.resolve(options.skillsDir);
-  const file = path.resolve(options.cwd, requested);
+  // Resolve exactly as native PI read does (including @, ~ and macOS variants).
+  const {resolveReadPathAsync}=await import(new URL('./core/tools/path-utils.js',import.meta.resolve('@earendil-works/pi-coding-agent')).href) as {resolveReadPathAsync:(file:string,cwd:string)=>Promise<string>};
+  const file = await resolveReadPathAsync(requested,options.cwd);
+  const canonicalRoot=await realpath(root).catch(()=>root);
+  const canonicalFile=await realpath(file).catch(()=>file);
+  const canonicalRelative=path.relative(canonicalRoot,canonicalFile);
+  if((!canonicalRelative.startsWith('..'+path.sep)&&canonicalRelative!=='..'&&!path.isAbsolute(canonicalRelative))&&path.relative(root,file).startsWith('..'+path.sep))return 'disabled';
   const relative = path.relative(root, file);
   if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return;
 
@@ -36,7 +42,7 @@ export async function roleResources(db: Database, role: string, skillsDir?: stri
   const skills = await db.query<{ skill_name: string }>(
     `SELECT v.skill_name FROM agent_skill_visibility v JOIN agents a ON a.id=v.agent_id WHERE a.key=$1 AND v.enabled ORDER BY v.skill_name`, [role]);
   // Only explicitly bound resources are registered; execution guards remain live.
-  if (!["worker", "mainagent", "pentest", "auto"].includes(role)) return { skillsDir, allowedSkills: skills.rows.map((r) => r.skill_name) };
+  if (!["worker", "planner", "mainagent", "pentest", "auto"].includes(role)) return { skillsDir, allowedSkills: skills.rows.map((r) => r.skill_name) };
   const visibility = await db.query<{ resource_id: string; mcp_tool_name: string; enabled: boolean }>(
     `SELECT v.resource_id,v.mcp_tool_name,v.enabled FROM agent_visibility v JOIN agents a ON a.id=v.agent_id
      WHERE a.key=$1 AND v.resource_kind='mcp' ORDER BY v.resource_id,v.mcp_tool_name`, [role]);
@@ -44,7 +50,9 @@ export async function roleResources(db: Database, role: string, skillsDir?: stri
   const policy=await platformPolicy(db,role);
   const mcpEntries = servers.filter((server) => server.enabled).sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:a.id-b.id).flatMap((server) => {
     const rows = visibility.rows.filter((v) => Number(v.resource_id) === server.id);
-    const all = rows.find((v) => !v.mcp_tool_name)?.enabled === true;
+    const service=rows.find((v)=>!v.mcp_tool_name);
+    if(service?.enabled===false)return [];
+    const all = service?.enabled === true;
     if (!all && !rows.some((v) => v.enabled && v.mcp_tool_name)) return [];
     const config: Record<string, unknown> = {
       transport: server.transport, insecure: server.insecure,

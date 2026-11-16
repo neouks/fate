@@ -1,3 +1,4 @@
+import type { WebSearchSettings, WebSearchTest } from "./types";
 import { entryAwareFetch } from "@/lib/http-auth";
 import { modelTokenStats } from "@/lib/model-token-stats";
 import { listItems } from "@/lib/api-list";
@@ -894,12 +895,9 @@ export const api = {
   settings: () => get<Settings>(`/settings`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // Run a real "test" search with the given (or saved) config to verify it works.
-  testWebSearch: (patch: {
-    web_search_backend?: string;
-    web_search_proxy?: string;
-    brave_search_api_key?: string;
-    tavily_search_api_key?: string;
-  }) => post<{ ok: boolean; error?: string; count?: number; backend?: string }>(`/settings/web-search/test`, patch),
+  webSearchSettings: () => get<WebSearchSettings>("/settings/web-search"),
+  saveWebSearchSettings: (patch: { web_search_enabled: boolean; api_key?: string; clear_key?: boolean; agent_roles?: string[] }) => put<WebSearchSettings>("/settings/web-search", patch),
+  testWebSearch: (patch: { query: string; api_key?: string }) => post<WebSearchTest>("/settings/web-search/test", patch),
   testGlobalProxy: (proxy: string) => post<GlobalProxyProbeResult>(`/settings/global-proxy/test`, { proxy }),
   chatMentions: (kind: string, query: string, signal?: AbortSignal, cursor = "") =>
     http<{ items: ChatMention[]; next_cursor?: string }>(

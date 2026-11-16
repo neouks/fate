@@ -1,9 +1,11 @@
+import {pythonInterpreter,resolveShell,runProgram} from '../../config/execution.js';
+import {targetProxy} from '../../egress/upstream.js';
+import {targetFetch} from '../../evidence/target-transport.js';
 // 批次 C5：自定义工具（tools 表 kind!=builtin 行）CRUD + 一次性测试执行。
 // 对齐前端 web/src/lib/api.ts 的 createCustomTool/updateCustomTool/deleteCustomTool/testCustomTool。
 // GET /api/tools 已由 routes/config.ts 返回全部行（含 custom），此处不重复注册。
 // exec 规格 JSONB 直存（kind=command: {command, args?...}；kind=http: {method,url,headers?...}）。
 
-import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -158,29 +160,12 @@ export function registerCustomToolRoutes(app: FastifyInstance): void {
       if (action === "check") return { output: `命令检查通过：${full}`, is_error: false };
       const cwd = testWorkdir(app, typeof b["directory"] === "string" ? b["directory"] : String(exec["directory"] ?? ""));
       mkdirSync(cwd, { recursive: true });
-      return await new Promise<{ output: string; is_error: boolean; duration_ms: number }>((resolve) => {
-        const child = spawn(full, {
-          shell: true,
-          cwd,
-          env: { ...process.env },
-          timeout: TEST_TIMEOUT_MS,
-        });
-        let out = "";
-        const cap = (c: Buffer): void => {
-          if (out.length < TEST_OUTPUT_CAP) out += c.toString("utf8");
-        };
-        child.stdout?.on("data", cap);
-        child.stderr?.on("data", cap);
-        child.on("error", (err) => resolve({ output: `执行失败: ${err.message}`, is_error: true, duration_ms: Date.now() - started }));
-        child.on("close", (code, signal) => {
-          const text = out.length > TEST_OUTPUT_CAP ? `${out.slice(0, TEST_OUTPUT_CAP)}\n…(截断)` : out;
-          resolve({
-            output: text === "" ? `（无输出，exit=${code ?? signal ?? "unknown"}）` : text,
-            is_error: code !== 0,
-            duration_ms: Date.now() - started,
-          });
-        });
-      });
+      try{
+        const shell=resolveShell(await db().platform().getSetting('shell_mode')??'auto');
+        const proxy=await targetProxy(db());const env={...process.env,HTTP_PROXY:proxy,HTTPS_PROXY:proxy,ALL_PROXY:proxy,http_proxy:proxy,https_proxy:proxy,all_proxy:proxy};
+        const result=await runProgram(shell.path,[...shell.args,full],{cwd,env,timeoutMs:TEST_TIMEOUT_MS});
+        return {output:result.output,is_error:result.exitCode!==0,duration_ms:Date.now()-started};
+      }catch(error){return {output:(error as Error).message,is_error:true,duration_ms:Date.now()-started};}
     }
 
     if (kind === "http") {
@@ -197,7 +182,7 @@ export function registerCustomToolRoutes(app: FastifyInstance): void {
         }
         const body = exec["body"] === undefined ? undefined : JSON.stringify(exec["body"]);
         if (body !== undefined) headers["Content-Type"] = headers["Content-Type"] ?? "application/json";
-        const res = await fetch(url, { method, headers, body, signal: controller.signal });
+        const res = await targetFetch(url, { method, headers, body, signal: controller.signal,redirect:'manual' },await targetProxy(db()));
         clearTimeout(timer);
         const text = (await res.text()).slice(0, 4096);
         return {
@@ -217,10 +202,17 @@ export function registerCustomToolRoutes(app: FastifyInstance): void {
     if (kind === "builtin") {
       return { output: "内置工具不走自定义工具测试接口", is_error: true };
     }
-    // script 等其余类型：执行侧延后。
-    return {
-      output: `执行侧延后：kind=${kind} 的即时测试尚未接线（当前支持 command/http）`,
-      is_error: false,
-    };
+    if(kind==='script'){
+      try{
+        const python=pythonInterpreter(await db().platform().getSetting('python_interpreter')??'');
+        const code=String(exec.code??'');if(!code.trim())throw new Error('脚本 code 为空');
+        if(action==='check')return {output:'Python 3 解释器可用，脚本未执行',is_error:false};
+        const cwd=testWorkdir(app,String(b.directory??''));mkdirSync(cwd,{recursive:true});
+        const proxy=await targetProxy(db());const env={...process.env,HTTP_PROXY:proxy,HTTPS_PROXY:proxy,ALL_PROXY:proxy,http_proxy:proxy,https_proxy:proxy,all_proxy:proxy};
+        const result=await runProgram(python,['-c',code],{cwd,env,input:JSON.stringify(b.args??{}),timeoutMs:TEST_TIMEOUT_MS});
+        return {output:result.output,is_error:result.exitCode!==0,duration_ms:Date.now()-started};
+      }catch(error){return {output:(error as Error).message,is_error:true,duration_ms:Date.now()-started};}
+    }
+    return {output:`不支持的工具类型：${kind}`,is_error:true};
   });
 }

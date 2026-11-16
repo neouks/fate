@@ -6,10 +6,10 @@ import {registerLLMManagementRoutes} from './llm-management.js';
 
 test('model management HTTP: save/preview/validation/pool controls/retired fields',async()=>{
  const settings=new Map<string,string>();const profiles=new Map<number,any>();let seq=0;
- const platform={getSetting:async(k:string)=>settings.get(k)??null,setSetting:async(k:string,v:string)=>settings.set(k,v),getBool:async(k:string,d:boolean)=>settings.has(k)?settings.get(k)==='true':d,
+ const platform={workers:async()=>3,getSetting:async(k:string)=>settings.get(k)??null,setSetting:async(k:string,v:string)=>settings.set(k,v),getBool:async(k:string,d:boolean)=>settings.has(k)?settings.get(k)==='true':d,
   listProfiles:async()=>[...profiles.values()],profileByID:async(id:number)=>profiles.get(id)??null,
   saveProfile:async(p:any)=>{const id=p.id||++seq;profiles.set(id,{...p,id});return id;}};
- const db:any={platform:()=>platform,transaction:async(fn:any)=>fn(db),query:async()=>({rows:[],rowCount:0})};
+ const db:any={pool:{},platform:()=>platform,transaction:async(fn:any)=>fn(db),query:async()=>({rows:[],rowCount:0})};
  const app=Fastify();app.decorate('db',db);registerConfigRoutes(app);registerLLMManagementRoutes(app);
  try{
   const post=(url:string,payload:object)=>app.inject({method:'POST',url,payload});
