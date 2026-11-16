@@ -2,6 +2,7 @@ import type {ExtensionAPI,ExtensionFactory,ToolDefinition} from '@earendil-works
 import {WorkerOperationJournal} from '../db/operation-journal.js';
 import type {ToolRunContext} from '../tools/context.js';
 import {saveToolOutput} from '../evidence/tool-outputs.js';
+import {interruption,interruptionText} from '../db/operation-interruption.js';
 
 /** Wrap execution only; native pi validation, guards, batches, messages and cancellation stay intact. */
 export function journalTools(journal:WorkerOperationJournal,ctx:ToolRunContext,effectful:ReadonlySet<string>){
@@ -18,8 +19,10 @@ export function journalTools(journal:WorkerOperationJournal,ctx:ToolRunContext,e
         if(['shell_open','shell_send'].includes(tool.name))return {isError:true,content:[{type:'text',text:`operation:${receipt.id} 已有返回，但原终端句柄随旧执行器退出而失效；未重新执行命令。通过 context_get 读取历史输出，不可沿用旧 session_id。`}],details:undefined};
         return {...original,content:[{type:'text',text:`【复用 operation:${receipt.id} 的已保存返回；本次没有执行工具，不代表外部当前状态已重新验证】`},...original.content]};
       }
+      let phase:'tool_execution'|'receipt_persistence'='tool_execution';
       try{
         const result=await tool.execute(...args);
+        phase='receipt_persistence';
         const raw=JSON.stringify(result);
         const saved=Buffer.byteLength(raw)>64*1024
           ? {...result,content:[{type:'text',text:JSON.stringify(await saveToolOutput(ctx.db,ctx,tool.name,args[0],raw))}],details:undefined}
@@ -27,8 +30,10 @@ export function journalTools(journal:WorkerOperationJournal,ctx:ToolRunContext,e
         await journal.finish(receipt.id,saved,result.isError===true);
         return result;
       }catch(error){
-        await journal.uncertain(receipt.id);
-        throw error;
+        const detail=interruption(error,phase,ctx.signal?.aborted?ctx.signal:args[2]);
+        let persistenceError='';
+        try{await journal.uncertain(receipt.id,detail);}catch(failure){persistenceError=`\n中断说明保存失败：${failure instanceof Error?failure.message:String(failure)}`;}
+        throw new Error(interruptionText(receipt.id,detail,false)+persistenceError,{cause:error});
       }
     }};
   };

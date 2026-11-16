@@ -2,6 +2,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import type {Database} from './index.js';
 import type {ToolRunContext} from '../tools/context.js';
 import {contextNode} from '../tools/context-pages.js';
+import {interruptionText,type OperationInterruption} from './operation-interruption.js';
 
 export function stableJSON(value:unknown):string {
   if(Array.isArray(value))return '['+value.map(stableJSON).join(',')+']';
@@ -57,7 +58,21 @@ function serializeResult(value:unknown):string {
 }
 const deserializeResult=(value:unknown):unknown=>encodedResult(value)?JSON.parse(value.json):value;
 export class OperationUncertainError extends Error {
-  constructor(public operationID:number){super(`operation:${operationID} 的实际执行结果未知；不自动重放。先读取操作记录、保存已有事实并结束本意图，待核对后恢复。`);}
+  constructor(public operationID:number,detail?:string){super(detail??`operation:${operationID} 的实际执行结果未知；本次调用未执行，不自动重放。先读取操作记录、保存已有事实并结束本意图，待核对后恢复。`);}
+}
+
+async function operationInterruption(db:Database,row:Row):Promise<OperationInterruption>{
+  const stored=(deserializeResult(row.result) as {interruption?:OperationInterruption}|null)?.interruption;
+  if(stored?.source==='executor')return stored;
+  // Link by the operation reference, not proximity in time or the Worker's current state.
+  const activity=(await db.query(`SELECT a.id,a.metadata->'execution_stop' stop FROM activity a
+    JOIN tasks t ON t.exploration_id=a.exploration_id
+    WHERE t.id=$1 AND a.node_id=$2 AND a.metadata->'execution_stop'->'operations' @> $3::jsonb
+    ORDER BY a.id LIMIT 1`,[row.task_id,row.intent_id,JSON.stringify([{ref:`operation:${row.id}`}])])).rows[0];
+  const stop=activity?.stop as {reason?:string;summary?:string;recorded_at?:string}|undefined;
+  return stop&&activity?{reason:stop.reason??'unknown',phase:'unknown',message:String(stop.summary??'').slice(0,4000),
+    recorded_at:stop.recorded_at,source:'activity',activity_ref:`activity:${activity.id}`}:
+    {reason:'unknown',phase:'unknown',message:'未保存完整工具返回，不能确认已完成的步骤。',source:'unknown'};
 }
 
 /** Domain ownership is checked inside the same transaction as every durable transition. */
@@ -65,6 +80,10 @@ export class WorkerOperationJournal {
   readonly executionID=randomUUID();
   recoveryBlocked=false;
   constructor(private ctx:ToolRunContext){}
+  private async blocked(db:Database,row:Row):Promise<never>{
+    this.recoveryBlocked=true;
+    throw new OperationUncertainError(Number(row.id),interruptionText(Number(row.id),await operationInterruption(db,row),true,row.started_at,row.finished_at));
+  }
   private async owned(db:Database){
     await this.ctx.hooks.assertOwnership?.(db);
     const node=(await db.query(`SELECT n.state,n.owner,t.paused,t.deleted_at,t.status task_status
@@ -94,7 +113,7 @@ export class WorkerOperationJournal {
       if(own){
         if(own.fingerprint!==fingerprint)throw new Error('同一工具调用 ID 的参数已变化');
         if(own.status==='returned')return {id:Number(own.id),replay:deserializeResult(own.result)};
-        this.recoveryBlocked=true;throw new OperationUncertainError(Number(own.id));
+        return this.blocked(db,own);
       }
       // Only cross-execution equivalence is reused; repeated reads/polls within a live run remain possible.
       const old=(await db.query<Row>(`SELECT * FROM worker_operations WHERE intent_id=$1 AND fingerprint=$2 AND execution_id<>$3 ORDER BY id DESC LIMIT 1`,[this.ctx.intentID,fingerprint,this.executionID])).rows[0];
@@ -107,7 +126,7 @@ export class WorkerOperationJournal {
       }
       // Any unresolved external effect in this intent must be reconciled before more effectful operations.
       const unknown=(await db.query<Row>(`SELECT * FROM worker_operations WHERE intent_id=$1 AND status='uncertain' ORDER BY id LIMIT 1`,[this.ctx.intentID])).rows[0];
-      if(unknown){this.recoveryBlocked=true;throw new OperationUncertainError(Number(unknown.id));}
+      if(unknown)return this.blocked(db,unknown);
       if(old?.status==='retry_allowed')await db.query("UPDATE worker_operations SET status='superseded' WHERE id=$1",[old.id]);
       const r=await db.query(`INSERT INTO worker_operations(task_id,intent_id,execution_id,tool_call_id,tool_name,fingerprint,status,previous_id)
         VALUES($1,$2,$3,$4,$5,$6,'running',$7) RETURNING id`,[this.ctx.taskID,this.ctx.intentID,this.executionID,callID,tool,fingerprint,old?.status==='retry_allowed'?old.id:null]);
@@ -134,11 +153,11 @@ export class WorkerOperationJournal {
       await db.query("UPDATE worker_operations SET volatile=false WHERE intent_id=$1 AND terminal_id=$2 AND status='returned'",[this.ctx.intentID,terminal.session_id]);
     });
   }
-  async uncertain(id:number){
+  async uncertain(id:number,detail?:OperationInterruption){
     this.recoveryBlocked=true;
     // No successor's receipt may be changed by a late executor. This transition only removes certainty.
-    await this.ctx.db.query(`UPDATE worker_operations SET status='uncertain',finished_at=now()
-      WHERE id=$1 AND execution_id=$2 AND status='running'`,[id,this.executionID]);
+    await this.ctx.db.query(`UPDATE worker_operations SET status='uncertain',finished_at=now(),result=COALESCE($3::jsonb,result)
+      WHERE id=$1 AND execution_id=$2 AND status='running'`,[id,this.executionID,detail?serializeResult({interruption:detail}):null]);
   }
 }
 
@@ -151,14 +170,20 @@ export async function readOperations(ctx:ToolRunContext,args:{intent_id?:number;
   if(intentID){const n=await contextNode(ctx,intentID);if(n.kind!=='intent'||n.taskID!==ctx.taskID)throw new Error('操作记录只属于当前任务的意图');}
   const limit=Math.min(50,Math.max(1,args.limit??10)),after=args.after??0;
   if(!Number.isSafeInteger(after)||after<0)throw new Error('无效操作游标');
-  const rows=(await ctx.db.query(`SELECT id,intent_id,tool_name,status,is_error,replayed,started_at,finished_at,previous_id${args.id?',result':''}
+  const rows=(await ctx.db.query<Row>(`SELECT id,task_id,intent_id,tool_name,status,is_error,replayed,started_at,finished_at,previous_id,
+      CASE WHEN status='uncertain' OR $3::bigint IS NOT NULL THEN result END result
     FROM worker_operations WHERE task_id=$1 AND ($2::bigint IS NULL OR intent_id=$2)
       AND ($3::bigint IS NULL OR id=$3) AND id>$4
       AND EXISTS(SELECT 1 FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id
         WHERE n.id=worker_operations.intent_id AND t.id=$1 AND t.deleted_at IS NULL AND exploration_node_readable(n.exploration_id,n.id))
       ORDER BY id LIMIT $5`,
     [ctx.taskID,intentID??null,args.id??null,after,limit+1])).rows;
-  const items=rows.slice(0,limit).map(r=>({...r,...(args.id?{result:deserializeResult(r.result)}:{}),ref:`operation:${r.id}`,id:Number(r.id),intent_id:Number(r.intent_id)}));
+  const items=await Promise.all(rows.slice(0,limit).map(async r=>{
+    const {result,task_id,...rest}=r;
+    return {...rest,...(args.id?{result:deserializeResult(result)}:{}),
+      ...(r.status==='uncertain'?{interruption:await operationInterruption(ctx.db,r)}:{}),
+      ref:`operation:${r.id}`,id:Number(r.id),intent_id:Number(r.intent_id)};
+  }));
   return {items,next_cursor:rows.length>limit?items.at(-1)!.id:null,
     note:'工具返回与事实发布是不同状态；操作记录不会自动创建事实。uncertain 必须核对后才能继续，不能根据摘要猜测成功。'};
 }

@@ -270,6 +270,7 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
     workerName,
     intentID: intent.id,
     hooks: input.hooks,
+    signal: input.signal,
   });
   const constraints=new ConstraintBoundary(db,expID,text=>input.onActivity?.({kind:'host_status',phase:'constraints',text},{worker:workerName,intentID:intent.id}),'worker');
   const tools = await applyToolBindings(db, "worker", workerTools(ctx));
