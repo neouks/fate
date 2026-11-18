@@ -9,16 +9,27 @@ CREATE TABLE IF NOT EXISTS goal_acceptance (
  task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, goal_id BIGINT NOT NULL,
  goal_hash TEXT NOT NULL, goal_text TEXT NOT NULL,
  evidence_id BIGINT NOT NULL, evidence_hash TEXT NOT NULL,
- method TEXT NOT NULL CHECK(method IN ('coverage','manual')),
- status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+ method TEXT NOT NULL CHECK(method IN ('coverage','evidence')),
+ status TEXT NOT NULL CHECK(status IN ('approved','invalidated')),
  coverage JSONB, note TEXT NOT NULL DEFAULT '', source_call TEXT,
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), reviewed_at TIMESTAMPTZ,
  reviewed_by TEXT
 );
+-- Keep historical review metadata, but retire the approval workflow. Pending or
+-- rejected proofs must be resubmitted against current evidence; never auto-approve
+-- old requests or restart their tasks during migration.
+ALTER TABLE goal_acceptance DROP CONSTRAINT IF EXISTS goal_acceptance_method_check;
+ALTER TABLE goal_acceptance DROP CONSTRAINT IF EXISTS goal_acceptance_status_check;
+UPDATE goal_acceptance SET method='evidence' WHERE method='manual';
+UPDATE goal_acceptance SET status='invalidated' WHERE status IN ('pending','rejected');
+ALTER TABLE goal_acceptance ADD CONSTRAINT goal_acceptance_method_check CHECK(method IN ('coverage','evidence'));
+ALTER TABLE goal_acceptance ADD CONSTRAINT goal_acceptance_status_check CHECK(status IN ('approved','invalidated'));
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status_reason TEXT NOT NULL DEFAULT '';
+UPDATE tasks SET status_reason='目标证明需按当前证据重新提交，当前没有可执行工作'
+ WHERE status='needs_attention' AND status_reason='目标证据已提交，等待人工确认；无待执行工作';
 CREATE INDEX IF NOT EXISTS goal_acceptance_latest ON goal_acceptance(goal_id,id DESC);
 DROP TRIGGER IF EXISTS goal_acceptance_projection ON goal_acceptance;
 CREATE TRIGGER goal_acceptance_projection AFTER INSERT OR UPDATE OR DELETE ON goal_acceptance FOR EACH ROW EXECUTE FUNCTION invalidate_graph_projection();
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status_reason TEXT NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS task_state_corrections (
  id BIGSERIAL PRIMARY KEY,task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
  old_status TEXT NOT NULL,new_status TEXT NOT NULL,reason TEXT NOT NULL,
@@ -62,7 +73,7 @@ CREATE OR REPLACE FUNCTION goal_acceptance_valid(p_id BIGINT) RETURNS BOOLEAN LA
   AND exploration_node_readable(t.exploration_id,e.id)
   AND (e.exploration_id=t.exploration_id OR EXISTS(SELECT 1 FROM task_relations r JOIN tasks s ON s.id=r.source_task_id
     WHERE r.task_id=t.id AND s.exploration_id=e.exploration_id AND s.deleted_at IS NULL))
-  AND (p.method='manual' OR (p.coverage=goal_coverage_snapshot(p.task_id)
+  AND (p.method='evidence' OR (p.coverage=goal_coverage_snapshot(p.task_id)
     AND p.coverage->>'enabled'='true' AND (p.coverage->>'denominator')::bigint>0
     AND (p.coverage->>'tested')::bigint=(p.coverage->>'denominator')::bigint))
  FROM goal_acceptance p JOIN tasks t ON t.id=p.task_id JOIN exploration_nodes g ON g.id=p.goal_id
@@ -79,7 +90,6 @@ RETURNS TABLE(total BIGINT,met BIGINT,ready BOOLEAN) LANGUAGE sql STABLE AS $$
 $$;
 CREATE OR REPLACE FUNCTION goal_display_state(p_goal BIGINT) RETURNS TEXT LANGUAGE sql STABLE AS $$
  SELECT CASE WHEN goal_acceptance_valid(p.id) THEN 'met'
- WHEN p.status='pending' AND p.goal_hash=goal_text_hash(p.goal_id) AND p.evidence_hash=goal_evidence_hash(p.evidence_id) THEN 'pending_confirmation'
  ELSE 'open' END FROM (SELECT 1) placeholder LEFT JOIN LATERAL
  (SELECT * FROM goal_acceptance WHERE goal_id=p_goal ORDER BY id DESC LIMIT 1) p ON true;
 $$;

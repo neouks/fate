@@ -105,7 +105,11 @@ async function main(): Promise<void> {
     `SERIES ${VERSION} (pi refactor) listening on ${listenHost}:${listenPort} (data=${flags.dataDir}, workers=${workers}, egress=${flags.proxy || "disabled"})`,
   );
 
-  engine.startScheduler();
+  if (process.env.SERIES_DISABLE_SCHEDULER === "1") {
+    console.log("[engine] 自动调度已关闭，仅提供页面和 API 调试服务");
+  } else {
+    engine.startScheduler();
+  }
 
   let shuttingDown=false;
   const shutdown = async (signal: string) => {

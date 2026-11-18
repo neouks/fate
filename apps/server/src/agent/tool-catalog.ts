@@ -17,7 +17,7 @@ import {graphOverviewTool} from '../tools/overview.js';
 import {httpRequestTool} from '../tools/evidence.js';
 import {conversationDomainTools} from '../tools/conversations.js';
 import {terminalToolDefinitions} from '../pi/terminal.js';
-import {customWorkerTools,platformBashDescription} from '../tools/custom.js';
+import {customWorkerTools} from '../tools/custom.js';
 import {applyToolBindings,disabledBuiltinTools} from './tool-bindings.js';
 import {toolIdentity,ACTIVE_ROLES} from './tool-registry.js';
 import {prepareToolLoading} from './tool-loading.js';
@@ -27,7 +27,6 @@ import {resolveRolePrompt} from './prompts.js';
 import {PLANNER_READING_RULES} from './planner-memory.js';
 import {roleResources} from './resources.js';
 import {skillDir} from '../config/index.js';
-import {configuredBash} from '../config/execution.js';
 import type {Database} from '../db/index.js';
 const previewCwd='/tmp/fate-tool-preview';
 const native=()=>[createReadToolDefinition(previewCwd),createBashToolDefinition(previewCwd),createWriteToolDefinition(previewCwd),createEditToolDefinition(previewCwd)] as ToolDefinition[];
@@ -56,7 +55,6 @@ export async function previewRoleTools(db:Database,role:string,taskBound=true){
  const domain=await applyToolBindings(db,role,role==='goals'?goalsTools({...ctx,goalsPhase:'combined'}).filter(t=>[...GOALS_STAGE_TOOLS.constraints,...GOALS_STAGE_TOOLS.objectives].includes(t.name as never)):roleDefinitions(db,role,taskBound));
  const custom=role==='planner'||role==='goals'||role==='pentest'&&!taskBound?[]:await customWorkerTools(ctx,previewCwd);
  const candidate=[...domain,...native().filter(t=>nativeNames.includes(t.name)&&!disabled.has(t.name)),...(agent.interactiveShell&&['worker','mainagent'].includes(role)?terminalToolDefinitions():[]),...custom];
- if(['worker','mainagent'].includes(role)){const bash=candidate.find(t=>t.name==='bash');if(bash)bash.description=await platformBashDescription(ctx,(await configuredBash(db,previewCwd,{})).description,agent.interactiveShell);}
  const permitted=new Set((await applyToolBindings(db,role,candidate.map(t=>({name:t.name})))).map(t=>t.name));
  const bound=candidate.filter(t=>permitted.has(t.name)),policy=await platformPolicy(db,role),prompt=await resolveRolePrompt(db,role),resources=role==='goals'?{}:await roleResources(db,role,skillDir());
  const loadout=await prepareToolLoading(db,role,{customTools:bound,legacyTools:taskBound&&role!=='goals'?legacyReadCandidates(ctx):[],toolAllowlist:bound.map(t=>t.name),systemPrompt:prompt.template+(role==='planner'?'\n'+PLANNER_READING_RULES:''),...resources},policy.builtinLoading==='direct',policy.fallback);

@@ -2,18 +2,18 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import Fastify from 'fastify';
 import {openDatabase} from './index.js';
-import {proposeGoalAcceptance,reviewGoalAcceptance,goalAcceptanceDetails,isCoverageGoal} from './goal-integrity.js';
-import {registerGoalAcceptanceRoutes} from '../http/routes/goal-acceptance.js';
+import {proposeGoalAcceptance,goalAcceptanceDetails,isCoverageGoal} from './goal-integrity.js';
 import {registerTaskRoutes} from '../http/routes/tasks.js';
 import {registerCompatRoutes} from '../http/routes/compat.js';
 import {requireJWT,signJWT} from '../http/auth.js';
+import {goalIntegritySQL} from './goal-integrity-migration.js';
 
 const dsn=process.env.TEST_GOAL_INTEGRITY_DSN;
 test('coverage recognition is deliberately narrow',()=>{
  assert.equal(isCoverageGoal('资产测试覆盖度100%'),true);
  for(const text of ['覆盖度100%并完成其他要求','资产测试覆盖度100%，限昨天','分析覆盖情况','资产测试覆盖度0%'])assert.equal(isCoverageGoal(text),false);
 });
-test('versioned acceptance, task states and authenticated human review', {skip:!dsn&&'isolated PostgreSQL required'},async t=>{
+test('direct evidence acceptance, invalidation and retired review endpoint', {skip:!dsn&&'isolated PostgreSQL required'},async t=>{
  assert.match(new URL(dsn!).pathname,/^\/test_[a-z0-9_]+$/);process.env.SERIES_PG_DSN=dsn;
  const db=await openDatabase();const app=Fastify();app.decorate('db',db);app.addHook('preHandler',requireJWT('synthetic-key'));registerTaskRoutes(app);registerCompatRoutes(app);
  t.after(async()=>{await app.close();await db.close()});
@@ -31,7 +31,7 @@ test('versioned acceptance, task states and authenticated human review', {skip:!
  assert.equal(await db.tasks().setTaskStatusGuarded(a.task,'done'),false);
  await assert.rejects(db.query("UPDATE tasks SET status='done' WHERE id=$1",[a.task]),/尚未核验/);
  const proposal=await proposeGoalAcceptance(db,a.task,a.goal,a.evidence,'合成证明','call-1');
- assert.equal(proposal.verification,'awaiting_confirmation');assert.equal(proposal.met,false);
+ assert.equal(proposal.verification,'evidence_verified');assert.equal(proposal.met,true);assert.equal(proposal.all_goals_met,false);
  assert.equal((await proposeGoalAcceptance(db,a.task,a.goal,a.evidence,'合成证明','call-1')).acceptance_id,proposal.acceptance_id);
  const detail=(await goalAcceptanceDetails(db,a.task,a.goal))!;
  const url=`/api/tasks/${a.task}/goals/${a.goal}/acceptance`,headers={authorization:`Bearer ${signJWT('synthetic-key')}`};
@@ -39,12 +39,11 @@ test('versioned acceptance, task states and authenticated human review', {skip:!
  assert.equal((await app.inject({url:`/api/tasks/${b.task}/goals/${a.goal}/acceptance`,headers})).statusCode,404);
  const body={action:'approve',acceptance_id:detail.id,goal_hash:detail.goal_hash,evidence_hash:detail.evidence_hash};
  const responses=await Promise.all([1,2].map(()=>app.inject({url,method:'POST',headers,payload:body})));
- assert.deepEqual(responses.map(r=>r.statusCode).sort(),[200,409]);
+ assert.deepEqual(responses.map(r=>r.statusCode),[404,404]);
+ assert.equal((await app.inject({url,headers})).json().acceptance.valid,true);
  assert.equal((await a.g.executionCounts()).met,1);
  assert.equal(await db.tasks().setTaskStatusGuarded(a.task,'done'),false);
- const p2=await proposeGoalAcceptance(db,a.task,second,a.evidence);
- const d2=(await goalAcceptanceDetails(db,a.task,second))!;
- await reviewGoalAcceptance(db,a.task,second,p2.acceptance_id,d2,true,'test-user');
+ const p2=await proposeGoalAcceptance(db,a.task,second,a.evidence);assert.equal(p2.all_goals_met,true);
  assert.equal((await a.g.executionCounts()).met,2);
  assert.equal(await db.tasks().setTaskStatusGuarded(a.task,'done'),true);
  await a.g.updateGoalPayload(a.goal,'修改后的要求','');
@@ -94,13 +93,42 @@ test('versioned acceptance, task states and authenticated human review', {skip:!
  const summary=await app.inject({url:'/api/tasks/summary',headers});assert.equal(summary.json().by_status.needs_attention,3);
  // Concurrent editing and finalization use the same task -> graph lock order.
  const race=await fixture();await proposeGoalAcceptance(db,race.task,race.goal,race.evidence);
- const receipt=(await goalAcceptanceDetails(db,race.task,race.goal))!;await reviewGoalAcceptance(db,race.task,race.goal,receipt.id,receipt,true,'fixture');
  await Promise.all([db.tasks().finishManually(race.task),race.g.updateGoalPayload(race.goal,'changed','')]);
  assert.equal((await race.g.executionCounts()).met,0);assert.notEqual((await db.query('SELECT task_display_status($1) s',[race.task])).rows[0]!.s,'done');
- // A stale evidence review is rejected; approval has no executor side effects.
+ // Changed evidence invalidates the proof; resubmission verifies the new snapshot without starting executors.
  const stale=await fixture();await proposeGoalAcceptance(db,stale.task,stale.goal,stale.evidence);const before=(await goalAcceptanceDetails(db,stale.task,stale.goal))!;
  await db.query("UPDATE exploration_nodes SET payload=payload||'{\"evidence\":\"new observation\"}'::jsonb WHERE id=$1",[stale.evidence]);
- await assert.rejects(reviewGoalAcceptance(db,stale.task,stale.goal,before.id,before,true,'fixture'),/已变化/);
+ assert.equal((await goalAcceptanceDetails(db,stale.task,stale.goal))!.valid,false);
+ const refreshed=await proposeGoalAcceptance(db,stale.task,stale.goal,stale.evidence);
+ assert.equal(refreshed.met,true);assert.notEqual(refreshed.acceptance_id,before.id);
  assert.equal((await db.query('SELECT count(*) n FROM engine_task_leases WHERE task_id=$1',[stale.task])).rows[0]!.n,'0');
+
+ // Reject unusable proof rather than turning removal of review into unconditional success.
+ const invalid=await fixture();
+ for(const payload of [{observation_type:'inferred'}, {observation_type:'unknown'}, {evidence:''}, {acceptance_status:'unverified'}]){
+  const node=await invalid.g.addNode('fact',{evidence:'fixture',observation_type:'observed',...payload},0,'confirmed','fixture',[]);
+  await assert.rejects(proposeGoalAcceptance(db,invalid.task,invalid.goal,node),/证据/);
+ }
+ await assert.rejects(proposeGoalAcceptance(db,invalid.task,invalid.goal,b.evidence),/授权|范围|不存在/);
+ assert.equal((await invalid.g.executionCounts()).met,0);
+
+ // Upgrade old review rows without approving pending/rejected requests or resuming tasks.
+ const legacy=await fixture();
+ await proposeGoalAcceptance(db,legacy.task,legacy.goal,legacy.evidence);
+ await db.query(`ALTER TABLE goal_acceptance DROP CONSTRAINT goal_acceptance_method_check;
+  ALTER TABLE goal_acceptance DROP CONSTRAINT goal_acceptance_status_check;
+  ALTER TABLE goal_acceptance ADD CONSTRAINT goal_acceptance_method_check CHECK(method IN ('manual','coverage','evidence'));
+  ALTER TABLE goal_acceptance ADD CONSTRAINT goal_acceptance_status_check CHECK(status IN ('pending','rejected','approved','invalidated'));`);
+ await db.query("UPDATE goal_acceptance SET method='manual',status='pending' WHERE task_id=$1",[legacy.task]);
+ await db.query("UPDATE goal_acceptance SET method='manual' WHERE task_id=$1",[stale.task]);
+ await db.query("UPDATE tasks SET status='needs_attention',status_reason='目标证据已提交，等待人工确认；无待执行工作' WHERE id=$1",[legacy.task]);
+ await db.query(goalIntegritySQL);
+ await db.query(goalIntegritySQL);
+ const old=(await goalAcceptanceDetails(db,legacy.task,legacy.goal))!;
+ assert.equal(old.method,'evidence');assert.equal(old.status,'invalidated');assert.equal(old.state,'open');
+ assert.equal((await db.tasks().getTask(legacy.task))!.status,'needs_attention');
+ assert.equal((await db.query('SELECT count(*) n FROM engine_task_leases WHERE task_id=$1',[legacy.task])).rows[0]!.n,'0');
+ assert.equal((await goalAcceptanceDetails(db,stale.task,stale.goal))!.valid,true,'prior approved proofs remain valid');
+ assert.equal((await proposeGoalAcceptance(db,legacy.task,legacy.goal,legacy.evidence)).met,true);
 
 });

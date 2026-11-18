@@ -9,17 +9,17 @@ import {CONVERGENCE_MIGRATION_KEY,migratePlannerConvergence,rollbackPlannerConve
 import {addIntentTool} from '../tools/intents.js';
 import {runContext} from '../tools/context.js';
 const dsn=process.env.TEST_CONVERGENCE_DSN;
-test('evidence convergence preserves human acceptance, followups and migration ownership',{skip:!dsn&&'isolated PostgreSQL required'},async t=>{
+test('evidence convergence uses direct evidence acceptance, followups and migration ownership',{skip:!dsn&&'isolated PostgreSQL required'},async t=>{
  assert.match(new URL(dsn!).pathname,/^\/test_/);process.env.SERIES_PG_DSN=dsn;
  const db=await openDatabase();t.after(()=>db.close());
  const exp=await db.createExploration('catalog','比较 A、B 价格'),task=Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,status) VALUES('catalog','比较 A、B 价格',$1,'running') RETURNING id",[exp])).rows[0]!.id);
  const graph=db.exploration(exp),goal=await graph.addGoal({text:'比较 A、B 价格'},'user');
  const intent=await graph.addNode('intent',{summary:'目录方向',execution_stop:{reason:'completed'}},0,'done','fixture',[]);
  const fact=await graph.addNode('fact',{summary:'A 不一致；B 一致',evidence:'A: 10/12; B: 20/20',from_intent:intent,observation_type:'observed',scope:{tested:'列表和两个详情',untested:'财务',limitations:'当前快照'}},0,'confirmed','worker',[]);
- await t.test('pending proof is a waiting receipt, not automatic completion or a new work requirement',async()=>{
-  const receipt=await proposeGoalAcceptance(db,task,goal,fact,'A/B 的比较');assert.equal(receipt.verification,'awaiting_confirmation');assert.equal(receipt.next_action,'await_human_confirmation');assert.equal(receipt.met,false);
-  const index=await plannerConvergenceState(db,task,exp);assert.equal(index.goals[0]!.state,'pending_confirmation');assert.equal(String(index.goals[0]!.evidence_id),String(fact));assert.deepEqual(index.observations[0]!.scope,{tested:'列表和两个详情',untested:'财务',limitations:'当前快照'});
-  assert.equal(await db.tasks().setTaskStatusGuarded(task,'done'),false);
+ await t.test('valid proof completes the goal without a human review or new work requirement',async()=>{
+  const receipt=await proposeGoalAcceptance(db,task,goal,fact,'A/B 的比较');assert.equal(receipt.verification,'evidence_verified');assert.equal(receipt.met,true);assert.equal(receipt.all_goals_met,true);
+  const index=await plannerConvergenceState(db,task,exp);assert.equal(index.goals[0]!.state,'met');assert.equal(String(index.goals[0]!.evidence_id),String(fact));assert.deepEqual(index.observations[0]!.scope,{tested:'列表和两个详情',untested:'财务',limitations:'当前快照'});
+  assert.equal((await graph.executionCounts()).met,1);
   const foreign=await db.createExploration('other','other');await assert.rejects(plannerConvergenceState(db,task,foreign),/归属/);
  });
  await t.test('new conflicting observations remain visible and a justified followup remains admissible',async()=>{
@@ -29,7 +29,7 @@ test('evidence convergence preserves human acceptance, followups and migration o
   const result=await tool.execute('new-contradiction',{intents:[{summary:'确认 A 变更后的价格一致性',contract:{objective:'仅核对新快照 A 与旧证据的矛盾',basis:[{node_id:contradiction,version:0}],acceptance:['判定变更后的 A；无需重做 B']}}]},undefined,undefined,{} as never);
   assert.ok(!result.isError,JSON.stringify(result));const body=JSON.parse((result.content[0] as {text:string}).text);assert.ok(body.intents[0].created,JSON.stringify(body));
   await db.query("UPDATE exploration_nodes SET payload=payload||'{\"evidence\":\"A source corrected\"}'::jsonb WHERE id=$1",[fact]);
-  assert.equal((await plannerConvergenceState(db,task,exp)).goals[0]!.state,'open','changed evidence cannot preserve stale pending proof');
+  assert.equal((await plannerConvergenceState(db,task,exp)).goals[0]!.state,'open','changed evidence cannot preserve stale proof');
  });
  const planner=(await db.platform().getAgentByKey('planner'))!,worker=(await db.platform().getAgentByKey('worker'))!,workerPrompt=await db.platform().currentPrompt(worker.id);
  const select=async(text:string)=>{const p=(await db.query('INSERT INTO agent_prompts(agent_id,version,template_text) SELECT $1,COALESCE(max(version),0)+1,$2 FROM agent_prompts WHERE agent_id=$1 RETURNING id',[planner.id,text])).rows[0]!;await db.query('UPDATE agents SET current_prompt_id=$2 WHERE id=$1',[planner.id,p.id]);return p.id;};

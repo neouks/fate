@@ -64,16 +64,16 @@ test('settings drive native PI execution, task egress and live revocation',{skip
   const unknown=await app.inject({method:'POST',url:'/api/tools/custom/test',payload:{kind:'unknown'}});assert.equal(unknown.json().is_error,true);
   assert.ok((await app.inject({method:'POST',url:'/api/settings/python/detect'})).json().python_interpreter);
  });
- for(const role of ['worker','mainagent'] as const)await t.test(`${role}: PI invokes configured Bash, Python and interactive terminal; capture changes take effect`,async()=>{
+ for(const role of ['worker','mainagent'] as const)await t.test(`${role}: PI invokes native Bash alongside configured Python and interactive terminal`,async()=>{
   const ctx=runContext(db,task,exp,role);await db.query('UPDATE agents SET interactive_shell=true WHERE key=$1',[role]);
   const execution=await executionTools(ctx,dir,{egressAddr:gateway.addr,egressScope:'fixture'});const events:any[]=[];
-  const runner=await createTrackedRunner(db,task,role,{cwd:dir,agentDir:dir,inMemory:true,modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Only local synthetic fixtures.',customTools:execution.tools,toolAllowlist:execution.tools.map(t=>t.name).concat(execution.names),extensionFactories:execution.extensions,onActivity:a=>{events.push(a);}});
+  const runner=await createTrackedRunner(db,task,role,{cwd:dir,agentDir:dir,inMemory:true,modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Only local synthetic fixtures.',customTools:execution.tools,toolAllowlist:['bash',...execution.tools.map(t=>t.name),...execution.names],extensionFactories:execution.extensions,onActivity:a=>{events.push(a);}});
   const count=async()=>Number((await db.query('SELECT count(*) n FROM traffic_exchanges WHERE task_id=$1',[task])).rows[0]!.n);
   try{
    await save({traffic_capture:false});const before=await count(),proxied=proxyCalls;
-   faux.setResponses([fauxAssistantMessage([fauxToolCall('bash',{command:`curl --noproxy '' -fsS '${url}'`})]),fauxAssistantMessage([fauxToolCall('local_python',{})]),fauxAssistantMessage([fauxToolCall('tool_search',{query:'shell_open'})]),fauxAssistantMessage([fauxToolCall('shell_open',{command:'printf terminal-ok',mode:'interactive',quiet_ms:100,timeout_ms:3000})]),fauxAssistantMessage('done')]);
-   await runner.prompt('Run local fixtures');assert.equal(await count(),before);assert.ok(proxyCalls>proxied);assert.ok(events.some(a=>a.kind==='tool_end'&&a.text?.includes('chosen')));assert.ok(events.some(a=>a.kind==='tool_end'&&a.text?.includes('terminal-ok')),JSON.stringify(events.filter(a=>a.kind==='tool_end').map(a=>({name:a.toolName,error:a.isError,text:a.text}))));
-   await save({traffic_capture:true});faux.setResponses([fauxAssistantMessage([fauxToolCall('bash',{command:`curl --noproxy '' -fsS '${url}'`})]),fauxAssistantMessage('done')]);await runner.prompt('Capture local request');assert.equal(await count(),before+1);
+   faux.setResponses([fauxAssistantMessage([fauxToolCall('bash',{command:`curl --noproxy '*' -fsS '${url}'`})]),fauxAssistantMessage([fauxToolCall('local_python',{})]),fauxAssistantMessage([fauxToolCall('tool_search',{query:'shell_open'})]),fauxAssistantMessage([fauxToolCall('shell_open',{command:'printf terminal-ok',mode:'interactive',quiet_ms:100,timeout_ms:3000})]),fauxAssistantMessage('done')]);
+   await runner.prompt('Run local fixtures');assert.equal(await count(),before);assert.equal(proxyCalls,proxied);assert.ok(events.some(a=>a.kind==='tool_end'&&a.text?.includes('chosen')));assert.ok(events.some(a=>a.kind==='tool_end'&&a.text?.includes('terminal-ok')),JSON.stringify(events.filter(a=>a.kind==='tool_end').map(a=>({name:a.toolName,error:a.isError,text:a.text}))));
+   await save({traffic_capture:true});faux.setResponses([fauxAssistantMessage([fauxToolCall('bash',{command:`curl --noproxy '*' -fsS '${url}'`})]),fauxAssistantMessage('done')]);await runner.prompt('Run native Bash again');assert.equal(await count(),before);
   }finally{await runner.dispose();}
  });
  for(const role of ['planner','worker'] as const)await t.test(`${role}: injection changes actual PI request context and blocks stale tool batches`,async()=>{

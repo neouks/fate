@@ -1,3 +1,4 @@
+import {projectRecallHistory} from './recall-history.js';
 import {formatSkillsForPrompt} from '@earendil-works/pi-coding-agent';
 import {roleAllowsTool,roleToolRejection,PLANNER_CAPABILITY_PROTOCOL} from '../agent/planner-capabilities.js';
 import {classifyResourceCall,type ResourceCall,type McpOwner} from './resource-usage.js';
@@ -346,7 +347,7 @@ export class AgentRunner {
       api.on('context', async (event,context) => {
         try {
         // Keep legacy feedback in the audit session, never in Agent coordination.
-        let messages=[...(opts.projectMessages?.(event.messages)??event.messages)];
+        let messages=projectRecallHistory(opts.projectMessages?.(event.messages)??event.messages);
         if(opts.contextLayout)messages.push({role:'custom',customType:'host_task_context',display:false,timestamp:Date.now(),content:hostTaskContext(opts.cwd,opts.taskContext)});
         const current=await opts.boundaryContext?.();
         if(current)messages.push({role:'custom',customType:'blackboard_boundary',content:current,display:false,timestamp:Date.now()});

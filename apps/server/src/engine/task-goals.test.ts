@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import {setTimeout as wait} from 'node:timers/promises';
 import {openDatabase} from '../db/index.js';
-import {proposeGoalAcceptance,goalAcceptanceDetails,reviewGoalAcceptance} from '../db/goal-integrity.js';
+import {proposeGoalAcceptance} from '../db/goal-integrity.js';
 import {runContext} from '../tools/context.js';
 import {proveGoalTool} from '../tools/findings.js';
 import {defaultEngineConfig,Engine} from './engine.js';
@@ -56,16 +56,10 @@ test('managed tasks stay active until all current goals are proven', {
       }
       assert.fail('任务未在回归等待时间内进入预期状态');
     };
-    const approve = async (taskID:number, goalID:number) => {
-      const receipt=(await goalAcceptanceDetails(db,taskID,goalID))!;
-      assert.equal(receipt.status,'pending');
-      await reviewGoalAcceptance(db,taskID,goalID,receipt.id,receipt,true,'local-test-reviewer');
-    };
     const firstProposal=await prove(first,firstFact);
-    assert.equal(firstProposal.verification,'awaiting_confirmation');
-    assert.equal(firstProposal.met,false);
-    assert.equal(firstProposal.met_count,0);
-    await approve(task.id,first);
+    assert.equal(firstProposal.verification,'evidence_verified');
+    assert.equal(firstProposal.met,true);
+    assert.equal(firstProposal.met_count,1);
     assert.equal((await task.graph.executionCounts()).met,1);
     assert.equal(await db.tasks().setTaskStatusGuarded(task.id,'done'),false);
     assert.equal(await engine.admitTask(task.id),true);
@@ -74,10 +68,9 @@ test('managed tasks stay active until all current goals are proven', {
     assert.equal(active?.status,'running');
     assert.equal(active?.completed_at,null);
     const secondProposal=await prove(second,secondFact);
-    assert.equal(secondProposal.verification,'awaiting_confirmation');
-    assert.equal(secondProposal.all_goals_met,false);
-    assert.equal(secondProposal.met_count,1);
-    await approve(task.id,second);
+    assert.equal(secondProposal.verification,'evidence_verified');
+    assert.equal(secondProposal.all_goals_met,true);
+    assert.equal(secondProposal.met_count,2);
     engine.notify(task.id);
     await until(async()=>(await db.tasks().getTask(task.id))?.status==='done');
     assert.ok((await db.tasks().getTask(task.id))?.completed_at);
@@ -89,7 +82,6 @@ test('managed tasks stay active until all current goals are proven', {
       VALUES($1,'可编辑及可撤回的目标','fixture','completed',$2)`,[changed.id,[edited,removed]]);
     const evidence = await changed.graph.addNode('fact',{evidence:'旧目标观察'},0,'confirmed','worker',[]);
     await proposeGoalAcceptance(db,changed.id,edited,evidence,'合成证据');
-    await approve(changed.id,edited);
     await changed.graph.deleteGoal(removed);
     assert.deepEqual(await changed.graph.executionCounts(),{running:0,goals:1,met:1,goalsReady:true});
     await changed.graph.updateGoalPayload(edited,'新目标','');

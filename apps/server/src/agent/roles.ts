@@ -1,6 +1,6 @@
 import {workerMandate,plannerDispatchReminder} from './direction-autonomy.js';
 import {plannerConvergenceState} from './planner-convergence.js';
-import {configuredBash,resolveShell} from '../config/execution.js';
+import {resolveShell} from '../config/execution.js';
 import {targetProxy} from '../egress/upstream.js';
 import {roleToolRejection} from './planner-capabilities.js';
 import {withRuntimeResources,type RuntimeResourceLease} from '../engine/runtime-resources.js';
@@ -34,7 +34,7 @@ import {workerLaunchContext} from '../tools/context-read.js';
 import {randomUUID} from 'node:crypto';
 import {resolveGraphNode} from '../db/graph_view.js';
 import {clampOutput} from '../tools/define.js';
-import { customWorkerTools, platformBashDescription } from "../tools/custom.js";
+import { customWorkerTools } from "../tools/custom.js";
 import { roleResources } from "./resources.js";
 // 四角色装配：把提示词 + 领域工具 + 预算/guard 接到 AgentRunner 上。
 // 角色不感知引擎的调度细节，引擎不感知提示词内容——只经由本文件的四个入口函数交互。
@@ -42,7 +42,7 @@ import { roleResources } from "./resources.js";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { AgentRunner, type RunnerActivity, type ToolGuard, type ToolGuardContext } from "../pi/runner.js";
-import { createBashToolDefinition, type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Database } from "../db/index.js";
 import type { Node } from "../db/exploration.js";
 import { runContext, type EngineHooks, type ToolRunContext, type TodoStore } from "../tools/context.js";
@@ -150,7 +150,7 @@ export interface WorkerRunInput {
   /** 引擎注入的额外 guard（执行租约与生命周期校验）。 */
   extraGuard?: ToolGuard;
   /**
-   * 出口网关地址（host:port，M6）。给出时 worker 的 bash 工具进程注入
+   * 出口网关地址（host:port，M6）。给出时向平台自定义命令和交互终端注入
    * HTTP_PROXY/HTTPS_PROXY（值为带签名任务凭据的网关 URL）+ NO_PROXY 本机回环，
    * 网关侧做 CONNECT 级 allowlist 授权（网络层兜底，替代已删除的 MITM 录制）。
    */
@@ -203,17 +203,7 @@ function withUsageCounter(
   };
 }
 
-/**
- * 出口网关环境注入（M6）：pi 的 bash 工具支持 spawnHook 改写子进程 env
- * （createBashToolDefinition / BashToolOptions.spawnHook，返回的 {command,cwd,env}
- * 直接作为 spawn env），customTools 里与内置同名的工具会覆盖内置 bash——因此这里
- * 用自定义 bash 实例（名字保持 "bash"）注入：
- *   HTTP_PROXY / HTTPS_PROXY = http://<series-task 凭据>@<egressAddr>/
- *   NO_PROXY = localhost,127.0.0.1
- * 凭据由进程内 HMAC 签名（taskCredentials），网关验签后按任务 scope 授权；
- * shell 能看到凭据但改 taskID/scope 后签名失效，无法借用其他任务的策略。
- * 未配置 egressAddr 时返回 undefined，保持内置 bash 原样。
- */
+/** Environment for platform custom commands and interactive terminals. */
 export function executionEnvironment(egressAddr:string|undefined,taskID:number,scope:string):Record<string,string>{
   const env=Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>entry[1]!==undefined));
   if(!egressAddr)return env;
@@ -221,18 +211,12 @@ export function executionEnvironment(egressAddr:string|undefined,taskID:number,s
   const proxy=`http://${encodeURIComponent(creds.username)}:${encodeURIComponent(creds.password)}@${egressAddr}/`;
   return {...env,...(agentEnv.caFile?{NODE_EXTRA_CA_CERTS:agentEnv.caFile,SSL_CERT_FILE:agentEnv.caFile,REQUESTS_CA_BUNDLE:agentEnv.caFile,CURL_CA_BUNDLE:agentEnv.caFile}:{}),HTTP_PROXY:proxy,HTTPS_PROXY:proxy,http_proxy:proxy,https_proxy:proxy,NO_PROXY:'localhost,127.0.0.1',no_proxy:'localhost,127.0.0.1'};
 }
-export function workerEgressBashTool(runDir:string,egressAddr:string|undefined,taskID:number,intentID:number,scope?:string):ToolDefinition|undefined{
-  if(!egressAddr)return undefined;
-  return createBashToolDefinition(runDir,{spawnHook:ctx=>({...ctx,env:{...ctx.env,...executionEnvironment(egressAddr,taskID,scope??`worker:${intentID}`)}})}) as unknown as ToolDefinition;
-}
 export async function executionTools(ctx:ToolRunContext,cwd:string,input:{egressAddr?:string;egressScope?:string;signal?:AbortSignal;extraGuard?:ToolGuard}){
   const env=executionEnvironment(input.egressAddr,ctx.taskID,input.egressScope??`${ctx.role}:${ctx.intentID??0}`);
   if(!input.egressAddr){const proxy=await targetProxy(ctx.db);for(const key of ['HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'])env[key]=proxy;}
-  const shell=resolveShell(await ctx.db.platform().getSetting('shell_mode')??'auto');
-  const bash=await configuredBash(ctx.db,cwd,env);
   const interactive=(await ctx.db.platform().getAgentByKey(ctx.role))?.interactiveShell===true;
-  bash.description=await platformBashDescription(ctx,bash.description,interactive);
-  return {tools:[bash,...await customWorkerTools(ctx,cwd,bash,input.extraGuard,env)],
+  const shell=interactive?resolveShell(await ctx.db.platform().getSetting('shell_mode')??'auto'):undefined;
+  return {tools:await customWorkerTools(ctx,cwd,undefined,input.extraGuard,env),
     names:interactive?TERMINAL_TOOLS:[],extensions:interactive?[terminalExtension(cwd,env,input.signal,shell)]:[]};
 }
 /** Main and Planner use the same execution lifecycle boundary as Worker. */
@@ -296,7 +280,7 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
   const counter = withUsageCounter(input.onActivity as (a: RunnerActivity, meta: { intentID?: number; worker: string }) => unknown);
   const {maxTurns,maxDurationMs} = agentBudgets(rc,{maxTurns:input.maxTurns,maxDurationMs:input.maxDurationMs});
   ctx.agentSessionState=active.snapshot;
-  // 出口网关注入的 bash（名字保持 "bash"，customTools 同名覆盖内置；allowlist 不变）。
+  // PI owns native Bash; only platform custom tools are added here.
   const execution=await executionTools(ctx,runDir,input);
   tools.push(...execution.tools);
   const journal=new WorkerOperationJournal(ctx);

@@ -1,3 +1,4 @@
+import {normalizeGoalProofInstructions,GOAL_PROOF_PROTOCOL} from './goal-proof-policy.js';
 import {upgradeDirectionPrompt,PLANNER_AUTONOMY_GUIDANCE,DIRECTION_AUTONOMY_POLICY} from './direction-autonomy.js';
 import {upgradePlannerConvergencePrompt,PLANNER_CONVERGENCE_GUIDANCE} from './planner-convergence.js';
 import {FINDING_PLANNER_GUIDANCE,FINDING_WRITE_GUIDANCE,findingRoleProtocol} from './finding-write-policy.js';
@@ -105,7 +106,7 @@ export async function resolveRolePrompt(db: Database, role: string, fallback = b
   const stored = agent ? await db.platform().currentPrompt(agent.id) : '';
   const legacy = !!stored && isLegacyPrompt(role, stored);
   const custom = !!stored.trim() && !legacy && stored !== fallback;
-  return { template: stored.trim() ? stored : fallback, source: custom ? 'custom' : legacy ? 'legacy_default' : 'builtin',
+  return { template: normalizeGoalProofInstructions(stored.trim() ? stored : fallback), source: custom ? 'custom' : legacy ? 'legacy_default' : 'builtin',
     version: custom || legacy ? `stored:${promptHash(stored)}` : role==='reporter' ? REPORTER_PROMPT_VERSION : ['planner','worker'].includes(role) ? DIRECTION_AUTONOMY_POLICY : PROMPT_VERSION, candidate: fallback };
 }
 
@@ -123,6 +124,7 @@ export async function systemRolePrompt(db: Database, role: string, vars: Record<
   let effective=role==='planner'&&!protocol.includes(PLANNER_CAPABILITY_PROTOCOL)?protocol+'\n'+PLANNER_CAPABILITY_PROTOCOL:protocol;
   const findingPolicy=findingRoleProtocol(role);
   if(findingPolicy&&!effective.includes(findingPolicy))effective+='\n'+findingPolicy;
+  if(['planner','mainagent'].includes(role))effective+='\n'+GOAL_PROOF_PROTOCOL;
   return composeRolePrompt(body,effective);
 }
 

@@ -4,15 +4,13 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall,validateToolArguments} from '@earendil-works/pi-ai';
-import {ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {ModelRuntime,createBashToolDefinition} from '@earendil-works/pi-coding-agent';
 import {openDatabase} from '../db/index.js';
 import {trafficSearchTool} from './traffic-search.js';
 import {PREVIOUS_TRAFFIC_SEARCH_DESCRIPTION} from '../agent/tool-description-policy.js';
 import {previewRoleTools,searchDefinition} from '../agent/tool-catalog.js';
 import {toolLoadout} from '../agent/tool-loading.js';
 import {applyToolBindings} from '../agent/tool-bindings.js';
-import {configuredBash} from '../config/execution.js';
-import {platformBashDescription} from './custom.js';
 import {AgentRunner,type RunnerActivity} from '../pi/runner.js';
 import {contextGetTool} from './context-read.js';
 import {insertAssetsTool,assetGetTool} from './assets.js';
@@ -39,7 +37,7 @@ test('catalog, native declarations and partial-read outcomes share one contract'
   const tools=[contextGetTool(ctx),assetGetTool(ctx),trafficSearchTool(ctx)];
   if(role==='worker'){
    tools.push(insertAssetsTool(ctx));
-   const bash=await configuredBash(db,dir,{});bash.description=await platformBashDescription(ctx,bash.description,(await db.platform().getAgentByKey(role))!.interactiveShell);
+   const bash=createBashToolDefinition(dir);
    assert.equal(preview.descriptions.bash,bash.description);
    const asset=tools.find(t=>t.name==='insert_assets')!;
    for(const legacy of [false,true]){

@@ -1,6 +1,6 @@
 import {pythonInterpreter,runProgram,configuredBash} from '../config/execution.js';
 import {evidenceRequest} from "../evidence/http.js";
-import { defineTool, createBashToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ToolRunContext } from "./context.js";
 import type { ToolGuard } from "../pi/runner.js";
 import { clampOutput } from "./define.js";
@@ -25,6 +25,7 @@ export async function boundCustomTools(db: import('../db/index.js').Database, ro
 /** Custom tools enter the same pi tool pipeline and execution lifecycle as native tools. */
 export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?: ToolDefinition, guard?: ToolGuard,executionEnv?:Record<string,string>): Promise<ToolDefinition[]> {
   const catalog = await boundCustomTools(ctx.db, ctx.role);
+  if (!catalog.length) return [];
   const env=executionEnv??Object.fromEntries(Object.entries(process.env).filter((e):e is [string,string]=>e[1]!==undefined));
   const shell = bash ?? await configuredBash(ctx.db,cwd,env);
   return catalog
@@ -68,16 +69,4 @@ export async function customWorkerTools(ctx: ToolRunContext, cwd: string, bash?:
         return shell.execute(callID, { command, timeout: timeout / 1000 }, signal, update, extensionContext);
       },
     }) as unknown as ToolDefinition);
-}
-
-/** Shell entries describe installed command environments; they are not separate tools. */
-export async function shellEnvironmentNotes(ctx:ToolRunContext){
- const entries=(await ctx.db.platform().listTools()).filter(t=>t.kind==='shell'&&t.enabled&&t.agents.includes(ctx.role));
- return entries.map(t=>`${t.key}: ${t.description}\n${t.usageHelp??''} ${t.whenToUse??''}`).join('\n').slice(0,8000);
-}
-
-export async function platformBashDescription(ctx:ToolRunContext,base:string,interactive:boolean){
- const notes=await shellEnvironmentNotes(ctx);
- return base+(notes?`\n可用命令环境：\n${notes}`:'')+
-  (interactive?'\n需要持续交互时用 shell_open，后续 shell_send/read/close/list；句柄仅属于当前执行会话。':'');
 }

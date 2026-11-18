@@ -1,3 +1,4 @@
+import {normalizeGoalProofInstructions} from './goal-proof-policy.js';
 import {FINDING_WRITE_GUIDANCE,isPreviousFindingDescription} from './finding-write-policy.js';
 import {describeToolContract,recognizedHistoricalDescription} from './tool-description-policy.js';
 import {CONSTRAINT_TOOL_DESCRIPTION} from './constraint-policy.js';
@@ -70,7 +71,7 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
   if (name === 'tool_search' && stored === '按需发现已绑定工具；使用英文工具名或关键词') return {description, source: 'builtin'};
   if (name === 'web_search' && stored === 'DeepSeek 官方网络搜索') return {description, source: 'builtin'};
   if (typeof stored === 'string' && stored.trim() && stored !== description && stored !== LEGACY_TOOL_DESCRIPTIONS[name] && stored !== TOOL_DESCRIPTIONS[name] && !previous)
-    return { description: stored, source: 'custom' };
+    return { description: normalizeGoalProofInstructions(stored), source: 'custom' };
   return { description, source: 'builtin' };
 }
 

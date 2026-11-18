@@ -83,7 +83,6 @@ const engine: Record<string, StatusMeta> = {
 };
 
 const goal: Record<string, StatusMeta> = {
-  pending_confirmation: { label: "待确认", tone: "amber" },
   open: { label: "进行中", tone: "blue" },
   met: { label: "已达成", tone: "green" },
   abandoned: { label: "已放弃", tone: "slate" },

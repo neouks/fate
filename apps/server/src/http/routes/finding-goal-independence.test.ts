@@ -13,9 +13,9 @@ test('saved findings and reports remain readable independently of task goal succ
  assert.match(new URL(dsn!).pathname,/^\/test_[a-z0-9_]+$/);process.env.SERIES_PG_DSN=dsn;
  const db=await openDatabase(),app=Fastify();app.decorate('db',db);registerCompatRoutes(app);
  t.after(async()=>{await app.close();await db.close();});
- const exp=await db.createExploration('local synthetic fixture','人工核验合成输出');
- const task=Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,status) VALUES('fixture','人工核验合成输出',$1,'running') RETURNING id",[exp])).rows[0]!.id);
- const graph=db.exploration(exp);await graph.addGoal({text:'人工核验合成输出'},'user');
+ const exp=await db.createExploration('local synthetic fixture','验证合成输出');
+ const task=Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,status) VALUES('fixture','验证合成输出',$1,'running') RETURNING id",[exp])).rows[0]!.id);
+ const graph=db.exploration(exp);await graph.addGoal({text:'验证合成输出'},'user');
  const intent=await graph.addNode('intent',{summary:'本地合成观察'},0,'running','fixture',[]);
  await db.query("UPDATE exploration_nodes SET owner='fixture-worker' WHERE id=$1",[intent]);
  let notifications=0;
