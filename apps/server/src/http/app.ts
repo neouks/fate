@@ -1,3 +1,4 @@
+import {registerSessionAudit} from './routes/session-audit.js';
 import {registerLogRoutes} from './routes/logs.js';
 import {usageOutboxMetrics} from '../pi/usage-outbox.js';
 import {registerFindingReproductionRoutes} from './routes/finding-reproduction.js';
@@ -22,28 +23,24 @@ import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 import type { Database } from "../db/index.js";
-import type { Engine } from "../engine/engine.js";
+import type {ConversationService} from "../engine/conversations.js";
 import { requireJWT } from "./auth.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerTaskTemplateRoutes } from "./routes/task-templates.js";
-import { registerExplorationRoutes } from "./routes/exploration.js";
-import { registerAssetRoutes } from "./routes/assets.js";
 import { registerConfigRoutes } from "./routes/config.js";
 import { registerRemovedRoutes } from "./routes/removed.js";
 import { registerCompatRoutes } from "./routes/compat.js";
-import { registerAssetManagementRoutes } from "./routes/asset-management.js";
 import { registerCategoryRoutes } from "./routes/categories.js";
 import { registerSkillMgmtRoutes } from "./routes/skills-mgmt.js";
 import { registerAgentConfigRoutes } from "./routes/agents-config.js";
 import { registerMcpMgmtRoutes } from "./routes/mcp-mgmt.js";
 import { registerCustomToolRoutes } from "./routes/custom-tools.js";
-import { registerFindingsExtraRoutes } from "./routes/findings-extra.js";
 
 declare module "fastify" {
   interface FastifyInstance {
     db: Database;
-    engine: Engine;
+    engine: {conversations: ConversationService; runtimeMetrics():unknown};
     skillsRoot: string;
     dataDir: string;
   }
@@ -53,7 +50,7 @@ export interface AppDeps {
   version: string;
   startedAt: number;
   db: Database;
-  engine: Engine;
+  engine: {conversations: ConversationService; runtimeMetrics():unknown};
   /** HMAC 签名密钥（data/jwt.key 内容，与 Go 版共用）。 */
   jwtKey: string;
   /** skill 根目录（config.skillDir()）。 */
@@ -110,7 +107,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   const loopDelay=monitorEventLoopDelay({resolution:20});loopDelay.enable();
   app.addHook('onClose',async()=>loopDelay.disable());
-  app.get('/api/runtime/metrics',async()=>({database:deps.db.runtimeMetrics(),scheduler:deps.engine.runtimeMetrics(),
+  app.get('/api/runtime/metrics',async()=>({database:deps.db.runtimeMetrics(),sessions:deps.engine.runtimeMetrics(),
     streams:activityStreamMetrics(),live_producers:liveStreamMetrics(),usage_outbox:usageOutboxMetrics(deps.db),memory:process.memoryUsage(),event_loop_ms:{p50:loopDelay.percentile(50)/1e6,p95:loopDelay.percentile(95)/1e6,p99:loopDelay.percentile(99)/1e6,max:loopDelay.max/1e6}}));
 
   // 前端静态托管（替代 Go 版 go:embed）：SERIES_STATIC_DIR 或仓库内 web/out。
@@ -150,9 +147,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   registerAuthRoutes(app, { jwtKey: deps.jwtKey });
   registerTaskRoutes(app);
+  registerSessionAudit(app);
   registerTaskTemplateRoutes(app);
-  registerExplorationRoutes(app);
-  registerAssetRoutes(app);
   app.addHook('preHandler',async req=>{const key=(req.params as {key?:string})?.key;if(req.url.startsWith('/api/agents/')&&key)assertActiveRole(key);});
   registerConfigRoutes(app);
   registerLogRoutes(app);
@@ -165,13 +161,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerLLMManagementRoutes(app);
   registerRemovedRoutes(app);
   registerCompatRoutes(app);
-  registerAssetManagementRoutes(app);
   registerCategoryRoutes(app);
   registerSkillMgmtRoutes(app);
   registerAgentConfigRoutes(app);
   registerMcpMgmtRoutes(app);
   registerCustomToolRoutes(app);
-  registerFindingsExtraRoutes(app);
 
   return app;
 }

@@ -2,18 +2,7 @@ import {assembleReport} from '../../evidence/reproduction.js';
 import {readBlob} from '../../evidence/blobs.js';
 import {reportZip} from '../../evidence/report-zip.js';
 import {READABLE_FINDINGS} from "./finding-projection.js";
-// 批次 C6：发现页增强——真资产树 / 导出（md/csv）/ 漏洞深挖。
-// 对齐前端 web/src/lib/api.ts 的 findingAssetTree/exportFindings/deepenFinding 与
-// web/src/lib/types.ts 的 FindingAssetTree/FindingAssetNode/FindingDeepenResponse 形状。
-//
-// ⚠ 路径归属：GET /api/exploration/findings/asset-tree 与 GET /api/exploration/findings/export
-// 已由 routes/compat.ts 注册（空态/简版桩）。同路径重复注册会与 Fastify 冲突，故本文件
-// 的 registerFindingsExtraRoutes() 只注册 POST /:id/deepen；asset-tree/export 的真实现
-// 以处理器工厂（makeFindingsAssetTreeHandler / makeFindingsExportHandler）导出，由
-// app.ts 维护者替换 compat.ts 中的两个桩（详见批次简报）。
-
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { RelDerivedFrom } from "../../db/exploration.js";
 
 // ─── 筛选条件（与 compat.ts findings 列表同参数族）──────────────────────────
 
@@ -442,58 +431,4 @@ export function makeFindingsExportHandler(app: FastifyInstance) {
     reply.header("Content-Disposition", `attachment; filename="findings-export-${stamp}.md"`);
     return lines.join("\n");
   };
-}
-
-// ─── 深挖（registerFindingsExtraRoutes：POST /:id/deepen）────────────────────
-
-export function registerFindingsExtraRoutes(app: FastifyInstance): void {
-  const db = () => app.db;
-
-  async function findingByAnyId(idStr: string, recordOnly = false): Promise<Record<string, unknown> | null> {
-    const id = Number(idStr);
-    if (!Number.isInteger(id)) return null;
-    let res = await db().query(`SELECT * FROM findings WHERE ${recordOnly ? "id" : "node_id"}=$1 AND finding_readable(id)`, [id]);
-    if (!recordOnly && res.rows.length === 0) res = await db().query(`SELECT * FROM findings WHERE id=$1 AND finding_readable(id)`, [id]);
-    return res.rows[0] ?? null;
-  }
-
-  // POST /api/exploration/findings/:id/deepen — 以该漏洞为 parent 派一条深挖意图并唤醒引擎。
-  app.post("/api/exploration/findings/:id/deepen", async (req, reply) => {
-    const p = req.params as { id: string };
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const description = typeof b["description"] === "string" ? b["description"].trim() : "";
-    if (description === "") return reply.code(400).send({ error: "description 不能为空" });
-    const row = await findingByAnyId(p["id"]!, (req.query as {id_kind?:string}).id_kind === "record");
-    if (!row) return reply.code(404).send({ error: "漏洞不存在" });
-
-    const taskID = Number(row["task_id"] ?? 0);
-    const taskRes = await db().query<{ exploration_id: number; queued: boolean }>(
-      `SELECT exploration_id, queued FROM tasks WHERE id=$1 AND deleted_at IS NULL`,
-      [taskID],
-    );
-    const task = taskRes.rows[0];
-    if (!task) return reply.code(404).send({ error: "漏洞所属任务不存在或已删除" });
-
-    const nodeID = Number(row["node_id"] ?? 0);
-    const title = String(row["name"] ?? "") !== "" ? String(row["name"]) : String(row["vulnclass"] ?? "") || `#${String(row["id"])}`;
-    const anchors = (Array.isArray(row["asset_ids"]) ? (row["asset_ids"] as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n > 0) : []);
-    const payload: Record<string, unknown> = {
-      summary: `[漏洞深挖] ${title}（finding #${String(row["id"])}）：${description}`,
-    };
-    if (nodeID > 0) payload["parent_id"] = nodeID;
-
-    const s = db().exploration(Number(task.exploration_id));
-    const { id: intentID, created } = await s.addIntentDeduplicated(payload, 8, anchors, "user");
-    if (created && nodeID > 0) await s.link(nodeID, RelDerivedFrom, intentID);
-    // 派发：任务在引擎中 → 踢一轮；不在 → 只落库（下次启动由 frontier 领取）。
-    app.engine.notify(taskID);
-
-    const node = await s.getNode(intentID).catch(() => null);
-    return {
-      task_id: String(taskID),
-      intent_id: String(intentID),
-      state: node?.state ?? "open",
-      queued: task.queued === true,
-    };
-  });
 }

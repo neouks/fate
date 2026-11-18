@@ -86,13 +86,18 @@ $$;
 -- Final authority, including direct legacy setters. Never accept a bare met flag.
 CREATE OR REPLACE FUNCTION guard_task_success() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+ IF NEW.exploration_id IS NULL THEN
+  IF NEW.status='done' AND NOT EXISTS(SELECT 1 FROM pi_goal_turns WHERE task_id=NEW.id AND reply_entry=NEW.accepted_entry)
+  THEN RAISE EXCEPTION '需要验收已保存的 PI 会话回复' USING ERRCODE='23514'; END IF;
+  RETURN NEW;
+ END IF;
  IF NEW.status='done' AND NOT EXISTS(
   SELECT 1 FROM task_goal_progress(NEW.exploration_id) WHERE ready AND total>0 AND total=met)
  THEN RAISE EXCEPTION '全部有效目标尚未核验，不能将任务标记为已完成' USING ERRCODE='23514'; END IF;
  RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS task_success_guard ON tasks;
-CREATE TRIGGER task_success_guard BEFORE INSERT OR UPDATE OF status ON tasks FOR EACH ROW EXECUTE FUNCTION guard_task_success();
+CREATE TRIGGER task_success_guard BEFORE INSERT OR UPDATE OF status,accepted_entry ON tasks FOR EACH ROW EXECUTE FUNCTION guard_task_success();
 CREATE OR REPLACE FUNCTION invalidate_completed_task_goals() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE eid BIGINT;
 BEGIN
@@ -111,6 +116,7 @@ CREATE TRIGGER goal_change_invalidates_success AFTER INSERT OR UPDATE OF payload
  FOR EACH ROW EXECUTE FUNCTION invalidate_completed_task_goals();
 CREATE OR REPLACE FUNCTION task_display_status(p_task BIGINT) RETURNS TEXT LANGUAGE sql STABLE AS $$
  SELECT CASE
+ WHEN t.exploration_id IS NULL THEN t.status
  WHEN EXISTS(SELECT 1 FROM runtime_task_commands c WHERE c.task_id=t.id AND c.command='pause' AND c.status='pending') THEN 'pausing'
  WHEN t.paused THEN 'paused'
  WHEN t.status='done' AND NOT EXISTS(SELECT 1 FROM task_goal_progress(t.exploration_id) WHERE ready AND total>0 AND total=met) THEN 'needs_attention'

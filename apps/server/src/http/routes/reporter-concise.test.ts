@@ -74,7 +74,7 @@ test('native Reporter saves natural-language reports beyond 60 characters; edits
   ]);
   const activities:RunnerActivity[]=[];
   let saved=false;
-  const tools=conversationDomainTools(runContext(db,Number(taskID),Number(expID),'reporter'),{} as never,{onSaved:()=>{saved=true;}});
+  const tools=conversationDomainTools(runContext(db,Number(taskID),Number(expID),'reporter'),{onSaved:()=>{saved=true;}});
   const runner=await AgentRunner.create({
     cwd:directory,agentDir:directory,inMemory:true,modelRuntime,model:faux.getModel(),
     systemPrompt:await systemRolePrompt(db,'reporter'),toolAllowlist:tools.map(tool=>tool.name),customTools:tools,

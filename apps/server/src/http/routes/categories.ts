@@ -1,3 +1,4 @@
+import {controlGoal} from '../../pi/goal-session.js';
 // 批次 C1：任务分类 CRUD + 批量移动分类 + 批量生命周期控制。
 // 对齐前端 web/src/lib/api.ts 的 taskCategories/createTaskCategory/renameTaskCategory/
 // deleteTaskCategory/updateTasksCategory/controlTasksBatch 方法族。
@@ -135,38 +136,10 @@ export function registerCategoryRoutes(app: FastifyInstance): void {
 
   // ─── 批量生命周期控制（pause/resume/stop|finish）───────────────────────────
 
-  /** 引擎调用容错：任务不在引擎运行时（mustRt 抛错）→ no-op，DB 状态仍是唯一真源。 */
-  async function engineNoop(p: Promise<unknown>): Promise<void> {
-    await p.catch(() => undefined);
-  }
-
-  async function controlOne(id: number, action: string): Promise<{ ok: boolean; status?: string; queued?: boolean; command_id?: number; error?: string }> {
+  async function controlOne(id:number,action:string) {
     try {
-      if (action === "pause") {
-        await app.db.control().tasks().applyTaskPause(id); // 终态/已暂停 → 409 语义错误
-        const pause=await app.engine.pause(id);
-        return { ok: true, status: pause.status, command_id: pause.command_id };
-      }
-      if (action === "resume") {
-        const res = await app.db.query<{ status: string }>(
-          `UPDATE tasks SET paused=false,
-             status=CASE WHEN status IN ('done','failed','timeout') THEN status ELSE 'running' END
-           WHERE id=$1 AND deleted_at IS NULL RETURNING status`,
-          [id],
-        );
-        if (res.rows.length === 0) return { ok: false, error: "任务不存在" };
-        // 引擎未装载该任务时 resume 内部会先 run（重新装载），与 tasks.ts 的单任务语义一致。
-        await engineNoop(app.engine.resume(id));
-        const after=await app.db.tasks().getTask(id);
-        return { ok: true, status: after?.paused?"paused":after?.queued?"queued":after?.status,queued:after?.queued===true };
-      }
-      // stop / finish：停引擎 + 手动收官（全部目标已证明 → done，否则 failed）。
-      const task = await app.db.tasks().getTask(id);
-      if (!task) return { ok: false, error: "任务不存在" };
-      await engineNoop(app.engine.stop(id));
-      const status = await app.db.tasks().finishManually(id);
-      if (!status) return { ok: false, error: "任务不存在" };
-      return { ok: true, status };
+      if (action!=='pause' && action!=='resume') throw new Error('请进入会话选择回复验收');
+      return {ok:true,status:await controlGoal(app.db,id,action)};
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

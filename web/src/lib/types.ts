@@ -3,6 +3,7 @@ export type TaskStatus = "created" | "queued" | "running" | "pausing" | "paused"
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
 export interface Task {
+  runtime?: 'pi' | 'legacy';
   execution_mode?: "managed" | "manual";
   id: string;
   name?: string; // 可选任务名称;空/缺省=未命名,展示时回退到描述

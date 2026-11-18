@@ -1,4 +1,3 @@
-import {readCoverageGraphPage} from '../../db/coverage-graph.js';
 import {activityControlFields} from '../../engine/activity-presentation.js';
 import {readActivityPage,readActivityContent,readSnapshotContent} from '../../db/activity-content.js';
 import {aggregateUsage,unverifiedUsageHistory} from '../../db/usage-ledger.js';
@@ -6,42 +5,9 @@ import {READABLE_FINDINGS} from "./finding-projection.js";
 import {modelTokenUsage} from '../model-token-usage.js';
 import {executionSnapshot} from '../../engine/coordinator.js';
 import { resolveModelProfiles } from "../../pi/modelResolver.js";
-import {authorizedNodes,resolveGraphNode,TASK_GRAPH_CTE} from '../../db/graph_view.js';
-import {readGraphPage,readGraphNodePage,readBroadcastPage,readLegacyNodePage} from '../../db/graph-browse.js';
-// 前端（Go 版契约）兼容层：task 寻址的探索端点 + findings 族 + goals/constraints/
-// coverage-graph + 意图控制别名 + stats/audit。响应形状对齐 web/src/lib/types.ts。
-// 高级端点（findings 分组/资产树/导出、traffic 绑定、retests）返回可渲染的空态。
 
 import type { FastifyInstance } from "fastify";
-import { RelDerivedFrom, RelYields } from "../../db/exploration.js";
 import { makeFindingsAssetTreeHandler, makeFindingsExportHandler, taskFindingsWhere } from "./findings-extra.js";
-
-interface CtxNode {
-  id: string;
-  type: string;
-  payload: string;
-  priority: number;
-  state: string;
-  origin: string;
-  ts: string;
-  source_task_id?: string;
-  inherited?: boolean;
-}
-
-function mapNode(row: Record<string, unknown>): CtxNode {
-  const payload = row["payload"];
-  return {
-    id: String(row["id"]),
-    type: String(row["kind"]),
-    payload: typeof payload === "string" ? payload : JSON.stringify(payload ?? {}),
-    priority: Number(row["priority"] ?? 0),
-    state: String(row["state"] ?? ""),
-    origin: String(row["origin"] ?? ""),
-    ts: row["created_at"] instanceof Date ? (row["created_at"] as Date).toISOString() : String(row["created_at"] ?? ""),
-    ...(row["source_task_id"] ? { source_task_id: String(row["source_task_id"]) } : {}),
-    ...(row["inherited"] ? { inherited: true } : {}),
-  };
-}
 
 function mapActivity(row: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {
@@ -108,7 +74,6 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     return res.rows[0];
   }
 
-  const NODE_COLS = `id, kind, payload, priority, CASE WHEN kind='goal' THEN goal_display_state(id) ELSE state END AS state, COALESCE(origin,'') AS origin, created_at`;
 
   function q2n(v: unknown, dflt: number): number {
     const n = Number(v);
@@ -116,56 +81,6 @@ export function registerCompatRoutes(app: FastifyInstance): void {
   }
 
   // ─── 探索图（graph / nodes / node detail）─────────────────────────────────
-
-  app.get("/api/exploration/graph", async (req) => {
-    const q = req.query as Record<string, string>;
-    const taskID=q2n(q["task"],0);
-    if(q.view==='page')return readGraphPage(db(),taskID,q);
-    const result=await readGraphPage(db(),taskID,q);
-    return {...result,...(!result.unchanged?{has_more:result.has_more||result.edges_has_more}:{}),continuation:'/api/exploration/graph?task='+taskID+'&view=page'};
-  });
-
-  app.get("/api/exploration/nodes", async (req) => {
-    const q = req.query as Record<string, string>;
-    return readBroadcastPage(db(),q2n(q.task,0),q);
-  });
-
-  app.get("/api/exploration/nodes/:id", async (req) => {
-    const q = req.query as Record<string, string>;
-    const p = req.params as Record<string, string>;
-    const taskID=q2n(q["task"],0);
-    if(q.view==='page')return readGraphNodePage(db(),taskID,Number(p.id),q);
-    return readLegacyNodePage(db(),taskID,Number(p.id),q);
-  });
-
-  app.get("/api/exploration/frontier", async (req) => {
-    const q = req.query as Record<string, string>;
-    const expID = await expOf(q2n(q["task"], 0));
-    const items = await authorizedNodes(db(),q2n(q.task,0),expID,await db().exploration(expID).frontier(100));
-    return items.map((n) =>
-      mapNode({ id: n.id, kind: n.kind, payload: n.payload, priority: n.priority, state: n.state, origin: n.origin ?? "", created_at: n.created_at }),
-    );
-  });
-
-  app.get("/api/exploration/intents", async (req) => {
-    const q = req.query as Record<string, string>;
-    const expID = await expOf(q2n(q["task"], 0));
-    const before = q2n(q["before"], 0);
-    const limit = Math.max(1, Math.min(q2n(q["limit"], 300), 500));
-    const params: unknown[] = [expID, limit + 1];
-    let where = `exploration_id=$1 AND kind='intent' AND exploration_node_readable($1,id)`;
-    if (before > 0) {
-      params.push(before);
-      where += ` AND id < $${params.length}`;
-    }
-    const rows = await db().query(`SELECT ${NODE_COLS},EXISTS(SELECT 1 FROM engine_worker_slots s JOIN engine_task_leases l ON l.task_id=s.task_id AND l.token=s.token WHERE s.intent_id=exploration_nodes.id AND s.phase='running' AND l.expires_at>now()) executor_active,EXISTS(SELECT 1 FROM runtime_worker_resumes r WHERE r.intent_id=exploration_nodes.id AND r.status='pending') resume_pending FROM exploration_nodes WHERE ${where} ORDER BY id DESC LIMIT $2`, params);
-    const completed = await db().query<{ n: string }>(`SELECT count(*) AS n FROM exploration_nodes
-      WHERE exploration_id=$1 AND kind='intent' AND state='done' AND exploration_node_readable($1,id)`, [expID]);
-    return { items: rows.rows.slice(0,limit).map(row=>({...mapNode(row),executor_active:row.executor_active===true,resume_pending:row.resume_pending===true})),
-      has_more: rows.rows.length > limit, completed_count:Number(completed.rows[0]?.n ?? 0) };
-  });
-
-  // ─── 活动流（列表/详情/历史/搜索）─────────────────────────────────────────
 
   app.get('/api/exploration/streams/:stream',async req=>{
     const q=req.query as Record<string,string>,expID=await expOf(Number(q.task));
@@ -296,21 +211,6 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     ];
     return { sessions, current: sessions[sessions.length - 1]!.seq };
   });
-
-  app.post("/api/exploration/main-session/new", async (req) => {
-    const q = req.query as Record<string, string>;
-    const expID = await expOf(q2n(q["task"], 0));
-    const res = await db().query<{ seq: number; created_at: Date }>(
-      `INSERT INTO main_sessions(exploration_id, seq)
-       VALUES ($1, (SELECT COALESCE(max(seq),0)+1 FROM main_sessions WHERE exploration_id=$1))
-       RETURNING seq, created_at`,
-      [expID],
-    );
-    const r = res.rows[0]!;
-    return { seq: Number(r["seq"]), created_at: r["created_at"], current: Number(r["seq"]) };
-  });
-
-  // ─── Findings 族 ──────────────────────────────────────────────────────────
 
   app.get("/api/exploration/findings", async (req) => {
     const q = req.query as Record<string, string>;
@@ -535,187 +435,9 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     return { deleted: true, id: Number(row["id"]) };
   });
 
-  app.get("/api/exploration/findings/:id/lineage", async (req) => {
-    const p = req.params as Record<string, string>;
-    const row = await findingByAnyIDGuard(p["id"]!,(req.query as Record<string,string>).id_kind==='record');
-    const nodeID = Number(row["node_id"] ?? 0);
-    if (!nodeID) return { nodes: [], edges: [] };
-    const expID = await expOf(Number(row["task_id"] ?? 0));
-    // 沿 derived_from/yields 向上走两层血缘。
-    const nodesRes = await db().query(
-      `WITH RECURSIVE up(id) AS (
-         SELECT $2 WHERE EXISTS (SELECT 1 FROM exploration_nodes WHERE id=$2 AND exploration_id=$1)
-         UNION
-         SELECT e.src_id FROM exploration_edges e JOIN up ON e.dst_id=up.id
-         WHERE e.exploration_id=$1 AND e.rel IN ('${RelDerivedFrom}','${RelYields}')
-       ) SELECT n.id, n.kind, n.payload, n.priority, n.state, COALESCE(n.origin,''), n.created_at
-       FROM exploration_nodes n JOIN up ON n.id=up.id WHERE n.exploration_id=$1`,
-      [expID, nodeID],
-    );
-    const ids = nodesRes.rows.map((r) => Number(r["id"]));
-    const edgesRes =
-      ids.length > 0
-        ? await db().query(
-            `SELECT src_id::text AS src, dst_id::text AS dst, rel FROM exploration_edges
-             WHERE exploration_id=$1 AND rel IN ('${RelDerivedFrom}','${RelYields}') AND dst_id=ANY($2::bigint[])`,
-            [expID, ids],
-          )
-        : { rows: [] };
-    return { nodes: nodesRes.rows.map(mapNode), edges: edgesRes.rows };
-  });
-
-  // ─── 任务侧：goals / constraints / coverage-graph / 意图控制别名 ────────────
-
-  app.get("/api/tasks/:id/goals", async (req) => {
-    const p = req.params as Record<string, string>;
-    const expID = await expOf(Number(p["id"]));
-    const rows = await db().query(
-      `SELECT id, payload, goal_display_state(id) state, COALESCE(origin,'') origin, created_at FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id`,
-      [expID],
-    );
-    return {
-      goals: rows.rows.map((r) => {
-        const payload = r["payload"] as Record<string, unknown>;
-        return {
-          id: String(r["id"]),
-          text: String(payload["text"] ?? ""),
-          vulnclass: payload["vulnclass"] ? String(payload["vulnclass"]) : "",
-          state: String(r["state"]),
-          origin: String(r["origin"] ?? ""),
-          ts: r["created_at"] instanceof Date ? (r["created_at"] as Date).toISOString() : String(r["created_at"]),
-        };
-      }),
-    };
-  });
-
-  app.post("/api/tasks/:id/goals", async (req) => {
-    const p = req.params as Record<string, string>;
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const expID = await expOf(Number(p["id"]));
-    const id = await db().exploration(expID).addGoal(
-      { text: String(b["text"] ?? ""), ...(b["vulnclass"] ? { vulnclass: String(b["vulnclass"]) } : {}) },
-      "user",
-    );
-    return { id: String(id), text: String(b["text"] ?? ""), state: "open", ts: new Date().toISOString() };
-  });
-
-  app.patch("/api/tasks/:id/goals/:gid", async (req) => {
-    const p = req.params as Record<string, string>;
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const expID = await expOf(Number(p["id"]));
-    await db().exploration(expID).updateGoalPayload(Number(p["gid"]), String(b["text"] ?? ""), String(b["vulnclass"] ?? ""));
-    return { id: p["gid"], text: String(b["text"] ?? ""), vulnclass: String(b["vulnclass"] ?? "") };
-  });
-
-  app.delete("/api/tasks/:id/goals/:gid", async (req) => {
-    const p = req.params as Record<string, string>;
-    const expID = await expOf(Number(p["id"]));
-    await db().exploration(expID).deleteGoal(Number(p["gid"]));
-    return { ok: true };
-  });
-
-  app.get("/api/tasks/:id/constraints", async (req) => {
-    const p = req.params as Record<string, string>;
-    const expID = await expOf(Number(p["id"]));
-    const rows = await db().query(`SELECT id, kind, text, COALESCE(origin,'') AS origin, source, created_at FROM task_constraints WHERE exploration_id=$1 ORDER BY id`, [expID]);
-    return {
-      constraints: rows.rows.map((r) => ({
-        id: String(r["id"]),
-        kind: r["kind"],
-        text: r["text"],
-        origin: r["origin"],
-        source: r["source"],
-        ts: r["created_at"] instanceof Date ? (r["created_at"] as Date).toISOString() : String(r["created_at"]),
-      })),
-    };
-  });
-
-  app.post("/api/tasks/:id/constraints", async (req) => {
-    const p = req.params as Record<string, string>;
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const expID = await expOf(Number(p["id"]));
-    const res = await db().query(
-      `INSERT INTO task_constraints(exploration_id, kind, text, origin) VALUES ($1,$2,$3,'user') RETURNING id, created_at`,
-      [expID, String(b["kind"] ?? "deny"), String(b["text"] ?? "")],
-    );
-    const r = res.rows[0]!;
-    return { id: String(r["id"]), kind: b["kind"], text: b["text"], origin: "user", ts: String(r["created_at"]) };
-  });
-
-  app.patch("/api/tasks/:id/constraints/:cid", async (req) => {
-    const p = req.params as Record<string, string>;
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const changed=await db().query(`UPDATE task_constraints SET kind=$1, text=$2,origin='user',source='{}'::jsonb,updated_at=now() WHERE id=$3 AND exploration_id=$4`, [String(b["kind"] ?? "deny"), String(b["text"] ?? ""), Number(p["cid"]),await expOf(Number(p["id"]))]);
-    if(!changed.rowCount)throw Object.assign(new Error("constraint not found"),{statusCode:404});
-    return { id: p["cid"], ...b };
-  });
-
-  app.delete("/api/tasks/:id/constraints/:cid", async (req) => {
-    const p = req.params as Record<string, string>;
-    const changed=await db().query(`DELETE FROM task_constraints WHERE id=$1 AND exploration_id=$2`, [Number(p["cid"]),await expOf(Number(p["id"]))]);
-    if(!changed.rowCount)throw Object.assign(new Error("constraint not found"),{statusCode:404});
-    return { ok: true };
-  });
-
-  app.get("/api/tasks/:id/coverage-graph", async (req) => {
-    const p = req.params as Record<string, string>;
-    const taskID = Number(p["id"]);
-    await expOf(taskID);
-    return readCoverageGraphPage(db(),taskID,req.query as Record<string,unknown>);
-  });
-
-  app.post("/api/tasks/:id/intents/:iid/control", async (req, reply) => {
-    const p = req.params as Record<string, string>;
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const action = String(b["action"] ?? "");
-    const taskID = Number(p["id"]);
-    const intentID = Number(p["iid"]);
-    if (!['pause','resume','cancel'].includes(action)) return reply.code(400).send({error:'未知 action'});
-    return app.engine.controlIntent(taskID,intentID,action as 'pause'|'resume'|'cancel',String(b['reason'] ?? ''));
-  });
-
-  app.post("/api/tasks/:id/intents/:iid/rerun", async (req) => {
-    const p = req.params as Record<string, string>;
-    const expID = await expOf(Number(p["id"]));
-    const current=await db().exploration(expID).getNode(Number(p["iid"]));
-    if(!current)throw Object.assign(new Error("intent not found"),{statusCode:404});
-    await app.engine.controlIntent(Number(p["id"]),Number(p["iid"]),"resume");
-    const reopened=true;
-    return { id: Number(p["id"]), reopened: reopened ? 1 : 0 };
-  });
-
-  app.post("/api/tasks/:id/intents/rerun-blocked", async (req) => {
-    const p = req.params as Record<string, string>;
-    const expID = await expOf(Number(p["id"]));
-    const n = await db().exploration(expID).reopenBlockedIntents();
-    if(n>0)await app.engine.admitTask(Number(p["id"]));
-    return { id: Number(p["id"]), reopened: n };
-  });
-
-  app.post("/api/tasks/:id/intents/dispatch", async (req) => {
-    const p = req.params as Record<string, string>;
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const ids = Array.isArray(b["intent_ids"]) ? (b["intent_ids"] as unknown[]).map(Number) : [];
-    const results = [];
-    for (const id of ids) {
-      try { results.push(await app.engine.dispatchIntent(Number(p['id']),id)); }
-      catch(error) { results.push({id,status:'error',error:String(error)}); }
-    }
-    return { results };
-  });
-
-  app.patch("/api/tasks/:id/execution-mode", async (req) => {
-    const p = req.params as Record<string, string>;
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const mode = String(b["execution_mode"] ?? "managed");
-    const expID = await expOf(Number(p["id"]));
-    const res = await db().tasks().setExecutionMode(expID, mode === "manual" ? "manual" : "managed");
-    return { id: p["id"], execution_mode: mode, changed: res };
-  });
-
   app.get("/api/tasks/:id/llm", async (req) => {
     const id=Number((req.params as {id:string}).id);
-    const result=await resolveModelProfiles(db(),id,'worker');
+    const result=await resolveModelProfiles(db(),id,'mainagent');
     const task=await db().tasks().getTask(id);
     const rows=await db().query(`SELECT p.id,p.name,p.model,p.format,c.position,c.status,c.last_error,c.exhausted_at FROM task_llm_profiles c JOIN llm_profiles p ON p.id=c.profile_id WHERE c.task_id=$1 ORDER BY c.position`,[id]);
     return {profiles:rows.rows.map(r=>({...r,id:Number(r.id)})),default_profile_id:task?.llm_profile_id??null,
@@ -737,11 +459,6 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const b = (req.body ?? {}) as Record<string, unknown>;
     await db().query(`UPDATE tasks SET category_id=$1 WHERE id=$2`, [b["category_id"] ?? null, Number(p["id"])]);
     return { ok: true };
-  });
-
-  app.delete("/api/tasks/:id/intents/:iid", async (req) => {
-    const p = req.params as Record<string, string>;
-    return app.engine.controlIntent(Number(p['id']),Number(p['iid']),'delete');
   });
 
   // findings 补真（findings-extra 的工厂注册，替代原空壳）

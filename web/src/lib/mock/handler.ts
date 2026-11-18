@@ -51,6 +51,8 @@ import { createMockTraffic } from "./traffic";
 const mockTraffic = createMockTraffic(D.traffic.exchanges ?? []);
 
 const delay = (ms = 120) => new Promise((r) => setTimeout(r, ms));
+type GoalDemoMessage = {id:string;role:string;text:string;confirmed?:boolean};
+const goalSessions = new Map<string,GoalDemoMessage[]>();
 const mockTasks = structuredClone(D.tasks);
 const mockFindings = structuredClone(D.findings);
 const mockLegacyFindings: Finding[] = [
@@ -218,6 +220,7 @@ function mockTaskArchiveBlocker(taskID: string): string | undefined {
 
 function publicMockTask(task: Task): Task {
   const item = structuredClone(task);
+  item.runtime ??= "legacy";
   item.findings = { critical: 0, high: 0, medium: 0, low: 0 };
   for (const finding of mockFindings) {
     if (finding.task_id !== task.id) continue;
@@ -1325,23 +1328,13 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const id = `t-new-${suffix}`;
     const now = new Date();
     const profileIDs = [...((b.llm_profile_ids as number[] | undefined) ?? [])];
-    const sourceTaskIDs = [...((b.source_task_ids as string[] | undefined) ?? [])];
-    const companyIDs = [...new Set((b.company_ids as number[] | undefined) ?? [])];
-    const assetIDs = [...new Set((b.asset_ids as number[] | undefined) ?? [])];
-    if (assetIDs.length > 100 || assetIDs.some((assetID) => !Number.isInteger(assetID) || assetID <= 0)) {
-      throw new Error("关联资产不存在或无效");
-    }
-    if (assetIDs.some((assetID) => !mockAssets.some((asset) => asset.id === assetID))) {
-      throw new Error("关联资产不存在或无效");
-    }
-    if (companyIDs.some((companyID) => !mockCompanies.some((company) => company.id === companyID))) {
-      throw new Error("关联企业不存在或无效");
-    }
+    if (!String(b.goal??"").trim()) throw new Error("请填写任务目标");
+    if ([b.asset_ids,b.company_ids,b.source_task_ids].some(v=>Array.isArray(v)&&v.length)) throw new Error("目标会话不接受图参数");
     const categoryID = typeof b.category_id === "number" ? b.category_id : undefined;
     const category = categoryID === undefined ? undefined : mockTaskCategories.find((item) => item.id === categoryID);
     if (categoryID !== undefined && !category) throw new Error("任务分类不存在");
     const created: Task = {
-      id,
+      id,runtime:"pi",
       name: String(b.name ?? ""),
       category_id: category?.id,
       category_name: category?.name,
@@ -1355,7 +1348,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       in_flight: 0,
       findings: { critical: 0, high: 0, medium: 0, low: 0 },
       stalled: false,
-      goals_total: 0,
+      goals_total: 1,
       goals_met: 0,
       engine_mode: "idle",
       tokens: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
@@ -1363,106 +1356,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       llm_profile_ids: profileIDs,
       active_llm_profile_id: profileIDs[0],
       llm_failover_state: profileIDs.length ? "ready" : "default",
-      source_task_ids: sourceTaskIDs,
-      company_ids: companyIDs,
+
     };
-    const numericTaskID = nextMockTaskAssetID++;
-    mockTaskAssetIDs.set(id, numericTaskID);
-    const selectedCompanies = new Set(companyIDs);
-    for (const company of mockCompanies.filter((item) => selectedCompanies.has(item.id))) {
-      for (const scope of company.scope ?? []) {
-        let identity: Partial<Asset> | undefined;
-        if (scope.kind === "domain" && scope.domain) identity = { type: "root_domain", domain: scope.domain };
-        if (scope.kind === "ip" && scope.net) identity = { type: "ip", ip: scope.net.split("/")[0] };
-        if (scope.kind === "keyword" && scope.value) {
-          try {
-            const url = new URL(scope.value);
-            if (["http:", "https:"].includes(url.protocol)) {
-              identity = { type: "service", service_type: "http", url: scope.value, domain: url.hostname };
-            }
-          } catch {
-            // Free-form scope evidence stays intact without guessed targets.
-          }
-        }
-        if (!identity) continue;
-        let asset = mockAssets.find(
-          (item) =>
-            item.type === identity.type &&
-            item.domain === identity.domain &&
-            item.ip === identity.ip &&
-            item.url === identity.url,
-        );
-        if (!asset) {
-          asset = {
-            id: mockAssets.reduce((max, item) => Math.max(max, item.id), 0) + 1,
-            type: identity.type as Asset["type"],
-            ...identity,
-            company_id: company.id,
-            task_ids: [],
-            last_seen: new Date().toISOString(),
-          };
-          mockAssets.push(asset);
-        }
-        if (!asset.task_ids.includes(numericTaskID)) asset.task_ids.push(numericTaskID);
-        setMockTaskAssetSource(id, asset.id, {
-          task_source: "company",
-          task_source_summary: `任务创建时关联企业：${company.name}`,
-        });
-      }
-    }
-    for (const asset of mockAssets) {
-      if (asset.company_id === undefined || !selectedCompanies.has(asset.company_id)) continue;
-      if (!asset.task_ids.includes(numericTaskID)) asset.task_ids.push(numericTaskID);
-      const company = mockCompanies.find((candidate) => candidate.id === asset.company_id);
-      setMockTaskAssetSource(id, asset.id, {
-        task_source: "company",
-        task_source_summary: `任务创建时关联企业：${company?.name ?? `#${asset.company_id}`}`,
-        task_source_node_id: undefined,
-        tested: false,
-      });
-    }
-    for (const assetID of assetIDs) {
-      const asset = mockAssets.find((candidate) => candidate.id === assetID);
-      if (!asset) continue;
-      if (!asset.task_ids.includes(numericTaskID)) asset.task_ids.push(numericTaskID);
-      setMockTaskAssetSource(id, asset.id, {
-        task_source: "direct",
-        task_source_summary: "任务创建时直接选择",
-        task_source_node_id: undefined,
-        tested: false,
-      });
-      const host =
-        asset.domain ||
-        asset.ip ||
-        (asset.url
-          ? (() => {
-              try {
-                return new URL(asset.url).hostname;
-              } catch {
-                return "";
-              }
-            })()
-          : "");
-      if (host) {
-        const scopes = mockTaskScopes.get(id) ?? [];
-        let kind: TaskScopeRow["kind"] = "subdomain";
-        if (asset.ip) kind = "ip";
-        else if (asset.type === "root_domain") kind = "root_domain";
-        const key = `${kind}|${host}`;
-        if (!scopes.some((scope) => `${scope.kind}|${scope.domain ?? scope.net ?? ""}` === key)) {
-          scopes.push({
-            id: Date.now() + scopes.length,
-            task_id: numericTaskID,
-            kind,
-            domain: kind === "ip" ? undefined : host,
-            net: kind === "ip" ? `${host}/32` : undefined,
-            source: "manual",
-            reason: "任务创建时直接选择资产",
-          });
-          mockTaskScopes.set(id, scopes);
-        }
-      }
-    }
+    goalSessions.set(id,[]);
     for (const item of mockTasks) item.active = false;
     mockTasks.unshift(created);
     mockActiveTask = id;
@@ -1587,6 +1483,30 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     if (index < 0) throw new Error("任务模板不存在");
     mockTaskTemplates.splice(index, 1);
     return { deleted: id };
+  }
+  if (seg[0]==="tasks" && seg.length>=3 && ["messages","chat","control"].includes(seg[2])) {
+    const task=mockTasks.find(t=>t.id===seg[1]);
+    if (!task) throw new Error("任务不存在");
+    const messages=goalSessions.get(task.id)??[];
+    if (m==="GET" && seg[2]==="messages") return {messages};
+    if (m==="POST" && seg.length===3) {
+      if (task.runtime!=="pi" || task.status==="done") throw new Error("任务只读");
+      if (seg[2]==="chat") {
+        if(task.paused)throw new Error("任务已暂停");
+        const key=String(b.request_id),text=String(b.message??"");
+        const prior=messages.find(v=>v.id===key);
+        if(prior && prior.text!==text)throw new Error("相同请求 ID 的内容不同");
+        const answer=prior?messages.find(v=>v.id===key+"-reply")!:{id:key+"-reply",role:"assistant",text:"演示回复 · "+task.goal,confirmed:true};
+        if(!prior)messages.push({id:key,role:"user",text},answer);
+        task.status="running";
+        return {entry:answer.id,reply:answer.text};
+      }
+      if(seg[2]==="control" && b.action==="finish"){
+        if(!messages.some(v=>v.id===b.entry && v.confirmed))throw new Error("请选择已保存的回复验收");
+        Object.assign(task,{status:"done",paused:false,goals_met:1,accepted_entry:b.entry});
+        return task;
+      }
+    }
   }
   if (seg[0] === "tasks" && seg.length === 2 && m === "GET") {
     const task = mockTasks.find((item) => item.id === seg[1]);

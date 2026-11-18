@@ -9,7 +9,7 @@ export const TOOL_ALIASES: Record<string,string> = {
   read_tool_output:'context_get',read_attachment:'context_get',traffic_body:'context_get',
   list_assets:'asset_search',list_untested_assets:'asset_search',
 };
-export const RETIRED_TOOLS = new Set(['get_finding_retest_context','record_finding_retest_result','checkpoint_intent','complete_intent']);
+export const RETIRED_TOOLS = new Set(['get_finding_retest_context','record_finding_retest_result','checkpoint_intent','complete_intent','pause_task','resume_task','add_task_hint','record_fact','insert_assets','add_intent','dispatch_intents','kill_work','steer_work']);
 export const DOMAIN_TOOL_NAMES = [
   'traffic_search','search_finding_traffic','bind_finding_traffic','web_search','context_search','context_get','graph_overview','asset_search','asset_get','insert_assets',
   'record_fact','report_finding','list_findings','http_request','add_intent','dispatch_intents',
@@ -26,7 +26,7 @@ const core:Record<string,string[]>={
   planner:[...common,'graph_overview','asset_search','add_intent','prove_goal','todo_write','kill_work','steer_work'],
   mainagent:[...common,'http_request','insert_assets','record_fact','report_finding','add_intent','dispatch_intents','steer_work'],
   goals:[...common,'set_goals','set_constraints','register_user_target'],
-  auto:[...common,'list_tasks','get_task','spawn_task','pause_task','resume_task'],
+  auto:[...common,'list_tasks','get_task','spawn_task'],
   pentest:[...common,'http_request','record_conversation_fact','report_conversation_finding'],
   reporter:[...common,'get_finding','update_finding_report','search_finding_traffic','bind_finding_traffic'],
 };

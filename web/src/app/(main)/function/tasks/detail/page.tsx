@@ -1,452 +1,134 @@
 "use client";
 
-import * as React from "react";
-import { TaskSettings } from "./task-settings";
-
-import dynamic from "next/dynamic";
+import {Suspense,useEffect,useState,useRef} from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import {useSearchParams} from "next/navigation";
+import {Button} from "@/components/ui/button";
+import {Field,FieldLabel} from "@/components/ui/field";
+import {Textarea} from "@/components/ui/textarea";
+import {Bubble,BubbleContent} from "@/components/ui/bubble";
+import {Message,MessageHeader,MessageContent} from "@/components/ui/message";
+import {MessageScrollerProvider,MessageScroller,MessageScrollerViewport,MessageScrollerContent,MessageScrollerButton} from "@/components/ui/message-scroller";
+import {SidebarTrigger} from "@/components/ui/sidebar";
+import {StatusBadge} from "@/components/status-badge";
+import {SessionFactAudit} from "@/components/session-fact-audit";
+import {MOCK} from "@/lib/mock/enabled";
+import {http} from "@/lib/api";
+import type {Task} from "@/lib/types";
 
-import {
-  PanelLeftIcon,
-  FolderIcon,
-  Settings2Icon,
-  ArchiveIcon,
-  ArrowLeftIcon,
-  CheckIcon,
-  PauseIcon,
-  PlayIcon,
-} from "lucide-react";
-import { toast } from "sonner";
+type GoalResource = {kind:"mcp"|"skill"|"subagent"|"catalog";name:string;description:string;command?:string};
+const resourceType = {mcp:"MCP",skill:"Skill",subagent:"Sub-agent",catalog:"系统绑定目录"};
+type GoalTask = Task & {resources?:GoalResource[];runtime:"pi"|"legacy";accepted_entry?:string};
+type Entry = {action?:string;tool_call_id?:string;id:string;role:string;text:string;error?:boolean;confirmed?:boolean};
+type History = {messages:Entry[];next_before?:string};
 
-import { StatusBadge } from "@/components/status-badge";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
-import { SidebarTrigger } from "@/components/ui/sidebar";
-import { Spinner } from "@/components/ui/spinner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api } from "@/lib/api";
-import type { LLMProfile, Stats, Task } from "@/lib/types";
-
-import { taskNavigation, taskViewURL } from "@/lib/task-navigation";
-import { SessionsTab } from "./_tabs/sessions-tab";
-
-// Secondary tabs (graphs and tables) are not on the session
-// startup path. Load their code only when the corresponding tab mounts.
-const BroadcastTab = dynamic(() => import("./_tabs/broadcast-tab").then((m) => m.BroadcastTab), {
-  loading: TaskDetailLoading,
-});
-const AssetsTab = dynamic(() => import("./_tabs/assets-tab").then((m) => m.AssetsTab), { loading: TaskDetailLoading });
-const CoverageGraphTab = dynamic(() => import("./_tabs/coverage-graph-tab").then((m) => m.CoverageGraphTab), {
-  loading: TaskDetailLoading,
-});
-const FindingsTab = dynamic(() => import("./_tabs/findings-tab").then((m) => m.FindingsTab), {
-  loading: TaskDetailLoading,
-});
-const GraphTab = dynamic(() => import("./_tabs/graph-tab").then((m) => m.GraphTab), { loading: TaskDetailLoading });
-const OverviewTab = dynamic(() => import("./_tabs/overview-tab").then((m) => m.OverviewTab), {
-  loading: TaskDetailLoading,
-});
-
-const FilesTab = dynamic(() => import("./_tabs/files-tab").then((m) => m.FilesTab), { loading: TaskDetailLoading });
-const TrafficTab = dynamic(() => import("./_tabs/traffic-tab").then((m) => m.TrafficTab), {
-  loading: TaskDetailLoading,
-});
-const TABS = [
-  { value: "sessions", label: "任务" },
-  { value: "findings", label: "发现" },
-  { value: "graph", label: "探索" },
-  { value: "files", label: "文件" },
-  { value: "traffic", label: "流量" },
-];
-
-function mergeTaskStats(task: Task, stats: Stats | null): Task {
-  const active = stats?.active_task;
-  if (!active || String(active.id) !== String(task.id)) return task;
-  return {
-    ...task,
-    in_flight: active.in_flight ?? task.in_flight,
-    goals_total: active.goals_total ?? task.goals_total,
-    goals_met: active.goals_met ?? task.goals_met,
-    engine_mode: stats?.engine_mode ?? active.engine_mode,
-    // Lifecycle comes exclusively from the task DTO, never a late stats response.
-  };
-}
-
-function TaskDetailLoading() {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
-      <Spinner className="size-6 text-muted-foreground" aria-label="正在加载任务" />
-      <p className="text-muted-foreground text-sm">正在加载任务…</p>
-    </div>
-  );
-}
-
-function TaskDetailInner() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const id = searchParams.get("id") ?? "";
-  const [task, setTask] = React.useState<Task | null>(null);
-  const [paused, setPaused] = React.useState(false);
-  const [loaded, setLoaded] = React.useState(false);
-  const { view: tab, explore, panel, section } = taskNavigation(searchParams);
-  const navigate = (patch: Record<string, string | null>) => {
-    const next = taskViewURL(window.location.search, patch);
-    // Radix can select on pointer down and focus before React commits the new URL.
-    if (window.location.pathname + window.location.search !== next) window.history.pushState(null, "", next);
-  };
-  const setTab = (value: string) => navigate({ tab: value, panel: null, ...(value !== "findings" ? { finding: null } : {}) });
-  const [visited, setVisited] = React.useState<string[]>(["sessions", tab]);
-  React.useEffect(() => setVisited((v) => (v.includes(tab) ? v : [...v, tab])), [tab]);
-  const [visitedSections, setVisitedSections] = React.useState<string[]>([section]);
-  React.useEffect(() => setVisitedSections((v) => v.includes(section) ? v : [...v, section]), [section]);
-  const [processOpen, setProcessOpen] = React.useState(false);
-  React.useEffect(() => {
-    setProcessOpen(window.matchMedia("(min-width:1280px)").matches);
-  }, [id]);
-  const [findingCount, setFindingCount] = React.useState<number | null>(null);
-  const [controlling, setControlling] = React.useState(false);
-  React.useEffect(() => {
-    let alive = true,busy=false;
-    const load = () => {if(busy||document.hidden)return;busy=true;return api
-        .taskFindingsPage(id, 1, 1, "desc")
-        .then((r) => {
-          if (alive) setFindingCount(r.total);
-        })
-        .catch(() => {
-          if (alive) setFindingCount(null);
-        }).finally(()=>{busy=false;});};
-    void load();
-    document.addEventListener("visibilitychange",load);
-    const timer = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      document.removeEventListener("visibilitychange",load);
-      clearInterval(timer);
-    };
-  }, [id]);
-  const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
-  const [archiving, setArchiving] = React.useState(false);
-
-  React.useEffect(() => {
-    api
-      .llmProfiles()
-      .then(setProfiles)
-      .catch(() => setProfiles([]));
-  }, []);
-
-
-  const taskLoadInFlight = React.useRef<symbol | null>(null);
-  const statsLoadInFlight = React.useRef<symbol | null>(null);
-  const latestStats = React.useRef<Stats | null>(null);
-  const loadTask = React.useCallback(() => {
-    if (taskLoadInFlight.current) return;
-    const request = Symbol(id);
-    taskLoadInFlight.current = request;
-    api
-      .task(id)
-      .then((value) => {
-        if (taskLoadInFlight.current !== request) return;
-        const merged = mergeTaskStats(value, latestStats.current);
-        setTask(merged);
-        setPaused(merged.paused ?? false);
-        setLoaded(true);
-      })
-      .catch(() => {
-        // Keep the last rendered task state during a transient poll failure.
-      })
-      .finally(() => {
-        if (taskLoadInFlight.current === request) {
-          taskLoadInFlight.current = null;
-          setLoaded(true);
-        }
-      });
-  }, [id]);
-  const loadStats = React.useCallback(() => {
-    if (statsLoadInFlight.current) return;
-    const request = Symbol(id);
-    statsLoadInFlight.current = request;
-    api
-      .stats(id)
-      .then((value) => {
-        if (statsLoadInFlight.current !== request) return;
-        latestStats.current = value;
-        setTask((current) => (current ? mergeTaskStats(current, value) : current));
-
-      })
-      .catch(() => {
-        // Keep the last live state during a transient statistics failure.
-      })
-      .finally(() => {
-        if (statsLoadInFlight.current === request) statsLoadInFlight.current = null;
-      });
-  }, [id]);
-  const load = React.useCallback(() => {
-    if(document.hidden)return;
-    loadTask();
-    loadStats();
-  }, [loadStats, loadTask]);
-  React.useEffect(() => {
-    setTask(null);
-    setLoaded(false);
-    latestStats.current = null;
-    load();
-    document.addEventListener("visibilitychange",load);
-    const timer = setInterval(load, 5000);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange",load);
-      taskLoadInFlight.current = null;
-      statsLoadInFlight.current = null;
-    };
-  }, [load]);
-
-  async function togglePause() {
-    if (task && ["done", "failed", "timeout"].includes(task.status)) return;
-    if (controlling) return;
-    setControlling(true);
-    const next = task?.status !== 'paused' && task?.status !== 'needs_attention';
-    try {
-      await api.controlTask(id, next ? "pause" : "resume");
-      load();
-      toast.info(next ? "暂停请求已提交，等待执行器确认" : "恢复请求已提交");
-    } catch (e) {
-      toast.error(`操作失败：${(e as Error).message}`);
-    } finally {
-      setControlling(false);
+function GoalDetail({id}:{id:string}) {
+  const base="/tasks/"+encodeURIComponent(id);
+  const [task,setTask]=useState<GoalTask>();
+  const [history,setHistory]=useState<History>({messages:[]});
+  const [draft,setDraft]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [sending,setSending]=useState(false);
+  const [error,setError]=useState("");
+  const request=useRef<{message:string;request_id:string}|null>(null);
+  async function load(signal?:AbortSignal) {
+    const [t,h]=await Promise.all([http<GoalTask>(base,{signal}),http<History>(base+"/messages",{signal})]);
+    if(!signal?.aborted){setTask(t);setHistory(h);}
+  }
+  useEffect(()=>{
+    const controller=new AbortController();
+    load(controller.signal).catch(e=>{if(!controller.signal.aborted)setError(e.message);});
+    return ()=>controller.abort();
+  },[base]); // Each task has its own keyed component and draft.
+  useEffect(()=>{
+    if(!sending)return;
+    const controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>;
+    async function readMessages() {
+      try {
+        const current=await http<History>(base+"/messages",{signal:controller.signal});
+        if(!controller.signal.aborted)setHistory(current);
+      } catch { /* The final load reports any persistent read failure. */ }
+      if(!controller.signal.aborted)timer=setTimeout(readMessages,1500);
     }
+    timer=setTimeout(readMessages,1500);
+    return ()=>{controller.abort();clearTimeout(timer);};
+  },[base,sending]);
+  async function perform(fn:()=>Promise<void>) {
+    if(busy)return;
+    setBusy(true);setError("");
+    try {await fn();}catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
-
-  async function archiveTask() {
-    if (!task || archiving) return;
-    setArchiving(true);
+  const control=(action:string,entry?:string)=>perform(async()=>{
+    await http(base+"/control",{method:"POST",body:JSON.stringify({action,entry})});await load();
+  });
+  const send=()=>perform(async()=>{
+    const message=draft.trim()?draft:task!.goal;
+    if(request.current?.message!==message)request.current={message,request_id:crypto.randomUUID()};
+    setSending(true);
     try {
-      await api.archiveTask(task.id);
-      toast.success("任务已加入归档队列");
-      router.push("/function/tasks");
-    } catch (error) {
-      toast.error(`归档失败：${(error as Error).message}`);
-      setArchiving(false);
-    }
+      await http(base+"/chat",{method:"POST",body:JSON.stringify(request.current)});
+    } catch(e) {
+      const receipt=await http<{status:string;error?:string}>(base+"/requests/"+request.current.request_id).catch(()=>null);
+      if(receipt?.status==="failed")request.current=null;
+      if(receipt?.status!=="completed") {
+        await load();
+        throw new Error(receipt?.error || (e as Error).message);
+      }
+    } finally {setSending(false);}
+    request.current=null;setDraft("");await load();
+  });
+  const open=task?.runtime==="pi" && ["created","running","paused"].includes(task.status);
+  const returned=new Set(history.messages.filter(e=>e.action==="result").map(e=>e.tool_call_id));
+  function entryLabel(entry:Entry) {
+    const resource=task?.resources?.find(r=>r.name===entry.role);
+    if(resource)return resourceType[resource.kind]+" · "+resource.name;
+    if(entry.role==="user")return "你";
+    return entry.role==="assistant"?"PI":entry.role;
   }
-
-  if (!task) {
-    if (!loaded) return <TaskDetailLoading />;
-
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
-        <p className="text-muted-foreground">任务 {id} 已被删除、归档或不存在</p>
-        <Button asChild variant="outline">
-          <Link href="/function/tasks">
-            <ArrowLeftIcon /> 返回任务列表
-          </Link>
-        </Button>
-      </div>
-    );
-  }
-
-  const completed = task.status === "done";
-  const terminal = ["done", "failed", "timeout"].includes(task.status);
-  const archiveLifecycleEligible = terminal || paused || task.status === "paused";
-  const canArchive = archiveLifecycleEligible && !task.archive_blocked_by_task_id;
-  let archiveDisabledReason = task.queued ? "排队中的任务必须先暂停" : "运行中的任务必须先暂停";
-  if (archiveLifecycleEligible && task.archive_blocked_by_task_id) {
-    archiveDisabledReason = `任务被未归档任务 #${task.archive_blocked_by_task_id} 直接继承，请先归档依赖任务`;
-  }
-  const engineMode = paused ? "paused" : (task.engine_mode ?? "idle");
-  let controlVariant: "default" | "secondary" | "outline" = "outline";
-  let controlIcon = <PauseIcon data-icon="inline-start" />;
-  let controlLabel = "暂停";
-  if (terminal) {
-    controlVariant = "secondary";
-    controlIcon = <CheckIcon data-icon="inline-start" />;
-    controlLabel = completed ? "已完成" : "已结束";
-  } else if (task.status==='paused'||task.status==='needs_attention') {
-    controlVariant = "default";
-    controlIcon = <PlayIcon data-icon="inline-start" />;
-    controlLabel = "恢复";
-  }
-  if (task.pause_pending) {
-    controlLabel = "等待停止确认";
-    controlIcon = <Spinner />;
-  }
-  const archiveTrigger = (
-    <Button
-      size="icon-sm"
-      variant="ghost"
-      disabled={!canArchive || archiving}
-      aria-label={canArchive ? "归档任务" : archiveDisabledReason}
-    >
-      {archiving ? <Spinner /> : <ArchiveIcon />}
-    </Button>
-  );
-
-  return (
-    <div className="task-workspace flex min-w-0 flex-1 flex-col">
-      <header className="task-header shrink-0 border-b bg-card px-3 lg:px-5">
-        <div className="task-header-title flex min-w-0 items-center gap-2">
-          <SidebarTrigger />
-          <Link href="/function/tasks" aria-label="返回任务列表" className="shrink-0 text-muted-foreground">
-            <FolderIcon className="size-4" />
-          </Link>
-          <span className="text-muted-foreground">/</span>
-          <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={task.name || task.description}>
-            {task.name || task.description || `任务 #${id}`}
-          </h1>
-        </div>
-        <Tabs value={tab} onValueChange={setTab} className="task-header-tabs min-w-0 overflow-x-auto">
-          <TabsList aria-label="任务导航" className="min-w-max">
-            {TABS.map((t) => (
-              <TabsTrigger value={t.value} key={t.value}>
-                {t.label}
-                {t.value === "findings" && findingCount !== null && (
-                  <span className="ml-1 rounded-md bg-muted px-1.5 text-xs tabular-nums">{findingCount}</span>
-                )}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <div className="task-header-actions flex shrink-0 items-center justify-end gap-1">
-          <span className="inline-flex">
-            <StatusBadge domain="task" value={task.status} dot />
-          </span>
-          <Button
-            size="sm"
-            variant={controlVariant}
-            aria-label={controlling ? "等待确认" : controlLabel}
-            onClick={togglePause}
-            disabled={terminal || controlling || task.pause_pending}
-          >
-            {controlling ? <Spinner /> : controlIcon}
-            <span className="hidden sm:inline">{controlling ? "等待确认" : controlLabel}</span>
-          </Button>
-          <Button variant="ghost" size="icon-sm" aria-label="任务设置" onClick={() => navigate({ panel: "settings" })}>
-            <Settings2Icon />
-          </Button>
-          <Button
-            variant={processOpen && tab === "sessions" && section === "chat" ? "secondary" : "ghost"}
-            size="icon-sm"
-            aria-label="执行过程"
-            aria-expanded={processOpen && tab === "sessions" && section === "chat" && panel !== "settings"}
-            onClick={() => {
-              navigate({ tab: "sessions", section: "chat", panel: null });
-              setProcessOpen(!(processOpen && tab === "sessions" && section === "chat" && panel !== "settings"));
-            }}
-          >
-            <PanelLeftIcon />
-          </Button>
-        </div>
-      </header>
-      <div className="min-h-0 flex-1 overflow-hidden">
-        <section hidden={tab !== "sessions"} className="flex h-full min-h-0 flex-col">
-          <Tabs value={section} onValueChange={(value) => navigate({ tab: "sessions", section: value, panel: null })} className="shrink-0 border-b bg-card px-3 lg:px-5">
-            <TabsList variant="line" aria-label="任务内容">
-              <TabsTrigger value="chat">对话</TabsTrigger>
-              <TabsTrigger value="overview">任务详情</TabsTrigger>
-              <TabsTrigger value="broadcast">播报</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <div hidden={section !== "chat"} className="min-h-0 flex-1">
-          <SessionsTab
-            key={id}
-            taskId={id}
-            processOpen={processOpen && tab === "sessions" && section === "chat" && panel !== "settings"}
-            onProcessOpenChange={setProcessOpen}
-            onOpenSettings={()=>navigate({panel:"settings"})}
-            workerExecutionAllowed={!task.paused && !task.queued && !task.pause_pending && task.status === "running"}
-          />
-          </div>
-          {visitedSections.includes("overview") && <div hidden={section !== "overview"} className="task-scroll-panel min-h-0 flex-1"><OverviewTab taskId={id} /></div>}
-          {visitedSections.includes("broadcast") && <div hidden={section !== "broadcast"} className="task-scroll-panel min-h-0 flex-1"><BroadcastTab taskId={id} /></div>}
-        </section>
-        {visited.includes("findings") && (
-          <section hidden={tab !== "findings"} className="task-scroll-panel task-findings-panel">
-            <FindingsTab taskId={id} active={tab === "findings"} findingRef={searchParams.get("finding")} search={searchParams.toString()} />
-          </section>
-        )}
-        {visited.includes("graph") && (
-          <section hidden={tab !== "graph"} className="task-scroll-panel">
-            <Tabs value={explore} onValueChange={(value) => navigate({ tab: "graph", explore: value })}>
-              <TabsList variant="line">
-                <TabsTrigger value="graph">探索图</TabsTrigger>
-                <TabsTrigger value="coverage">资产覆盖图</TabsTrigger>
-                <TabsTrigger value="assets">测试资产</TabsTrigger>
-              </TabsList>
-              <TabsContent value="graph" forceMount hidden={explore !== "graph"}>
-                <GraphTab taskId={id} active={tab === 'graph' && explore === 'graph'} />
-              </TabsContent>
-              <TabsContent value="coverage" forceMount hidden={explore !== "coverage"}>
-                <CoverageGraphTab taskId={id} coverageEnabled={task.coverage_enabled !== false} />
-              </TabsContent>
-              <TabsContent value="assets" forceMount hidden={explore !== "assets"}>
-                <AssetsTab taskId={id} />
-              </TabsContent>
-            </Tabs>
-          </section>
-        )}
-        {visited.includes("files") && (
-          <section hidden={tab !== "files"} className="task-scroll-panel">
-            <FilesTab taskId={id} />
-          </section>
-        )}
-        {visited.includes("traffic") && (
-          <section hidden={tab !== "traffic"} className="task-network-panel h-full min-h-0">
-            <TrafficTab taskId={id} />
-          </section>
-        )}
-      </div>
-      {panel === "settings" && <TaskSettings task={task} profiles={profiles} onClose={()=>navigate({tab,panel:null})} onUpdated={load} archive={<>
-{canArchive ? (
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>{archiveTrigger}</AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>归档任务 #{task.id}？</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            任务图谱、关联记录、独占资产与流量、工作文件和 LLM
-                            历史将压缩到冷存储。归档完成后可在任务列表的“已归档”页还原。
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>取消</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => void archiveTask()}>确认归档</AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  ) : (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-flex">{archiveTrigger}</span>
-                      </TooltipTrigger>
-                      <TooltipContent>{archiveDisabledReason}</TooltipContent>
-                    </Tooltip>
-                  )}
-</>}/>}
-    </div>
-  );
+  return <main className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col gap-4 p-4 md:p-6">
+    <header className="flex flex-wrap items-center gap-3"><SidebarTrigger/><Link href="/function/tasks">返回任务</Link>
+      {task && <StatusBadge domain="task" value={task.status}/>}
+      <Button size="sm" variant="outline" disabled={busy} onClick={()=>perform(()=>load())}>刷新</Button>
+      {open && <Button size="sm" variant="outline" disabled={busy} onClick={()=>control(task.status==="paused"?"resume":"pause")}>{task.status==="paused"?"恢复":"暂停"}</Button>}
+    </header>
+    {error && <p role="alert">{error}</p>}
+    {task ? <>
+      <h1 className="text-xl font-semibold break-words">{task.name || task.goal}</h1>
+      {task.name && <p className="whitespace-pre-wrap">{task.goal}</p>}
+      {task.description && <details><summary>原始材料</summary><p className="max-h-48 overflow-auto whitespace-pre-wrap">{task.description}</p></details>}
+      {!!task.resources?.length && <details className="shrink-0 rounded-md border p-3">
+        <summary>任务资源 · {task.resources.length}</summary>
+        <ul className="mt-2 grid gap-2">{task.resources.map(r=><li key={r.kind+r.name}>
+          <strong>{resourceType[r.kind]}</strong> <code className="break-all">{r.name}</code>
+          <p className="text-sm text-muted-foreground">{r.description}</p>
+          {open && !task.paused && <Button type="button" size="sm" variant="outline" disabled={busy}
+            onClick={()=>setDraft(old=>r.command?r.command+" "+old.replace(/^\/skill:\S+\s*/,""):`请使用 ${r.name}。`+old)}>
+            {r.kind==="skill"?"使用此 Skill":"在消息中引用"}</Button>}
+        </li>)}</ul>
+      </details>}
+      {task.runtime==="legacy" && <div className="flex flex-wrap items-center gap-3">
+        <p>历史任务 · 只读记录</p>
+        {!MOCK && <SessionFactAudit taskId={id}/>}
+      </div>}
+      <MessageScrollerProvider><MessageScroller className="min-h-28 flex-1"><MessageScrollerViewport preserveScrollOnPrepend><MessageScrollerContent className="gap-4">
+        {history.next_before && <Button variant="outline" disabled={busy} onClick={()=>perform(async()=>{
+          const h=await http<History>(base+"/messages?before="+history.next_before);
+          setHistory({messages:[...h.messages,...history.messages],next_before:h.next_before});
+        })}>更早的记录</Button>}
+        {history.messages.map(m=><Message key={m.id} align={m.role==="user"?"end":"start"}><MessageContent>
+          <MessageHeader>{entryLabel(m)}{m.action==="call"?(returned.has(m.tool_call_id)?" · 调用":" · 调用，尚无返回"):m.action==="result"?" · 返回":m.action?.startsWith("skill:")?" · Skill "+m.action.slice(6):""}{m.error?" · 失败":""}{task.accepted_entry===m.id?" · 已验收":""}</MessageHeader>
+          <Bubble variant={m.error?"destructive":"secondary"}><BubbleContent className="whitespace-pre-wrap break-words">{m.text}</BubbleContent></Bubble>
+          {open && m.confirmed && <Button className="self-start" size="sm" variant="outline" disabled={busy} onClick={()=>control("finish",m.id)}>以此回复验收目标</Button>}
+        </MessageContent></Message>)}
+      </MessageScrollerContent></MessageScrollerViewport><MessageScrollerButton/></MessageScroller></MessageScrollerProvider>
+      {open && task.status!=="paused" && <form className="flex flex-col gap-2" onSubmit={e=>{e.preventDefault();void send();}}>
+        <Field><FieldLabel htmlFor="message">目标会话</FieldLabel><Textarea id="message" maxLength={64000} disabled={busy} value={draft} onChange={e=>setDraft(e.target.value)} /></Field>
+        <Button disabled={busy || (!draft.trim() && history.messages.length>0)}>{busy?"处理中…":draft.trim()?"发送":"按目标开始"}</Button>
+      </form>}
+    </>:!error && <p role="status">读取任务中…</p>}
+  </main>;
 }
 
-// useSearchParams must sit under a Suspense boundary for static export.
-export default function TaskDetailPage() {
-  return (
-    <React.Suspense fallback={<TaskDetailLoading />}>
-      <TaskDetailRoute />
-    </React.Suspense>
-  );
-}
-
-function TaskDetailRoute() {
-  const params = useSearchParams();
-  return <TaskDetailInner key={params.get("id") ?? ""} />;
-}
+function Route(){const id=useSearchParams().get("id");return id?<GoalDetail key={id} id={id}/>:<p>缺少任务 ID</p>;}
+export default function TaskDetailPage(){return <Suspense><Route/></Suspense>;}

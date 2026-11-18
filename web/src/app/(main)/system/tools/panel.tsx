@@ -241,6 +241,7 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
 
 export default function ToolsPage() {
   const [tools, setTools] = React.useState<Tool[]>([]);
+  const [goalTools,setGoalTools]=React.useState<NonNullable<Awaited<ReturnType<typeof api.toolCatalog>>["goal_tools"]>>([]);
   const [roles, setRoles] = React.useState<RoleToolPreview[]>([]);
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [captureOn, setCaptureOn] = React.useState(false);
@@ -250,7 +251,7 @@ export default function ToolsPage() {
   const reload = React.useCallback(() => {
     api
       .toolCatalog()
-      .then((r) => { setTools(r.tools); setRoles(r.roles ?? []); })
+      .then((r) => { setGoalTools(r.goal_tools??[]); setTools(r.tools); setRoles(r.roles ?? []); })
       .catch((error: Error) => toast.error("工具列表读取失败：" + error.message));
   }, []);
   React.useEffect(() => {
@@ -310,12 +311,16 @@ export default function ToolsPage() {
         </div>
       </div>
 
+      <Card><CardHeader><CardTitle>目标会话工具</CardTitle></CardHeader>
+        <CardContent>{goalTools.map(tool=><details key={tool.name}><summary>{tool.name} · {tool.description}</summary>
+          <pre>{JSON.stringify(tool.parameters,null,2)}</pre></details>)}</CardContent></Card>
+
       {roles.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>角色装配预览</CardTitle>
+            <CardTitle>其他角色与旧配置</CardTitle>
             <CardDescription>
-              预览当前配置下的新任务会话。数量仅计平台工具；Schema 大小含 pi 和自定义工具，不含 MCP。
+              下方角色配置用于独立会话和历史记录。数量仅计平台工具；Schema 大小含 pi 和自定义工具，不含 MCP。
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

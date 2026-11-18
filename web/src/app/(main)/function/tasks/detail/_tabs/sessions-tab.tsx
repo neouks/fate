@@ -78,6 +78,7 @@ import { cn } from "@/lib/utils";
 
 import { RelatedSessions, RelatedSessionDetail } from "./related-sessions";
 import { SessionTranscript, SessionWorkspace, type TranscriptPositions } from "./session-workspace";
+import { SessionFactAudit } from "@/components/session-fact-audit";
 import { WorkerQueue } from "./worker-queue";
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
@@ -1704,6 +1705,7 @@ export function SessionsTab({
                 </span>
               )}
             </div>
+            {!MOCK && <SessionFactAudit key={taskId} taskId={taskId}/>}
             {taskTokens && (
               <Tooltip>
                 <TooltipTrigger asChild>

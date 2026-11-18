@@ -6,16 +6,15 @@ import { makeModelResolver } from "./pi/modelResolver.js";
 // 出口网关（:8788）随 -proxy 启动；本入口的职责与 Go 版 cmd/series/main.go 对齐（去除 selfupdate）。
 
 import { mkdirSync } from "node:fs";
-import { buildModelSource } from "./pi/providerFromProfile.js";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { buildApp } from "./http/app.js";
 import { loadOrCreateJWTKey } from "./http/auth.js";
-import { openDatabase, type Database } from "./db/index.js";
+import { openDatabase } from "./db/index.js";
 import { startEgressGateway, type EgressGateway } from "./egress/index.js";
 import { configureAgentEnv } from "./agent/roles.js";
 import { postgresDSN, skillDir, redactDSN } from "./config/index.js";
-import { Engine, defaultEngineConfig, type ModelResolver } from "./engine/engine.js";
-import type { ModelSource } from "./agent/roles.js";
+import {ConversationService} from './engine/conversations.js';
+import {ActivityOutbox} from './engine/activity-outbox.js';
+import {NativeActivityRecovery} from './engine/native-activity-recovery.js';
 
 const VERSION = process.env.SERIES_VERSION ?? "dev-ts";
 
@@ -74,14 +73,11 @@ async function main(): Promise<void> {
 
   configureAgentEnv({ skillsDir: skillsRoot, caFile: gateway?.caFile });
 
-  const workers = await db.platform().workers().catch(() => 3);
-  const engine = new Engine(
-    db,
-    { ...defaultEngineConfig(), workers },
-    makeModelResolver(db),
-    flags.dataDir,
-    gateway?.addr,
-  );
+  const activityOutbox = new ActivityOutbox(db,flags.dataDir);
+  const recovery = new NativeActivityRecovery(db,flags.dataDir);
+  const conversations = new ConversationService(db,makeModelResolver(db),flags.dataDir,{activityOutbox},gateway?.addr);
+  activityOutbox.start();
+  recovery.start();
 
   // JWT 密钥与 Go 版共用：keyDir=进程基目录（CWD），旧位置 dataDir 内存在则迁移。
   const jwtKey = loadOrCreateJWTKey(process.cwd(), flags.dataDir);
@@ -89,7 +85,7 @@ async function main(): Promise<void> {
     version: VERSION,
     startedAt: Date.now(),
     db,
-    engine,
+    engine:{conversations,runtimeMetrics:()=>({activity_outbox:activityOutbox.metrics(),native_activity_recovery:recovery.metrics()})},
     jwtKey,
     skillsRoot,
     dataDir: flags.dataDir,
@@ -102,18 +98,20 @@ async function main(): Promise<void> {
 
   await app.listen({ host: listenHost, port: listenPort });
   console.log(
-    `SERIES ${VERSION} (pi refactor) listening on ${listenHost}:${listenPort} (data=${flags.dataDir}, workers=${workers}, egress=${flags.proxy || "disabled"})`,
+    `SERIES ${VERSION} (pi refactor) listening on ${listenHost}:${listenPort} (data=${flags.dataDir}, egress=${flags.proxy || "disabled"})`,
   );
 
-  engine.startScheduler();
+  // Goal sessions run on user input. Historical tasks are never resumed on startup.
 
   let shuttingDown=false;
   const shutdown = async (signal: string) => {
     if(shuttingDown)return;shuttingDown=true;
     console.log(`[shutdown] 收到 ${signal}，正在停止…`);
-    await engine.shutdown();
+    await conversations.shutdown();
     await gateway?.close().catch(() => undefined);
     await app.close().catch(() => undefined);
+    await recovery.close();
+    await activityOutbox.close();
     clearInterval(usageTimer);
     await replayUsageOutbox(db).catch(()=>undefined);
     // Preserve the only surviving receipts if disk and DB are both unavailable.

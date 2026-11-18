@@ -1,15 +1,6 @@
-// 任务注册表 store：CreateTask 事务、生命周期状态迁移、FIFO 准入队列、execution_mode 读写。
-// 忠实平移自 Go 版 db/tasks.go（CreateTaskWithOptions/SetStatus/SetTerminalStatusGuarded/
-// StampFirstRun/ListTasks/GetTask/Enqueue/Dequeue）、db/execution_mode.go
-// （ExecutionMode/SetExecutionMode——与 planner 意图写入共用探索级队列锁）以及
-// server/manager.go 的 ApplyTaskAdmission/ApplyTaskPause（调度器提交侧的一条 UPDATE 原子语义）。
-// 说明：AssetIDs/CompanyIDs 建任务选项依赖 assets/companies store（ensureManualDerivedParents、
-// seedTaskCompanyAssets），随对应模块平移后再并入；SourceTaskIDs 为只读继承（task_relations）。
-
 import type { PoolClient } from "pg";
 import { Database } from "./index.js";
-import { EXECUTION_MANAGED, EXECUTION_MANUAL, jsonbClean, QueueTx } from "./exploration.js";
-import { normalizeAgentHost, parseCanonicalIP, rootDomain } from "./task_scope.js";
+import { EXECUTION_MANAGED, EXECUTION_MANUAL, QueueTx } from "./exploration.js";
 
 // ─── 常量（db/tasks.go）──────────────────────────────────────────────────────
 
@@ -70,22 +61,10 @@ export interface Task {
   llm_failover_state?: string;
 }
 
-/** 必须与任务/探索行同事务提交的创建期数据（AssetIDs/CompanyIDs 见文件头说明）。 */
-export interface TaskCreateOptions {
-  /** Host creation entrypoints enroll new tasks; low-level graph imports remain inert. */
-  initializeGoals?: boolean;
-  assetIDs?: number[];
-  companyIDs?: number[];
-  seedFirstIntent?: boolean;
-  executionMode?: "managed" | "manual";
+interface TaskCreateOptions {
   name?: string;
   categoryID?: number | null;
-  sourceTaskIDs?: number[];
   llmProfileIDs?: number[];
-  timeoutSeconds?: number;
-  planHeartbeatSeconds?: number;
-  /** nil = 默认开（true）；仅显式传 false 关闭覆盖度功能。 */
-  coverageEnabled?: boolean | null;
 }
 
 /** ApplyTaskAdmission 一条 UPDATE 原子提交后的落库生命周期快照。 */
@@ -168,167 +147,17 @@ export class TaskStore {
     }
   }
 
-  // ─── 创建（Go CreateTask/CreateTaskWithOptions，单事务）────────────────────
-
-  async createTask(
-    description: string,
-    goal: string,
-    llmProfileID?: number | null,
-    timeoutSeconds = 0,
-    planHeartbeatSeconds = 0,
-  ): Promise<Task> {
-    const ids = llmProfileID ? [llmProfileID] : [];
-    return this.createTaskWithOptions(description, goal, {
-      llmProfileIDs: ids,
-      timeoutSeconds,
-      planHeartbeatSeconds,
+  async createGoalTask(description: string, goal: string, opts: TaskCreateOptions = {}): Promise<Task> {
+    return this.db.transaction(async db => {
+      const profiles = opts.llmProfileIDs ?? [];
+      const result = await db.query(
+        `INSERT INTO tasks(name,category_id,description,goal,llm_profile_id,active_llm_profile_id,coverage_enabled)
+         VALUES ($1,$2,$3,$4,$5,$5,false) RETURNING id`,
+        [opts.name ?? '', opts.categoryID ?? null, description, goal, profiles[0] ?? null]);
+      const id = Number(result.rows[0]!.id);
+      await insertTaskLLMProfiles(db, id, profiles);
+      return (await db.tasks().getTask(id))!;
     });
-  }
-
-  async createTaskWithOptions(description: string, goal: string, opts: TaskCreateOptions): Promise<Task> {
-    const sourceTaskIDs = opts.sourceTaskIDs ?? [];
-    if (sourceTaskIDs.length > MAX_TASK_SOURCE_COUNT) {
-      throw new Error(`too many source tasks: got ${sourceTaskIDs.length}, maximum is ${MAX_TASK_SOURCE_COUNT}`);
-    }
-    const llmProfileIDs = opts.llmProfileIDs ?? [];
-    let timeoutSeconds = opts.timeoutSeconds ?? 0;
-    if (timeoutSeconds < 0) timeoutSeconds = 0;
-    const planHeartbeatSeconds = normalizeHeartbeat(opts.planHeartbeatSeconds ?? 0);
-    const coverageEnabled = opts.coverageEnabled === null || opts.coverageEnabled === undefined ? true : opts.coverageEnabled;
-
-    const client = await this.db.pool.connect();
-    const tx = new QueueTx(client);
-    const release = () => client.release();
-    try {
-      await tx.query("BEGIN");
-      const exp = await tx.query<{ id: string }>(`INSERT INTO explorations(description, goal) VALUES ($1,$2) RETURNING id`, [
-        description,
-        goal,
-      ]);
-      const expID = Number(exp.rows[0]!.id);
-
-      // origin fact：探索图根（kind=fact, state='origin'），承载任务原始描述。
-      // 目标/意图/发现都从它延伸；种子目标资产以 lineage 锚到它（资产图全局共享）。
-      const originPayload = jsonbClean(
-        JSON.stringify({
-          summary: `任务起点：${description}；目标：${goal}`,
-          description,
-          goal,
-        }),
-      );
-      await tx.query(
-        `INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
-         VALUES ($1, 'fact', $2, 0, 'origin', 'system')`,
-        [expID, originPayload],
-      );
-
-      let categoryName = "";
-      if (opts.categoryID !== null && opts.categoryID !== undefined) {
-        if (opts.categoryID <= 0) throw new Error("invalid task asset association: category id must be positive");
-        const cat = await tx.query<{ name: string }>(`SELECT name FROM task_categories WHERE id=$1`, [opts.categoryID]);
-        if (cat.rows.length === 0) throw new Error("task category not found");
-        categoryName = cat.rows[0]!.name;
-      }
-
-      const active = llmProfileIDs.length > 0 ? llmProfileIDs[0]! : null;
-      const ins = await tx.query<{ id: string; status: string; paused: boolean; created_at: Date }>(
-        `INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id,
-                          timeout_seconds, plan_heartbeat_seconds, coverage_enabled)
-        VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9)
-        RETURNING id, status, paused, created_at`,
-        [
-          opts.name ?? "",
-          opts.categoryID ?? null,
-          description,
-          goal,
-          expID,
-          active,
-          timeoutSeconds,
-          planHeartbeatSeconds,
-          coverageEnabled,
-        ],
-      );
-      const row = ins.rows[0]!;
-      const taskID = Number(row.id);
-      if(opts.initializeGoals)await tx.query("INSERT INTO goals_bootstrap(task_id,goal,description,policy) VALUES($1,$2,$3,'series-single-session-v1')",[taskID,goal,description]);
-      await insertTaskRelations(tx, taskID, sourceTaskIDs);
-      await insertTaskLLMProfiles(tx, taskID, llmProfileIDs);
-      const scoped = new Database(this.db.pool, client);
-      const normalizeIDs=(values:number[]|undefined,maximum:number)=>{
-        const ids=[...new Set(values??[])];
-        if(ids.length>maximum||ids.some(id=>!Number.isSafeInteger(id)||id<=0))throw Object.assign(new Error('无效的任务资产/企业 ID'),{statusCode:400});
-        return ids;
-      };
-      const companies=normalizeIDs(opts.companyIDs,20), assets=normalizeIDs(opts.assetIDs,1000);
-      if(companies.length){
-        await tx.query('SELECT pg_advisory_xact_lock(7337741003)');
-        const found=await tx.query('SELECT id FROM companies WHERE id=ANY($1::bigint[]) FOR SHARE',[companies]);
-        if(found.rows.length!==companies.length)throw Object.assign(new Error('企业不存在'),{statusCode:404});
-        await tx.query(`INSERT INTO task_scope(task_id,kind,company_id,source,reason) SELECT $1,'company',unnest($2::bigint[]),'manual','任务创建时关联企业' ON CONFLICT DO NOTHING`,[taskID,companies]);
-        const seeds=await tx.query(`SELECT kind,domain,net::text,value FROM company_scope WHERE company_id=ANY($1::bigint[]) ORDER BY id`,[companies]);
-        for(const seed of seeds.rows){
-          if(seed.kind==='domain')await scoped.assets().upsertRootDomain({domain:String(seed.domain),taskID});
-          else if(seed.kind==='ip')await scoped.assets().upsertIP({ip:String(seed.net).split('/')[0]!,taskID});
-          else if(seed.kind==='keyword'&&/^https?:\/\//i.test(String(seed.value)))await scoped.assets().upsertHTTPService({url:String(seed.value),taskID});
-        }
-        await tx.query(`UPDATE assets SET task_ids=CASE WHEN $1=ANY(task_ids) THEN task_ids ELSE array_append(task_ids,$1) END WHERE company_id=ANY($2::bigint[])`,[taskID,companies]);
-        await tx.query(`UPDATE task_asset_links l SET source='company',source_summary='任务创建时关联企业'
-          FROM assets a WHERE l.task_id=$1 AND l.asset_id=a.id AND (a.company_id=ANY($2::bigint[]) OR l.source='system')`,[taskID,companies]);
-      }
-      if(assets.length){
-        const found=await tx.query('SELECT id FROM assets WHERE id=ANY($1::bigint[]) FOR SHARE',[assets]);
-        if(found.rows.length!==assets.length)throw Object.assign(new Error('资产不存在'),{statusCode:404});
-        await tx.query(`UPDATE assets SET task_ids=CASE WHEN $1=ANY(task_ids) THEN task_ids ELSE array_append(task_ids,$1) END WHERE id=ANY($2::bigint[])`,[taskID,assets]);
-        await tx.query(`UPDATE task_asset_links SET source='direct',source_summary='任务创建时直接选择' WHERE task_id=$1 AND asset_id=ANY($2::bigint[])`,[taskID,assets]);
-      }
-      const selected=await scoped.assets().getByIDs(assets);
-      for(const asset of selected)await scoped.taskScope().addAutoScope(taskID,asset.type,asset.domain??'',asset.url??'',asset.ip??'');
-      await tx.query(`INSERT INTO exploration_anchors(node_id,asset_id)
-        SELECT n.id,l.asset_id FROM exploration_nodes n CROSS JOIN task_asset_links l
-        WHERE n.exploration_id=$1 AND n.state='origin' AND l.task_id=$2 ON CONFLICT DO NOTHING`,[expID,taskID]);
-      if(opts.executionMode==='manual')await tx.query("UPDATE tasks SET execution_mode='manual' WHERE id=$1",[taskID]);
-      if(opts.seedFirstIntent){
-        const origin=await scoped.exploration(expID).originFactID();
-        const anchors=(await tx.query('SELECT asset_id FROM task_asset_links WHERE task_id=$1',[taskID])).rows.map(r=>Number(r.asset_id));
-        const intent=await scoped.exploration(expID).addNode('intent',{summary:description,goal,dispatch_requested:true},0,'open','user',anchors);
-        await scoped.exploration(expID).link(origin,'spawns',intent);
-      }
-      await tx.commit();
-      return {
-        execution_mode: opts.executionMode ?? EXECUTION_MANAGED,
-        id: taskID,
-        name: opts.name ?? "",
-        category_id: opts.categoryID ?? null,
-        category_name: categoryName,
-        description,
-        goal,
-        exploration_id: expID,
-        status: row.status,
-        paused: row.paused === true,
-        queued: false,
-        queued_at: null,
-        queue_mode: "",
-        llm_profile_id: active,
-        active_llm_profile_id: active,
-        source_task_ids: [...sourceTaskIDs],
-        parent_ref: "",
-        pinned: false,
-        pinned_at: null,
-        created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-        completed_at: null,
-        timeout_seconds: timeoutSeconds,
-        first_run_at: null,
-        deadline_at: null,
-        plan_heartbeat_seconds: planHeartbeatSeconds,
-        coverage_enabled: coverageEnabled,
-        llm_failover_state: llmProfileIDs.length === 0 ? "default" : "ready",
-      };
-    } catch (err) {
-      await tx.rollback();
-      throw err;
-    } finally {
-      release();
-    }
   }
 
   // ─── 读取（ListTasks/GetTask 最小集 + SourceTaskIDs 只读继承）──────────────
@@ -652,25 +481,7 @@ export class TaskStore {
   }
 }
 
-// ─── 事务内子步骤（Go insertTaskRelations/insertTaskLLMProfiles/seedUserAssetGrants）──
-
-async function insertTaskRelations(tx: QueueTx, taskID: number, sourceIDs: number[]): Promise<void> {
-  const seen = new Set<number>();
-  for (const sourceID of sourceIDs) {
-    if (sourceID <= 0 || sourceID === taskID || seen.has(sourceID)) {
-      throw new Error(`invalid or duplicate source task id ${sourceID}`);
-    }
-    seen.add(sourceID);
-    const res = await tx.query(
-      `INSERT INTO task_relations(task_id, source_task_id)
-       SELECT $1, id FROM tasks WHERE id=$2 AND deleted_at IS NULL`,
-      [taskID, sourceID],
-    );
-    if ((res.rowCount ?? 0) !== 1) throw new Error(`source task ${sourceID} not found`);
-  }
-}
-
-async function insertTaskLLMProfiles(tx: QueueTx, taskID: number, profileIDs: number[]): Promise<void> {
+async function insertTaskLLMProfiles(tx: Database, taskID: number, profileIDs: number[]): Promise<void> {
   const seen = new Set<number>();
   for (let position = 0; position < profileIDs.length; position++) {
     const profileID = profileIDs[position]!;

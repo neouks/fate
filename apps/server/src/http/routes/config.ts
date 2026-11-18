@@ -7,6 +7,7 @@ import {resourceUsageList,emptyResourceUsage} from '../../db/resource-usage.js';
 import {skillFilePath,parseSkillDocument,loadBoundSkills} from '../../agent/skill-files.js';
 import {profilePolicy,validateProfilePolicy,validateRetryRule,rejectRetiredRetry} from '../../pi/profile-policy.js';
 import {configuredRuntimeResources,resourcePolicy,invalidateRuntimeResources,validateRuntimeResources} from '../../engine/runtime-resources.js';
+import {goalTools,goalResourceCatalog} from '../../pi/goal-resources.js';
 import {catalogTools} from '../../agent/tool-catalog.js';
 import {roleContextPolicy,CONTEXT_DEFAULTS} from '../../agent/context-policy.js';
 import {toolIdentity} from '../../agent/tool-registry.js';
@@ -60,11 +61,16 @@ function profileDTO(p: LLMProfile): Record<string, unknown> {
 export function registerConfigRoutes(app: FastifyInstance): void {
   registerGlobalProxyRoutes(app);
   registerWebSearchRoutes(app);
-  app.get('/api/tasks/:id/runtime-config',async(req,reply)=>{const id=Number((req.params as {id:string}).id);if(!await app.db.tasks().getTask(id))return reply.code(404).send({error:'task not found'});return runtimeConfiguration(app.db,{taskID:id});});
+  app.get('/api/tasks/:id/runtime-config',async(req,reply)=>{
+    const id=Number((req.params as {id:string}).id),task=await app.db.tasks().getTask(id);
+    if(!task)return reply.code(404).send({error:'task not found'});
+    if(!task.exploration_id)return {runtime:'pi',configured:{tools:goalTools,resources:goalResourceCatalog(),review_tools:[]}};
+    return runtimeConfiguration(app.db,{taskID:id});
+  });
   app.get('/api/conversations/:id/runtime-config',async(req,reply)=>{const id=Number((req.params as {id:string}).id);if(!(await app.db.query('SELECT id FROM conversations WHERE id=$1',[id])).rowCount)return reply.code(404).send({error:'conversation not found'});return runtimeConfiguration(app.db,{conversationID:id});});
   // ─── LLM 测试连接：按 body 参数（或已存 profile id）构造 provider 做一次最小补全 ───
   // ─── 内置工具目录 ───
-  app.get("/api/tools", async () => catalogTools(app.db));
+  app.get("/api/tools", async () => ({...await catalogTools(app.db),goal_tools:goalTools}));
 
   app.put("/api/tools/:key", async (req, reply) => {
     const p = req.params as { key: string };

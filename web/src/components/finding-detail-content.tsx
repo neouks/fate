@@ -47,7 +47,6 @@ type DetailProps = {
   contextTask?: string;
   onChanged?: (finding: Finding) => void;
   onDelete?: (finding: Finding, reason: string) => Promise<void>;
-  onDeepen?: (finding: Finding) => void;
 };
 
 // Key the loader by provenance as well as identity: stale requests must never paint
@@ -138,7 +137,6 @@ function FindingDetailLoader(props: DetailProps) {
       contextTask={contextTask}
       onRefresh={changed}
       onDelete={props.onDelete}
-      onDeepen={props.onDeepen}
     />
   );
 }
@@ -148,7 +146,6 @@ export function FindingDetailContent({
   contextTask,
   onRefresh,
   onDelete,
-  onDeepen,
   onBack,
   onCopyLink,
 }: Omit<DetailProps, "onChanged"> & {
@@ -399,11 +396,6 @@ export function FindingDetailContent({
                   {!readOnly && (
                     <Button variant="outline" size="sm" disabled={busy} onClick={startEditing}>
                       编辑
-                    </Button>
-                  )}
-                  {!readOnly && onDeepen && finding.task_id && (
-                    <Button variant="outline" size="sm" disabled={busy} onClick={() => onDeepen(finding)}>
-                      深化测试
                     </Button>
                   )}
                   {!readOnly && onDelete && (
