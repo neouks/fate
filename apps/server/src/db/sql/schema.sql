@@ -528,7 +528,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     category_id    BIGINT REFERENCES task_categories(id) ON DELETE SET NULL,
     description    TEXT NOT NULL,
     goal           TEXT NOT NULL,
-    exploration_id BIGINT UNIQUE
+    exploration_id BIGINT NOT NULL UNIQUE
                      REFERENCES explorations(id) ON DELETE RESTRICT,
     status         TEXT NOT NULL DEFAULT 'created'
                      CHECK (status IN ('created','running','paused','done','failed','timeout')),
@@ -553,18 +553,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
--- A NULL exploration identifies a PI-native goal. Existing tasks retain their graph.
-ALTER TABLE tasks ALTER COLUMN exploration_id DROP NOT NULL;
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS accepted_entry TEXT;
-CREATE TABLE IF NOT EXISTS pi_goal_turns (
-    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    request_id UUID NOT NULL,
-    message_hash TEXT NOT NULL,
-    reply_entry TEXT,
-    PRIMARY KEY (task_id, request_id)
-);
-ALTER TABLE pi_goal_turns ADD COLUMN IF NOT EXISTS failure TEXT;
-ALTER TABLE pi_goal_turns ADD COLUMN IF NOT EXISTS lease_token UUID;
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;

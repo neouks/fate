@@ -48,6 +48,7 @@ import type {
   ExplorationNodeQuery,
   Finding,
   FindingAssetTree,
+  FindingDeepenResponse,
   FindingGroupsPage,
   FindingQuery,
   FindingRetest,
@@ -231,6 +232,13 @@ export const api = {
     description: string;
     goal: string;
     llmProfileIds?: number[];
+    sourceTaskIds?: string[];
+    companyIds?: number[];
+    assetIds?: number[];
+    timeoutSeconds?: number;
+    seedFirstIntent?: boolean;
+    planHeartbeatSeconds?: number;
+    coverageEnabled?: boolean;
   }) =>
     post<Task>("/tasks", {
       name: input.name ?? "",
@@ -238,6 +246,13 @@ export const api = {
       description: input.description,
       goal: input.goal,
       llm_profile_ids: input.llmProfileIds ?? [],
+      source_task_ids: input.sourceTaskIds ?? [],
+      company_ids: input.companyIds ?? [],
+      asset_ids: input.assetIds ?? [],
+      timeout_seconds: input.timeoutSeconds ?? 0,
+      seed_first_intent: input.seedFirstIntent ?? false,
+      plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
+      coverage_enabled: input.coverageEnabled ?? true, // 默认开;false=关闭资产覆盖度功能
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),
@@ -692,6 +707,8 @@ export const api = {
     post<{ retest: FindingRetest; created: boolean }>(`/exploration/findings/${encodeURIComponent(id)}/retests`, {
       notes,
     }),
+  deepenFinding: (id: string, description: string) =>
+    post<FindingDeepenResponse>(`/exploration/findings/${id}/deepen?id_kind=record`, { description }),
   intents: (task?: string) =>
     get<{ items?: TaskNode[] | null } | TaskNode[] | null>(`/exploration/intents${tq(task)}`)
       .then(listItems),
@@ -1097,7 +1114,7 @@ export const api = {
     put<{ ok: boolean }>(`/agents/${key}/visibility`, { mcp, skill }),
 
   // ---- tools (内置工具目录) ----
-  toolCatalog: () => get<{ goal_tools?: {name:string;description:string;parameters:Record<string,unknown>}[]; tools: Tool[]; roles: import("./types").RoleToolPreview[] }>("/tools"),
+  toolCatalog: () => get<{ tools: Tool[]; roles: import("./types").RoleToolPreview[] }>("/tools"),
   tools: () => get<{ tools: Tool[] }>("/tools").then((r) => arr(r.tools)),
   saveTool: (key: string, patch: Partial<Pick<Tool, "description" | "schema" | "agents" | "enabled">>) =>
     put<{ ok: boolean }>(`/tools/${key}`, patch),

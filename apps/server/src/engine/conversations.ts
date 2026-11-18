@@ -40,7 +40,7 @@ export class ConversationService {
  readonly bus=new EventEmitter();
  private active=new Map<number,{controller:AbortController;done:Promise<void>}>();
  private closing=false;
- constructor(private db:Database,private resolve:ModelResolver,private dataDir:string,private engine:Pick<Engine,'activityOutbox'>,private egress?:string){}
+ constructor(private db:Database,private resolve:ModelResolver,private dataDir:string,private engine:Engine,private egress?:string){}
  async list(){
   const rows=await this.db.query(`SELECT c.*,a.name AS agent_name,(a.id IS NULL OR NOT a.enabled) AS read_only,(EXISTS(
    SELECT 1 FROM conversation_runs r WHERE r.conversation_id=c.id AND r.status IN ('queued','running')
@@ -57,11 +57,7 @@ export class ConversationService {
   const cleanTitle=title.trim()||'新对话';
   if(Array.from(cleanTitle).length>120)throw Object.assign(new Error('标题最多 120 个字符'),{statusCode:400});
   if(profile!==undefined&&profile!==null){const row=await writeDB.query('SELECT id FROM llm_profiles WHERE id=$1',[profile]);if(!row.rowCount)throw Object.assign(new Error('指定的 LLM 配置不存在'),{statusCode:400});}
-  if(taskID) {
-    const task=await writeDB.tasks().getTask(taskID);
-    if(!task)throw Object.assign(new Error('task not found'),{statusCode:404});
-    if(!task.exploration_id)throw Object.assign(new Error('请在目标任务的 PI 主会话中继续'),{statusCode:409});
-  }
+  if(taskID&&!await writeDB.tasks().getTask(taskID))throw Object.assign(new Error('task not found'),{statusCode:404});
   return (await writeDB.query('INSERT INTO conversations(agent_key,title,llm_profile_id,task_id) VALUES($1,$2,$3,$4) RETURNING *',[key,cleanTitle,profile??null,taskID??null])).rows[0]!;
  }
  async update(id:number,patch:{title?:string;pinned?:boolean}){
@@ -188,7 +184,7 @@ export class ConversationService {
     for(const row of expected.rows){pendingReports.add(Number(row.id));await this.db.query('INSERT INTO finding_report_jobs(finding_id,conversation_id,run_id,evidence_version,report_revision) SELECT id,$2,$3,evidence_version,report_revision FROM findings WHERE id=$1 ON CONFLICT DO NOTHING',[row.id,id,claimed.run.id]);}
    }
    let reportSaved=false;
-   tools.push(...conversationDomainTools(ctx,{profileID:Number(claimed.llm_profile_id)||0,pendingReports,onSaved:()=>{reportSaved=true;}}));
+   tools.push(...conversationDomainTools(ctx,this.engine,{profileID:Number(claimed.llm_profile_id)||0,pendingReports,onSaved:()=>{reportSaved=true;}}));
    const execution=role==='pentest'&&task?await executionTools(ctx,cwd,{egressAddr:this.egress,egressScope:`conversation:${id}:${lease.token}`,signal:controller.signal}):undefined;
    if(role==='pentest'&&task){const pentestTools:unknown[]=[Object.assign(recordFactTool(ctx),{name:'record_conversation_fact'}),Object.assign(reportFindingTool(ctx),{name:'report_conversation_finding'}),httpRequestTool(ctx),...(execution?.tools??[])];tools.push(...pentestTools as never[]);}
    const bound=await applyToolBindings(this.db,role,tools),disabled=await disabledBuiltinTools(this.db,role),resources=await roleResources(this.db,role,skillDir());

@@ -9,9 +9,11 @@ import { ArrowLeftIcon } from "lucide-react";
 import { FindingDetailContent } from "@/components/finding-detail-content";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { Finding } from "@/lib/types";
 
+import { FindingLineageView } from "./lineage";
 
 function FindingDetailInner({ id, contextTask }: { id: string; contextTask?: string }) {
   const router = useRouter();
@@ -42,7 +44,7 @@ function FindingDetailInner({ id, contextTask }: { id: string; contextTask?: str
     };
   }, [id, contextTask, revision]);
   return (
-    <section className="flex flex-1 flex-col">
+    <Tabs defaultValue="overview" className="flex flex-1 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
         <SidebarTrigger />
         <Button variant="outline" size="sm" asChild>
@@ -54,6 +56,12 @@ function FindingDetailInner({ id, contextTask }: { id: string; contextTask?: str
         <h1 className="min-w-0 flex-1 break-words font-semibold">
           {finding?.name || finding?.vulnclass || "漏洞详情"}
         </h1>
+        <TabsList>
+          <TabsTrigger value="overview">概览</TabsTrigger>
+          <TabsTrigger value="lineage" disabled={!finding}>
+            链路图
+          </TabsTrigger>
+        </TabsList>
       </header>
       <div className="min-w-0 p-4 lg:p-6">
         {error ? (
@@ -64,7 +72,8 @@ function FindingDetailInner({ id, contextTask }: { id: string; contextTask?: str
         ) : !finding ? (
           <p role="status">加载中…</p>
         ) : (
-
+          <>
+            <TabsContent value="overview">
               <FindingDetailContent
                 finding={finding}
                 contextTask={contextTask}
@@ -75,9 +84,14 @@ function FindingDetailInner({ id, contextTask }: { id: string; contextTask?: str
                   router.replace("/function/findings");
                 }}
               />
+            </TabsContent>
+            <TabsContent value="lineage">
+              <FindingLineageView findingId={id} />
+            </TabsContent>
+          </>
         )}
       </div>
-    </section>
+    </Tabs>
   );
 }
 function FindingDetailRoute() {

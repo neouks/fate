@@ -11,5 +11,3 @@ if (existsSync(src)) {
   console.warn(`[copy-assets] 缺少 ${src}，跳过`);
 }
 cpSync(path.resolve('src/pi/mcp-fetch-proxy.mjs'),path.resolve(process.env.SERIES_BUILD_DIR ?? 'dist','pi/mcp-fetch-proxy.mjs'));
-
-cpSync(path.resolve('src/pi/goal-resources'),path.resolve(process.env.SERIES_BUILD_DIR ?? 'dist','pi/goal-resources'),{recursive:true});

@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   type LucideIcon,
   MessageSquare,
+  Network,
   Plug,
   ScrollText,
   Settings2,
@@ -61,6 +62,7 @@ export const sidebarItems: NavGroup[] = [
     items: [
       { id: "tasks", title: "任务", url: "/function/tasks", icon: Target },
       { id: "findings", title: "发现", url: "/function/findings", icon: Bug },
+      { id: "assets", title: "资产", url: "/function/assets", icon: Network },
       { id: "dashboard", title: "仪表盘", url: "/dashboard", icon: LayoutDashboard },
       { id: "chat", title: "独立会话", url: "/chat", icon: MessageSquare },
     ],

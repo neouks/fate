@@ -37,7 +37,7 @@ export function roleDefinitions(db:Database,role:string,taskBound=true):ToolDefi
  const ctx=runContext(db,taskBound?1:0,taskBound?1:0,role as never);
  const factory={worker:workerTools,planner:plannerTools,mainagent:mainTools,goals:goalsTools}[role];
  if(factory)return factory(ctx);
- const tools:ToolDefinition[]=[contextGetTool(ctx),readAttachmentTool(ctx),toolOutputTool(ctx),...conversationDomainTools(ctx)];
+ const tools:ToolDefinition[]=[contextGetTool(ctx),readAttachmentTool(ctx),toolOutputTool(ctx),...conversationDomainTools(ctx,{} as never)];
  if(taskBound)tools.push(trafficSearchTool(ctx),contextSearchTool(ctx),mergedAssetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
  if(role==='pentest'&&taskBound)tools.push({...recordFactTool(ctx),name:'record_conversation_fact'},{...reportFindingTool(ctx),name:'report_conversation_finding'},httpRequestTool(ctx));
  return tools;
@@ -80,7 +80,7 @@ export function catalogSchema(name:string,roles:Array<{schemas:Record<string,unk
 }
 export async function catalogTools(db:Database){
  const definitions=builtinDefinitions(db),rows=(await db.query('SELECT * FROM tools ORDER BY key')).rows;
- const roles:Awaited<ReturnType<typeof previewRoleTools>>[]=[];for(const role of ACTIVE_ROLES.filter(role=>['auto','pentest','reporter'].includes(role)))roles.push(await previewRoleTools(db,role));
+ const roles:Awaited<ReturnType<typeof previewRoleTools>>[]=[];for(const role of ACTIVE_ROLES)roles.push(await previewRoleTools(db,role));
  return {roles,tools:rows.map(row=>{
   const identity=toolIdentity(String(row.key),String(row.kind)),definition=definitions.get(String(row.key));
   const loaded=roles.filter(r=>r.resident.includes(String(row.key))||r.deferred.includes(String(row.key)));

@@ -150,6 +150,9 @@ export default function FindingsPage() {
   const [preferencesHydrated, setPreferencesHydrated] = React.useState(false);
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(10);
+  const [deepenFinding, setDeepenFinding] = React.useState<Finding | null>(null);
+  const [deepenDescription, setDeepenDescription] = React.useState("");
+  const [deepening, setDeepening] = React.useState(false);
   const filterFingerprint = JSON.stringify([severity, status, vulnclass, task, sort, query]);
   const activeFilterFingerprint = React.useRef(filterFingerprint);
   activeFilterFingerprint.current = filterFingerprint;
@@ -611,6 +614,31 @@ export default function FindingsPage() {
     [refreshAfterMutation, setFindings],
   );
 
+  const openDeepen = React.useCallback((f: Finding) => {
+    setDeepenFinding(f);
+    setDeepenDescription("");
+  }, []);
+
+  async function submitDeepen() {
+    if (!deepenFinding?.finding_id || !deepenDescription.trim() || deepening) return;
+    setDeepening(true);
+    try {
+      const result = await api.deepenFinding(deepenFinding.finding_id, deepenDescription.trim());
+      toast.success(
+        result.queued
+          ? `深入意图 #${result.intent_id} 已进入任务队列`
+          : `已创建高优先级 Worker 意图 #${result.intent_id}`,
+      );
+      refreshAfterMutation(deepenFinding);
+      setDeepenFinding(null);
+      setDeepenDescription("");
+    } catch (error) {
+      toast.error(`提交失败：${(error as Error).message}`);
+    } finally {
+      setDeepening(false);
+    }
+  }
+
   const statCards = [
     { label: "发现总数", value: stats.total, icon: BugIcon },
     { label: "待处理", value: stats.pending, tone: "text-amber-500", icon: ClockIcon },
@@ -847,6 +875,7 @@ export default function FindingsPage() {
                   finding={currentFinding}
                   onChanged={onDetailChanged}
                   onDelete={deleteFinding}
+                  onDeepen={openDeepen}
                 />
               ) : (
                 <p className="py-12 text-center text-muted-foreground">请选择漏洞查看详情、流量证据与复测记录。</p>
@@ -1056,6 +1085,58 @@ export default function FindingsPage() {
           </div>
         </FindingPresentation>
       </div>
+
+      <Dialog
+        open={deepenFinding !== null}
+        onOpenChange={(open) => {
+          if (open || deepening) return;
+          setDeepenFinding(null);
+          setDeepenDescription("");
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>深入利用漏洞</DialogTitle>
+            <DialogDescription className="break-words">
+              将在原任务 #{deepenFinding?.task_id} 中创建优先级 10 的 Worker 意图，基于当前漏洞开展二次验证：
+              {deepenFinding?.name || deepenFinding?.vulnclass || deepenFinding?.summary}
+            </DialogDescription>
+          </DialogHeader>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="finding-deepen-description">利用描述</FieldLabel>
+              <Textarea
+                id="finding-deepen-description"
+                value={deepenDescription}
+                onChange={(event) => setDeepenDescription(event.target.value)}
+                maxLength={4000}
+                placeholder="描述需要验证的利用路径、边界条件、目标或期望证据"
+                disabled={deepening}
+              />
+              <FieldDescription className="flex justify-between gap-3">
+                <span>新意图会继承该漏洞的资产锚点。</span>
+                <span className="shrink-0 tabular-nums">{deepenDescription.length} / 4000</span>
+              </FieldDescription>
+            </Field>
+          </FieldGroup>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeepenFinding(null);
+                setDeepenDescription("");
+              }}
+              disabled={deepening}
+            >
+              取消
+            </Button>
+            <Button onClick={submitDeepen} disabled={deepening || !deepenDescription.trim()}>
+              {deepening && <Spinner data-icon="inline-start" />}
+              创建深入意图
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={exportOpen} onOpenChange={setExportOpen}>
         <DialogContent>

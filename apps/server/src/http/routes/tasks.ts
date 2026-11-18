@@ -1,12 +1,18 @@
-import {goalResourceCatalog} from '../../pi/goal-resources.js';
+import {registerGoalAcceptanceRoutes} from './goal-acceptance.js';
 import {aggregateUsage} from '../../db/usage-ledger.js';
-import {requireTaskGoal} from '../../agent/task-goal.js';
-import {controlGoal,goalHistory,sendGoalMessage} from '../../pi/goal-session.js';
-import {makeModelResolver} from '../../pi/modelResolver.js';
+import {requireTaskGoal} from "../../agent/task-goal.js";
+import {assetContextCTE} from '../../db/asset-query.js';
+import {registerOperationRoutes} from './operations.js';
+import {executionSnapshot,executionSnapshots} from '../../engine/coordinator.js';
+import {prepareAttachments,validateAttachmentRefs} from "../../evidence/attachments.js";
+// 任务路由：CRUD + 生命周期（start/pause/resume/stop|finish|control/delete）+ 意图控制 + 主对话。
+// 生命周期约定（对齐 Go manager/engine 分层）：tasks 表状态先落库，再驱动 engine；
+// engine 侧未运行（无运行时）时引擎调用静默跳过，DB 状态仍是唯一真源。
+
 import type { FastifyInstance } from "fastify";
 import type { Task } from "../../db/tasks.js";
-import { TASK_DISPLAY_STATUS } from "../../db/tasks.js";
-
+import { isTerminalTaskStatus,TASK_DISPLAY_STATUS } from "../../db/tasks.js";
+import { IntentStateConflictError } from "../../db/exploration.js";
 
 /** 列表/详情 DTO：在 store Task 之上补前端仪表盘需要的聚合位（goals/counts 在详情填充）。 */
 function taskDTO(t: Task): Record<string, unknown> {
@@ -18,16 +24,30 @@ function taskDTO(t: Task): Record<string, unknown> {
   return out;
 }
 
-export function registerTaskRoutes(app: FastifyInstance, resolveModel = makeModelResolver(app.db)): void {
+/** 引擎调用包装：任务未在引擎中运行（mustRt 抛错）→ no-op。 */
+async function engineNoop(p: unknown): Promise<void> {
+  await Promise.resolve(p).catch(() => undefined);
+}
+
+export function registerTaskRoutes(app: FastifyInstance): void {
+  registerOperationRoutes(app);
+  registerGoalAcceptanceRoutes(app);
   const tasks = () => app.db.tasks();
-  async function serializeTask(task:Task, states?:Map<number,Record<string,unknown>>): Promise<Record<string,unknown>> {
+  const serializeTask = async (task: Task, batch?:{states:Map<number,Record<string,unknown>>;snapshot:Awaited<ReturnType<typeof executionSnapshots>>}) => {
     const dto = taskDTO(task);
-    if (!task.exploration_id) return {...dto,runtime:'pi',exploration_id:null,execution_status:task.status,
-      goals_total:1,goals_met:Number(task.status==='done'),in_flight:0};
-    const legacy=states?.get(task.id) ?? (await app.db.query(
-      'SELECT task_display_status($1) status,task_display_reason($1) status_reason',[task.id])).rows[0];
-    return {...dto,...legacy,runtime:'legacy',execution_status:legacy?.status??task.status};
-  }
+    const statusRow=batch?batch.states.get(task.id):(await app.db.query('SELECT task_display_status($1) status,task_display_reason($1) status_reason FROM tasks WHERE id=$1',[task.id])).rows[0];
+    dto.status=statusRow?.status??task.status;
+    dto.status_reason=statusRow?.status_reason??'';
+    dto.execution_status=dto.status;
+    dto.pause_pending=dto.status==='pausing';
+    dto.paused=dto.status==='paused';
+    dto.queued=dto.status==='queued';
+    dto.scheduling=batch?batch.snapshot(task.id):await executionSnapshot(app.db,task.id);
+    dto.in_flight=(dto.scheduling as {task_active:number}).task_active;
+    const occupancy=dto.scheduling as {task_active:number;ready:number;planning:number};
+    dto.engine_mode=dto.status==='paused'||dto.status==='pausing'?'paused':occupancy.task_active+occupancy.ready+occupancy.planning>0?'exploring':'idle';
+    return dto;
+  };
 
   // ─── 列表与创建 ────────────────────────────────────────────────────────────
 
@@ -39,6 +59,7 @@ export function registerTaskRoutes(app: FastifyInstance, resolveModel = makeMode
     const paged=Object.keys(q).some(k=>['page','page_size','q','status','category','sort','direction','recent'].includes(k));
     const result=paged?await tasks().listTasksPage({page:Math.max(1,Number(q.page)||1),pageSize:Math.min(100,Math.max(1,Number(q.page_size)||20)),q:q.q,status:q.status,category:q.category,sort:q.sort,direction:q.direction,recent:q.recent==='true'}):{tasks:await tasks().listTasks()};
     const list=result.tasks,ids=list.map(t=>t.id);
+    const snapshot=await executionSnapshots(app.db);
     const states=new Map((await app.db.query('SELECT id,task_display_status(id) status,task_display_reason(id) status_reason FROM tasks WHERE id=ANY($1::bigint[])',[ids])).rows.map(r=>[Number(r.id),r]));
     const active = (await app.db.platform().getSetting("active_task")) ?? "";
     // 派生位聚合：findings 四档 / goals 进度 / 在跑 / 最近活动 / 任务级 token。
@@ -46,9 +67,8 @@ export function registerTaskRoutes(app: FastifyInstance, resolveModel = makeMode
       `SELECT t.id,
               COALESCE((SELECT json_build_object('critical',count(*) FILTER (WHERE f.severity='critical'),'high',count(*) FILTER (WHERE f.severity='high'),'medium',count(*) FILTER (WHERE f.severity='medium'),'low',count(*) FILTER (WHERE f.severity='low'))
                  FROM findings f WHERE f.task_id=t.id),'{"critical":0,"high":0,"medium":0,"low":0}'::json) findings,
-              CASE WHEN t.exploration_id IS NULL THEN json_build_object('total',1,'met',(t.status='done')::int)
-                ELSE (SELECT json_build_object('total',total,'met',met) FROM task_goal_progress(t.exploration_id)) END goals,
-
+              (SELECT json_build_object('total',total,'met',met) FROM task_goal_progress(t.exploration_id)) goals,
+              COALESCE((SELECT count(*) FROM engine_worker_slots s JOIN engine_task_leases l ON l.task_id=s.task_id AND l.token=s.token WHERE s.task_id=t.id AND s.phase='running' AND l.expires_at>now()),0) in_flight,
               EXTRACT(EPOCH FROM COALESCE((SELECT max(a.created_at) FROM activity a WHERE a.exploration_id=t.exploration_id), t.created_at))::bigint last_activity_unix
        FROM tasks t WHERE t.id=ANY($1::bigint[])`,[ids]) as never;
     const tokenRows=new Map((await aggregateUsage(app.db,{taskIDs:ids},'task')).map(r=>[Number(r.bucket),r]));
@@ -56,12 +76,13 @@ export function registerTaskRoutes(app: FastifyInstance, resolveModel = makeMode
     for (const r of (agg as unknown as { rows: Array<Record<string, unknown>> }).rows) aggRows.set(Number(r["id"]), r);
     const items=[];
     for(const t of list){
-        const dto = await serializeTask(t,states);
+        const dto = await serializeTask(t,{snapshot,states});
         const a = aggRows.get(Number(t.id));
         if (a) {
           dto["findings"] = a["findings"];
           dto["goals_total"] = ((a["goals"] as { total?: number }) ?? {}).total ?? 0;
           dto["goals_met"] = ((a["goals"] as { met?: number }) ?? {}).met ?? 0;
+          dto["in_flight"] = Number(a["in_flight"] ?? 0);
           dto["last_activity_unix"] = Number(a["last_activity_unix"] ?? 0);
           dto["tokens"] = tokenRows.get(t.id)??{input_tokens:0,output_tokens:0,cache_read_tokens:0,cache_write_tokens:0,usage_complete:true,version:'usage-v2'};
         }
@@ -78,44 +99,52 @@ export function registerTaskRoutes(app: FastifyInstance, resolveModel = makeMode
 
   app.post("/api/tasks", async (req, reply) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
-    const description = typeof b["description"] === "string" && b["description"].trim() !== "" ? b["description"] : "";
+    const description = typeof b["description"] === "string" && b["description"].trim() !== "" ? b["description"] : "未命名任务";
     let goal: string;
     try { goal = requireTaskGoal(b["goal"]); } catch (error) { return reply.code(400).send({error:(error as Error).message,code:"TASK_GOAL_REQUIRED"}); }
-    if (b.category_id!=null && (!Number.isSafeInteger(b.category_id) || Number(b.category_id)<1))
-      return reply.code(400).send({error:'分类 ID 无效'});
-    if (Array.from(goal).length>64000) return reply.code(400).send({error:'目标最多 64000 字符'});
-    const profiles = b.llm_profile_ids ?? [];
-    if (!Array.isArray(profiles) || new Set(profiles).size!==profiles.length || profiles.some(v=>!Number.isSafeInteger(v)||v<=0))
-      return reply.code(400).send({error:'无效的模型 ID'});
-    if (['source_task_ids','asset_ids','company_ids'].some(k=>b[k]!==undefined && !(Array.isArray(b[k]) && !b[k].length))
-        || b.seed_first_intent || b.execution_mode==='manual')
-      return reply.code(400).send({error:'目标会话不接受图或 Worker 参数'});
-    const task = await tasks().createGoalTask(description,goal,{name:typeof b.name==='string'?b.name.trim():'',
-      categoryID:b.category_id==null?null:Number(b.category_id),llmProfileIDs:profiles});
-    return reply.code(201).send(await serializeTask(task));
+    const sourceTaskIDs = Array.isArray(b["source_task_ids"])
+      ? b["source_task_ids"].map((v) => Number(v)).filter((n) => Number.isInteger(n))
+      : [];
+    const llmProfileIDs = Array.isArray(b["llm_profile_ids"])
+      ? b["llm_profile_ids"].map((v) => Number(v)).filter((n) => Number.isInteger(n))
+      : [];
+    const task = await tasks().createTaskWithOptions(description, goal, {
+      initializeGoals:true,
+      name: typeof b["name"] === "string" ? b["name"].trim() : "",
+      categoryID: b["category_id"] === null || b["category_id"] === undefined ? null : Number(b["category_id"]) || null,
+      sourceTaskIDs,
+      assetIDs: Array.isArray(b.asset_ids) ? b.asset_ids.map(Number) : undefined,
+      companyIDs: Array.isArray(b.company_ids) ? b.company_ids.map(Number) : undefined,
+      seedFirstIntent: b.seed_first_intent === true,
+      executionMode: b.execution_mode === 'manual' ? 'manual' : 'managed',
+      llmProfileIDs,
+      timeoutSeconds: Math.max(0, Number(b["timeout_seconds"]) || 0),
+      planHeartbeatSeconds: Math.max(0, Number(b["plan_heartbeat_seconds"]) || 0),
+      coverageEnabled: b["coverage_enabled"] === undefined ? true : b["coverage_enabled"] !== false,
+    });
+    // 状态先落库（running），再后台跑 goals 分解 + 引擎循环；分解失败由引擎以活动事件记录。
+    await app.engine.admitTask(task.id, { decompose: { description } });
+    return reply.code(201).send(await serializeTask((await tasks().getTask(task.id))!));
   });
 
   app.get("/api/tasks/:id", async (req, reply) => {
-    const id = Number((req.params as {id:string}).id);
+    const id = Number((req.params as { id: string }).id);
     const task = await tasks().getTask(id);
-    if (!task) return reply.code(404).send({error:'任务不存在'});
-    const receipt = (await app.db.query('SELECT accepted_entry FROM tasks WHERE id=$1',[id])).rows[0];
-    return {...await serializeTask(task),...(!task.exploration_id?{resources:goalResourceCatalog()}:{}),accepted_entry:receipt?.accepted_entry ?? null};
-  });
-  app.get("/api/tasks/:id/messages",async(req,reply)=>{
-    const id = Number((req.params as {id:string}).id);
-    const task = await tasks().getTask(id);
-    if (!task) return reply.code(404).send({error:'任务不存在'});
-    if (!task.exploration_id) {
-      const confirmed = new Set((await app.db.query('SELECT reply_entry FROM pi_goal_turns WHERE task_id=$1 AND reply_entry IS NOT NULL',[id])).rows.map(r=>r.reply_entry));
-      return {messages:goalHistory(app.dataDir,id).map(m=>({...m,confirmed:confirmed.has(m.id)}))};
-    }
-    const before = (req.query as {before?:string}).before;
-    if (before!==undefined && (!Number.isSafeInteger(Number(before))||Number(before)<1)) return reply.code(400).send({error:'无效的分页游标'});
-    const rows = (await app.db.query(`SELECT id::text AS id, worker AS role,COALESCE(NULLIF(detail,''),summary) AS text,is_error AS error
-      FROM activity WHERE exploration_id=$1 AND exploration_activity_readable($1,node_id,metadata) AND ($2::bigint IS NULL OR id<$2) ORDER BY activity.id DESC LIMIT 101`,[task.exploration_id,before??null])).rows;
-    const messages = rows.slice(0,100).reverse();
-    return {messages,next_before:rows.length>100?messages[0]!.id:null};
+    if (!task) return reply.code(404).send({ error: "task not found" });
+    const s = app.db.exploration(task.exploration_id);
+    const [goals, counts, coverage, modelChain] = await Promise.all([
+      app.db.query("SELECT id,payload,goal_display_state(id) state FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 500",[task.exploration_id]).then(r=>r.rows),
+      s.executionCounts(),
+      app.db.taskScope().taskCoverage(id, task.exploration_id).catch(() => null),
+      app.db.query('SELECT profile_id FROM task_llm_profiles WHERE task_id=$1 ORDER BY position', [id]),
+    ]);
+    return {
+      ...await serializeTask(task),
+      llm_profile_ids: modelChain.rows.map((row) => Number(row.profile_id)),
+      goals: goals.map((g) => ({ id: g.id, text: (g.payload as Record<string,unknown>)["text"] ?? "", vulnclass: (g.payload as Record<string,unknown>)["vulnclass"] ?? "", state: g.state })),
+      counts,goals_total:counts.goals,goals_met:counts.met,
+      coverage: coverage ?? { enabled: false, scope_rows: 0, denominator: 0, tested: 0, pct: null, by_type: [] },
+    };
   });
 
   // PATCH /api/tasks/:id — 名称/置顶等元数据。
@@ -133,40 +162,68 @@ export function registerTaskRoutes(app: FastifyInstance, resolveModel = makeMode
     return serializeTask((await tasks().getTask(id))!);
   });
 
-  async function lifecycle(id:number,action:'pause'|'resume'|'finish',entry?:string) {
-    if(action==='finish' && !goalHistory(app.dataDir,id).some(m=>m.id===entry && m.role==='assistant' && !m.error))
-      throw Object.assign(new Error('请先选择 PI 会话中的验收回复'),{statusCode:409});
-    await controlGoal(app.db,id,action,entry);
+  // ─── 生命周期 ──────────────────────────────────────────────────────────────
+
+  async function startTask(id: number): Promise<Record<string, unknown>> {
+    const task = await tasks().getTask(id);
+    if (!task) throw Object.assign(new Error("task not found"), { statusCode: 404 });
+    await app.engine.admitTask(id);
+    const after=await tasks().getTask(id);
+    return after?serializeTask(after):{id};
+  }
+
+  async function pauseTask(id: number): Promise<Record<string, unknown>> {
+    try {
+      await app.db.control().tasks().applyTaskPause(id); // 原子：paused=true + 出队；不可暂停（终态/已暂停）→ 409
+    } catch (err) {
+      throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), { statusCode: 409 });
+    }
+    const result=await app.engine.pause(id);
+    const after=await tasks().getTask(id);
+    return {...(after?await serializeTask(after):{id}),command_id:result.command_id};
+  }
+
+  async function resumeTask(id: number): Promise<Record<string, unknown>> {
+    await app.engine.admitTask(id);
+    const after=await tasks().getTask(id);
+    return after?serializeTask(after):{id};
+  }
+
+  async function stopTask(id: number): Promise<Record<string, unknown>> {
+    const task = await tasks().getTask(id);
+    if (!task) throw Object.assign(new Error("task not found"), { statusCode: 404 });
+    await app.engine.stop(id); // only acknowledge local exit; remote ownership is checked below
+    // Explicit finish is success only with valid proofs; otherwise it stays pending human handling.
+    const status = await tasks().finishManually(id);
+    if (!status) throw Object.assign(new Error("task not found"), { statusCode: 404 });
     return serializeTask((await tasks().getTask(id))!);
   }
-  for (const [route,action] of [['start','resume'],['pause','pause'],['resume','resume'],['stop','finish']] as const)
-    app.post('/api/tasks/:id/'+route,async req=>lifecycle(Number((req.params as {id:string}).id),action,(req.body as {entry?:string})?.entry));
-  app.post('/api/tasks/:id/control',async(req,reply)=>{
-    const b=req.body as {action?:string;entry?:string};
-    if (b?.action!=='pause' && b?.action!=='resume' && b?.action!=='finish') return reply.code(400).send({error:'无效操作'});
-    return lifecycle(Number((req.params as {id:string}).id),b.action,b.entry);
+
+  app.post("/api/tasks/:id/start", async (req) => startTask(Number((req.params as { id: string }).id)));
+  app.post("/api/tasks/:id/pause", async (req) => pauseTask(Number((req.params as { id: string }).id)));
+  app.post("/api/tasks/:id/resume", async (req) => resumeTask(Number((req.params as { id: string }).id)));
+  app.post("/api/tasks/:id/stop", async (req) => stopTask(Number((req.params as { id: string }).id)));
+
+  // POST /api/tasks/:id/control — 前端现有契约（action=pause|resume|finish）。
+  app.post("/api/tasks/:id/control", async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const action = (req.body as { action?: unknown })?.["action"];
+    if (action !== "pause" && action !== "resume" && action !== "finish") {
+      return reply.code(400).send({ error: "action must be pause|resume|finish" });
+    }
+    let lifecycle:Record<string,unknown>|undefined;
+    if (action === "pause") lifecycle=await pauseTask(id);
+    else if (action === "resume") lifecycle=await resumeTask(id);
+    else await stopTask(id);
+    const t = await tasks().getTask(id);
+    return {...(t?await serializeTask(t):{id}),...(lifecycle?.command_id===undefined?{}:{command_id:lifecycle.command_id})};
   });
-  app.post('/api/tasks/:id/chat',{schema:{body:{type:'object',additionalProperties:false,required:['message','request_id'],
-    properties:{message:{type:'string',minLength:1,maxLength:64000,pattern:'\\S'},request_id:{type:'string',format:'uuid'}}}}},async req=>{
-    const b=req.body as {message:string;request_id:string};
-    const result=await sendGoalMessage(app.db,app.dataDir,resolveModel,Number((req.params as {id:string}).id),b.request_id,b.message);
-    return {reply:result.text,entry:result.id};
-  });
-  app.get('/api/tasks/:id/requests/:key',{schema:{params:{type:'object',properties:{
-    id:{type:'integer',minimum:1},key:{type:'string',format:'uuid'}}}}},async(req,reply)=>{
-    const {id,key}=req.params as {id:number;key:string};
-    const row=(await app.db.query(`SELECT r.reply_entry,r.failure,
-      EXISTS(SELECT 1 FROM runtime_session_leases WHERE key='goal:'||r.task_id AND token::text=r.lease_token::text AND expires_at>now()) AS busy
-      FROM pi_goal_turns r JOIN tasks t ON t.id=r.task_id WHERE r.task_id=$1 AND request_id=$2 AND t.deleted_at IS NULL`,[id,key])).rows[0];
-    if(!row)return reply.code(404).send({error:'没有该请求的记录'});
-    return {status:row.reply_entry?'completed':row.failure?'failed':row.busy?'running':'unknown',error:row.failure};
-  });
-  app.delete('/api/tasks/:id',async(req,reply)=>{
-    const id=Number((req.params as {id:string}).id);
-    const result=await app.db.query(`UPDATE tasks SET deleted_at=now() WHERE id=$1 AND deleted_at IS NULL
-      AND NOT EXISTS(SELECT 1 FROM runtime_session_leases WHERE key='goal:'||tasks.id AND expires_at>now()) RETURNING id`,[id]);
-    if(!result.rowCount)return reply.code(409).send({error:'任务不存在或正在回复'});
-    return {ok:true,id};
+
+  app.delete("/api/tasks/:id", async (req) => {
+    const id = Number((req.params as { id: string }).id);
+    await engineNoop(app.engine.stop(id));
+    await app.db.query(`UPDATE tasks SET deleted_at=now() WHERE id=$1 AND deleted_at IS NULL`, [id]);
+    return { ok: true, id };
   });
 
   // POST /api/active — 当前打开的任务 id（前端任务页切换用）。
@@ -179,4 +236,233 @@ export function registerTaskRoutes(app: FastifyInstance, resolveModel = makeMode
     return { active: String(id) };
   });
 
+  // ─── 意图控制 ──────────────────────────────────────────────────────────────
+
+  async function taskExploration(taskID: number): Promise<number> {
+    const task = await tasks().getTask(taskID);
+    if (!task) throw Object.assign(new Error("task not found"), { statusCode: 404 });
+    return task.exploration_id;
+  }
+
+  for (const action of ['pause','resume','cancel'] as const) {
+    app.post(`/api/tasks/:id/intents/:intentID/${action}`, async req => {
+      const p = req.params as {id:string;intentID:string};
+      return app.engine.controlIntent(Number(p.id),Number(p.intentID),action,String((req.body as {reason?:string})?.reason ?? ''));
+    });
+  }
+
+  // Historical messages remain readable; Worker control is button-only.
+  app.post("/api/tasks/:id/intents/:intentID/messages", async (_req, reply) =>
+    reply.code(410).send({ error: "Worker 不支持直接对话，请使用暂停或恢复按钮" }));
+
+  app.get("/api/tasks/:id/worker-queue", async (req) => {
+    const taskID = Number((req.params as { id: string }).id);
+    const expID = await taskExploration(taskID);
+    const q = await app.db.exploration(expID).workerQueue();
+    return {
+      scheduling:await executionSnapshot(app.db,taskID),
+      items: q.items.map((n) => ({ ...n, id: String(n.id),execution_phase:q.executionMode==='manual'?(n.payload.dispatch_requested?'ready':'pending_dispatch'):n.payload.dispatch_requested?'ready':'awaiting_planner' })),
+      version: q.version,
+      manual: q.manual,
+      execution_mode: q.executionMode,
+    };
+  });
+
+  app.post("/api/tasks/:id/worker-queue/move", async (req, reply) => {
+    const taskID = Number((req.params as { id: string }).id);
+    const expID = await taskExploration(taskID);
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const id = Number(b["id"]);
+    const before = b["before_id"] === null || b["before_id"] === undefined ? null : Number(b["before_id"]);
+    const version = Number(b["version"]) || 0;
+    try {
+      const q = await app.db.exploration(expID).moveWorker(id, before, version);
+      return { items: q.items, version: q.version, manual: q.manual, execution_mode: q.executionMode };
+    } catch (err) {
+      if (err instanceof IntentStateConflictError) return reply.code(409).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  // Main chat never starts the task scheduler implicitly.
+  const chat = async (taskID: number, body: Record<string, unknown>) => {
+    const segment = body["seg"] === undefined ? 0 : Number(body["seg"]);
+    if (!Number.isSafeInteger(segment) || segment < 0) throw Object.assign(new Error("无效会话分段"), { statusCode: 400 });
+    const expID = await taskExploration(taskID);
+    if (segment > 0) {
+      const exists = await app.db.query(`SELECT 1 FROM main_sessions WHERE exploration_id=$1 AND seq=$2`, [expID, segment]);
+      if (!exists.rowCount) throw Object.assign(new Error("会话不存在"), { statusCode: 404 });
+    }
+    const message = typeof body["message"] === "string" ? body["message"] : "";
+    if (!message.trim() && !(Array.isArray(body["attachments"]) && body["attachments"].length)) throw Object.assign(new Error("message 不能为空"), { statusCode: 400 });
+    // Keep only stored references while the host queues this session. Reading
+    // image bytes/base64 before admission multiplied memory by queued chats.
+    const attachmentRefs=body["attachments"];
+    await validateAttachmentRefs(app.db,taskID,attachmentRefs);
+    const requestID=body["request_id"];
+    if(requestID!==undefined&&(typeof requestID!=="string"||!/^[-a-zA-Z0-9:]{1,120}$/.test(requestID)))throw Object.assign(new Error("request_id 无效"),{statusCode:400});
+    return { reply: await app.engine.mainChat(taskID,message,segment,()=>prepareAttachments(app.db,app.dataDir,taskID,attachmentRefs),requestID as string|undefined), mode: "main" };
+  };
+  app.post("/api/tasks/:id/chat", async (req) => chat(Number((req.params as { id: string }).id), (req.body ?? {}) as Record<string, unknown>));
+  app.post("/api/chat", async (req) => {
+    const taskID = Number((req.query as Record<string, unknown>)["task"]);
+    if (!Number.isSafeInteger(taskID) || taskID <= 0) throw Object.assign(new Error("缺少或无效的 task 查询参数"), { statusCode: 400 });
+    return chat(taskID, (req.body ?? {}) as Record<string, unknown>);
+  });
+  app.post("/api/tasks/:id/chat/stop", async (req) => {
+    const taskID = Number((req.params as { id: string }).id);
+    await taskExploration(taskID);
+    await app.engine.stopMainChat(taskID);
+    const pending=!!(await app.db.query("SELECT 1 FROM runtime_session_leases WHERE key LIKE $1 AND expires_at>now()",[`main:${taskID}:%`])).rowCount;
+    return { ok: true, status: pending?'waiting_for_executor':'stopped' };
+  });
+  app.get("/api/tasks/:id/chat/status", async (req) => {
+    const taskID = Number((req.params as { id: string }).id);
+    await taskExploration(taskID);
+    return { running: app.engine.mainChatRunning(taskID)||!!(await app.db.query("SELECT 1 FROM runtime_session_leases WHERE key LIKE $1 AND expires_at>now()",[`main:${taskID}:%`])).rowCount };
+  });
+
+  // GET /api/chat/mentions?task=&kind=&q=&cursor= — @ 提及候选（对齐 api.chatMentions）。
+  // 最小面：本任务 open/running 意图 + 探索图锚定资产；offset 分页（与 Go 版同构）。
+  app.get("/api/chat/mentions", async (req, reply) => {
+    const q = req.query as Record<string, unknown>;
+    const taskID = Number(q["task"]);
+    if (!Number.isInteger(taskID) || taskID <= 0) return reply.code(400).send({ error: "缺少或无效的 task 查询参数" });
+    const expID = await taskExploration(taskID);
+    const kind = typeof q["kind"] === "string" ? q["kind"] : "";
+    const needle = typeof q["q"] === "string" ? q["q"].trim().toLowerCase() : "";
+    const offset = Math.max(0, Number(q["cursor"]) || 0);
+    const PAGE = 20;
+    const candidates: Array<{ kind: string; id: number; label: string; description: string }> = [];
+    const intents = await app.db.query(
+      `SELECT id, state, COALESCE(NULLIF(payload->>'summary',''), NULLIF(payload->>'text',''), '') AS summary
+       FROM exploration_nodes
+       WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running')
+       ORDER BY id DESC LIMIT 200`,
+      [expID],
+    );
+    for (const r of intents.rows) {
+      const summary = String(r["summary"] ?? "");
+      candidates.push({
+        kind: "intent",
+        id: Number(r["id"]),
+        label: summary.slice(0, 100) || `意图 #${String(r["id"])}`,
+        description: `意图 · ${String(r["state"])}`,
+      });
+    }
+    const assets = await app.db.query(
+      `SELECT DISTINCT a.id, a.type,
+              COALESCE(NULLIF(a.domain,''),'') AS domain, COALESCE(NULLIF(a.ip,''),'') AS ip,
+              COALESCE(NULLIF(a.url,''),'') AS url, COALESCE(NULLIF(a.app_name,''),'') AS app_name,
+              COALESCE(NULLIF(a.service_name,''),'') AS service_name
+       FROM exploration_anchors x
+       JOIN exploration_nodes n ON n.id=x.node_id AND n.exploration_id=$1
+       JOIN assets a ON a.id=x.asset_id
+       ORDER BY a.id DESC LIMIT 200`,
+      [expID],
+    );
+    for (const r of assets.rows) {
+      const label = String(
+        r["domain"] || r["ip"] || r["url"] || r["app_name"] || r["service_name"] || `资产 #${String(r["id"])}`,
+      );
+      candidates.push({ kind: String(r["type"]), id: Number(r["id"]), label, description: String(r["type"]) });
+    }
+    // kind 过滤对齐前端 mention 语义：kind=asset 泛匹配资产类；空 kind 浏览全部。
+    const isAssetKind = (k: string): boolean => !["finding", "company", "intent"].includes(k);
+    const filtered = candidates.filter(
+      (c) =>
+        (kind === "" || c.kind === kind || (kind === "asset" && isAssetKind(c.kind))) &&
+        (needle === "" || String(c.id) === needle || `${c.label} ${c.description}`.toLowerCase().includes(needle)),
+    );
+    return {
+      items: filtered.slice(offset, offset + PAGE),
+      next_cursor: offset + PAGE < filtered.length ? String(offset + PAGE) : "",
+    };
+  });
+
+  // ─── 任务总览：LLM 绑定 / 资产引用 ──────────────────────────────────────────
+
+  // PUT /api/tasks/:id/llm — 更新任务 LLM 绑定（单绑定：tasks.llm_profile_id 存第一项，
+  // 链序同步 task_llm_profiles，active 缺省回落第一项）。
+  app.put("/api/tasks/:id/llm", async (req, reply) => {
+    const taskID = Number((req.params as { id: string }).id);
+    const task = await tasks().getTask(taskID);
+    if (!task) return reply.code(404).send({ error: "task not found" });
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(b["llm_profile_ids"])
+      ? b["llm_profile_ids"].map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0)
+      : [];
+    const activeRaw = Number(b["active_llm_profile_id"]);
+    const activeID = Number.isInteger(activeRaw) && activeRaw > 0 ? activeRaw : null;
+    if(new Set(ids).size!==ids.length || (activeID && !ids.includes(activeID)))return reply.code(400).send({error:'模型链不能重复，激活模型必须属于模型链'});
+    const first = ids[0] ?? null;
+    await app.db.transaction(async tx=>{
+      await tx.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[taskID]);
+      await tx.query(`UPDATE tasks SET llm_profile_id=$2::bigint,active_llm_profile_id=COALESCE($3::bigint,$2::bigint) WHERE id=$1`,[taskID,first,activeID]);
+      await tx.query(`DELETE FROM task_llm_profiles WHERE task_id=$1`,[taskID]);
+      for(let pos=0;pos<ids.length;pos++)await tx.query(`INSERT INTO task_llm_profiles(task_id,profile_id,position) VALUES($1,$2,$3)`,[taskID,ids[pos],pos]);
+    });
+    return { ok: true, llm_profile_ids: ids, active_llm_profile_id: activeID ?? first };
+  });
+
+  // GET /api/tasks/:id/asset-refs?asset_id= — 某资产在本任务探索图里的意图/事实/发现引用。
+  app.get("/api/tasks/:id/asset-refs", async (req, reply) => {
+    const taskID = Number((req.params as { id: string }).id);
+    const expID = await taskExploration(taskID);
+    const assetID = Number((req.query as Record<string, unknown>)["asset_id"]);
+    if (!Number.isInteger(assetID) || assetID <= 0) return reply.code(400).send({ error: "缺少或无效的 asset_id" });
+    const rows = await app.db.query(
+      `WITH ${assetContextCTE} SELECT n.id,n.kind,n.state,c.task_id source_task_id,c.task_id<>$1 inherited,
+       COALESCE(NULLIF(n.payload->>'summary',''),NULLIF(n.payload->>'text',''),'') summary
+       FROM exploration_anchors x JOIN exploration_nodes n ON n.id=x.node_id JOIN context_tasks c ON c.exploration_id=n.exploration_id
+       WHERE x.asset_id=COALESCE((SELECT asset_id FROM asset_id_aliases WHERE old_id=$2),$2) AND x.asset_id IN(SELECT id FROM visible) ORDER BY n.id DESC`,[taskID,assetID]);
+    const bucket = (nodeKind: string) =>
+      rows.rows
+        .filter((r) => String(r["kind"]) === nodeKind)
+        .map((r) => ({
+          id: Number(r["id"]),
+          kind: String(r["kind"]),source_task_id:Number(r.source_task_id),inherited:r.inherited===true,
+          state: String(r["state"]),
+          summary: String(r["summary"] ?? ""),
+        }));
+    return { intents: bucket("intent"), facts: bucket("fact"), findings: bucket("finding") };
+  });
+
+  // GET /api/tasks/:id/intent-assets?before=&limit= — 意图锚定资产（意图 → anchors → assets）。
+  app.get("/api/tasks/:id/intent-assets", async (req, reply) => {
+    const taskID = Number((req.params as { id: string }).id);
+    const expID = await taskExploration(taskID);
+    const q = req.query as Record<string, unknown>;
+    const before = Number(q["before"]) || 0;
+    const limit = Math.min(Math.max(Number(q["limit"]) || 300, 1), 500);
+    const rows = await app.db.query(
+      `SELECT n.id AS intent_id, a.id AS asset_id, a.type,
+              COALESCE(NULLIF(a.domain,''),'') AS domain, COALESCE(NULLIF(a.ip,''),'') AS ip,
+              COALESCE(NULLIF(a.url,''),'') AS url, COALESCE(NULLIF(a.app_name,''),'') AS app_name,
+              COALESCE(NULLIF(a.service_name,''),'') AS service_name,
+              l.source, l.source_summary, l.source_node_id, l.task_id AS link_task_id
+       FROM exploration_anchors x
+       JOIN exploration_nodes n ON n.id=x.node_id AND n.exploration_id=$1 AND n.kind='intent'
+       JOIN assets a ON a.id=x.asset_id
+       LEFT JOIN task_asset_links l ON l.task_id=$2 AND l.asset_id=a.id
+       WHERE ($3::bigint = 0 OR n.id < $3)
+       ORDER BY n.id DESC LIMIT $4`,
+      [expID, taskID, before, limit],
+    );
+    return {
+      assets: rows.rows.map((r) => ({
+        intent_id: Number(r["intent_id"]),
+        asset_id: Number(r["asset_id"]),
+        type: String(r["type"]),
+        label: String(
+          r["domain"] || r["ip"] || r["url"] || r["app_name"] || r["service_name"] || `#${String(r["asset_id"])}`,
+        ),
+        source: r["source"] === null || r["source"] === undefined ? "agent" : String(r["source"]),
+        source_summary: r["source_summary"] === null || r["source_summary"] === undefined ? "" : String(r["source_summary"]),
+        ...(r["source_node_id"] ? { source_node_id: Number(r["source_node_id"]) } : {}),
+        source_task_id: r["link_task_id"] === null || r["link_task_id"] === undefined ? taskID : Number(r["link_task_id"]),
+        inherited: false,
+      })),
+    };
+  });
 }

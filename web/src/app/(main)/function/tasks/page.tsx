@@ -250,9 +250,7 @@ const UNCATEGORIZED_VALUE = "uncategorized";
 const PAUSABLE_STATUSES = new Set<TaskStatus>(["created", "queued", "running"]);
 const ARCHIVABLE_STATUSES = new Set<TaskStatus>(["paused", "done", "failed", "timeout"]);
 
-function taskControlAction(task: Task): "pause" | "resume" | null {
-  if (task.runtime === "legacy") return null;
-  const status = task.status;
+function taskControlAction(status: TaskStatus): "pause" | "resume" | null {
   if (status === "paused" || status === "needs_attention") return "resume";
   if (PAUSABLE_STATUSES.has(status)) return "pause";
   return null;
@@ -643,11 +641,11 @@ export default function TasksPage() {
 
   const selectedTasks = React.useMemo(() => [...selectedIds].map(id=>tasks.find(t=>t.id===id)??selectionRows.current.get(id)).filter((t):t is Task=>!!t), [tasks, selectedIds]);
   const pausableTaskIDs = React.useMemo(
-    () => selectedTasks.filter((task) => taskControlAction(task) === "pause").map((task) => task.id),
+    () => selectedTasks.filter((task) => taskControlAction(task.status) === "pause").map((task) => task.id),
     [selectedTasks],
   );
   const resumableTaskIDs = React.useMemo(
-    () => selectedTasks.filter((task) => taskControlAction(task) === "resume").map((task) => task.id),
+    () => selectedTasks.filter((task) => taskControlAction(task.status) === "resume").map((task) => task.id),
     [selectedTasks],
   );
   const archivableTaskIDs = React.useMemo(
@@ -922,7 +920,7 @@ export default function TasksPage() {
                     <TableHead className="text-center" title="严重 / 高 / 中 / 低">
                       漏洞 <span className="text-muted-foreground font-normal">严/高/中/低</span>
                     </TableHead>
-                    <TableHead className="text-center">会话类型</TableHead>
+                    <TableHead className="text-center">运行中 Worker</TableHead>
                     <SortableTaskHead
                       field="created"
                       label="创建时间"
@@ -1069,8 +1067,8 @@ function TaskPreviewSheet({ task, nowSec, onClose }: { task: Task | null; nowSec
                       </dd>
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <dt className="text-muted-foreground text-xs">会话类型</dt>
-                      <dd className="text-base font-medium tabular-nums">{task.runtime === "pi" ? "PI" : "历史任务"}</dd>
+                      <dt className="text-muted-foreground text-xs">运行中 Worker</dt>
+                      <dd className="text-base font-medium tabular-nums">{task.in_flight ?? 0}</dd>
                     </div>
                     <div className="flex flex-col gap-1.5">
                       <dt className="text-muted-foreground text-xs">运行时长</dt>
@@ -1309,7 +1307,7 @@ const TaskRow = React.memo(function TaskRow({
           className="block truncate rounded-sm hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           title={task.description}
         >
-          {task.goal || task.description}
+          {task.description}
         </Link>
       </TableCell>
       <TableCell>
@@ -1344,7 +1342,11 @@ const TaskRow = React.memo(function TaskRow({
         })()}
       </TableCell>
       <TableCell className="text-center text-xs tabular-nums">
-        {task.runtime === "pi" ? "PI" : "历史任务"}
+        {task.in_flight && task.in_flight > 0 ? (
+          <span className="text-foreground font-medium">{task.in_flight}</span>
+        ) : (
+          <span className="text-muted-foreground">0</span>
+        )}
       </TableCell>
       <TableCell className="text-muted-foreground text-right text-xs whitespace-nowrap tabular-nums">
         {fmtDateTime(task.created_unix)}
@@ -1545,7 +1547,7 @@ function TaskControlButton({
   onControl: (id: string, action: "pause" | "resume") => Promise<void>;
 }) {
   const [pending, setPending] = React.useState(false);
-  const action = taskControlAction(task);
+  const action = taskControlAction(task.status);
   const label = action === "resume" ? "继续任务" : "暂停任务";
   return (
     <Button
@@ -2464,6 +2466,110 @@ function BulkDeleteTasksDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+function assetPickerLabel(asset: Asset): string {
+  const service = [asset.service_name, asset.port ? String(asset.port) : ""].filter(Boolean).join(":");
+  return (
+    [asset.domain, asset.ip, asset.url, asset.app_name, service].find((value) => Boolean(value?.trim()))?.trim() ??
+    `资产 #${asset.id}`
+  );
+}
+
+function TaskAssetPicker({
+  value,
+  onValueChange,
+  portalContainer,
+}: {
+  value: number[];
+  onValueChange: (value: number[]) => void;
+  portalContainer?: React.RefObject<HTMLElement | null>;
+}) {
+  const [assets, setAssets] = React.useState<Asset[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  React.useEffect(() => {
+    let active = true;
+    setLoading(true);
+    const loadType = async (type: (typeof TASK_ASSET_TYPES)[number]) => {
+      const first = await api.assets(type, 200, 0);
+      const result = [...first.assets];
+      for (let offset = result.length; offset < first.total; offset += 200) {
+        const next = await api.assets(type, 200, offset);
+        result.push(...next.assets);
+        if (next.assets.length === 0) break;
+      }
+      return result;
+    };
+    Promise.all(TASK_ASSET_TYPES.map(loadType))
+      .then((pages) => {
+        if (!active) return;
+        const byID = new Map<number, Asset>();
+        for (const page of pages) for (const asset of page) byID.set(asset.id, asset);
+        setAssets([...byID.values()]);
+      })
+      .catch(() => {
+        if (active) setAssets([]);
+      })
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
+  }, []);
+  const byID = React.useMemo(() => new Map(assets.map((asset) => [String(asset.id), asset])), [assets]);
+  const ids = React.useMemo(() => assets.map((asset) => String(asset.id)), [assets]);
+  const selectedIDs = React.useMemo(() => value.map(String), [value]);
+  const atLimit = value.length >= MAX_TASK_ASSETS;
+  return (
+    <Combobox
+      items={ids}
+      multiple
+      value={selectedIDs}
+      itemToStringValue={(id) => {
+        const asset = byID.get(id);
+        return asset ? `${assetPickerLabel(asset)} ${asset.type} ${asset.url ?? ""}` : id;
+      }}
+      onValueChange={(next) => onValueChange(next.slice(0, MAX_TASK_ASSETS).map(Number))}
+    >
+      <ComboboxChips>
+        <ComboboxValue>
+          {selectedIDs.map((id) => (
+            <ComboboxChip key={id}>{assetPickerLabel(byID.get(id) ?? ({ id: Number(id) } as Asset))}</ComboboxChip>
+          ))}
+        </ComboboxValue>
+        <ComboboxChipsInput
+          id="task-assets"
+          placeholder={
+            loading
+              ? "加载资产中…"
+              : atLimit
+                ? `最多关联 ${MAX_TASK_ASSETS} 项资产`
+                : "搜索名称、域名、IP、URL 或应用名"
+          }
+          disabled={loading || atLimit}
+        />
+      </ComboboxChips>
+      <ComboboxContent portalContainer={portalContainer}>
+        <ComboboxEmpty>{loading ? "加载资产中…" : "没有匹配的资产"}</ComboboxEmpty>
+        <ComboboxList>
+          {(id: string) => {
+            const asset = byID.get(id);
+            if (!asset) return null;
+            return (
+              <ComboboxItem key={id} value={id} disabled={atLimit && !selectedIDs.includes(id)}>
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate">{assetPickerLabel(asset)}</span>
+                  <Badge variant="outline" className="shrink-0">
+                    {asset.type}
+                  </Badge>
+                  <code className="text-muted-foreground shrink-0 text-xs">#{asset.id}</code>
+                </div>
+              </ComboboxItem>
+            );
+          }}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
   );
 }
 
