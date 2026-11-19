@@ -336,6 +336,9 @@ ALTER TABLE activity ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{
 ALTER TABLE activity ADD COLUMN IF NOT EXISTS main_seg INTEGER;
 CREATE INDEX IF NOT EXISTS idx_act_node  ON activity(exploration_id, node_id, id);
 CREATE INDEX IF NOT EXISTS idx_act_since ON activity(exploration_id, id);
+-- Sparse audit history uses the same candidate predicate as system-audit.ts.
+CREATE INDEX IF NOT EXISTS idx_act_system_audit ON activity(exploration_id,id)
+ WHERE (worker='system' OR kind IN ('llm_switch','llm_failover') OR metadata->>'event_type' IN ('steering','important_fact','lifecycle','outcome'));
 CREATE INDEX IF NOT EXISTS idx_act_tool_call ON activity(exploration_id, tool_use_id, id)
   WHERE kind IN ('tool_use', 'tool_result');
 -- Main/Plan history pages filter by worker (both carry NULL node_id, so idx_act_node

@@ -1,5 +1,8 @@
 "use client";
 
+import {SystemAuditTimeline} from "./system-audit-timeline";
+import {auditKey,auditHistoryQuery,auditSessionKeys,type AuditFilter} from "@/lib/system-audit";
+
 import {tokenMetrics, tokenUsageDetails} from "@/lib/token-usage";
 import {humanInputSession} from '@/lib/human-input';
 import {HumanInputsContext,HumanInputInbox,useHumanInputs} from '@/components/human-input';
@@ -104,7 +107,6 @@ function fmtBytes(n: number): string {
 //     so refresh / tab-switch / sleep / reconnect never drop the newest records.
 
 const PAGE = 200; // history page size
-const SYSTEM_SCAN_PAGE = 500; // generic activity pages scanned to recover sparse system audit events
 const MAX_KEEP = 4000; // per-session in-memory cap; older pages re-fetched on scroll-up
 const STREAM_WINDOW_MS = 5000; // "live" = activity seen within this window
 // One session's lazily-loaded, reverse-paginated cache. `lastTs`/`unread` are kept
@@ -257,14 +259,12 @@ const PLANNER_SESSION: Session = {
   last_activity: "",
 };
 
-// LLM provider switches are task-level audit events rather than agent output. The
-// history endpoint has no "system" filter, so this fixed session is populated by
-// scanning the generic incremental activity endpoint and then tailed by task SSE.
+// Curated audit history is paginated on the server and shares the task SSE.
 const SYSTEM_ID = "s-system";
 const SYSTEM_SESSION: Session = {
   id: SYSTEM_ID,
   role: "system",
-  title: "系统事件 · LLM 故障转移",
+  title: "系统事件",
   status: "done",
   live: false,
   last_activity: "",
@@ -495,6 +495,7 @@ export function SessionsTab({
   onOpenSettings?:()=>void;
 }) {
   const humanInputs=useHumanInputs(taskId);
+  const [auditFilter,setAuditFilter]=React.useState<AuditFilter>("all");
   const [completedCount, setCompletedCount] = React.useState<number | null>(null);
   const [relatedSession,setRelatedSession]=React.useState<import("@/lib/types").Conversation|null>(null);
   const [selectedSessionId, setActiveId] = React.useState(PLANNER_ID);
@@ -724,51 +725,8 @@ export function SessionsTab({
       reqTokenRef.current[key] = token;
       patchStore(key, (s) => ({ ...s, loading: true, error: undefined }));
 
-      if (key === "system") {
-        void (async () => {
-          let since = 0;
-          let systemItems: Activity[] = [];
-          for (;;) {
-            const page = await api.activity(taskId, { since, limit: SYSTEM_SCAN_PAGE });
-            if (reqTokenRef.current[key] !== token) return;
-            systemItems = mergeBySeq(
-              systemItems,
-              page.items.filter(
-                (item) => item.worker === "system" || item.kind === "llm_switch" || item.kind === "llm_failover",
-              ),
-            );
-            if (page.items.length < SYSTEM_SCAN_PAGE || page.cursor <= since) break;
-            since = page.cursor;
-          }
-          patchStore(key, (s) => {
-            const items = mergeBySeq(systemItems, s.items);
-            return {
-              ...s,
-              items,
-              loaded: true,
-              loading: false,
-              hasMore: false,
-              earliestSeq: items.length ? items[0].seq : 0,
-              unread: 0,
-              lastTs: items.length ? items[items.length - 1].ts : s.lastTs,
-              error: undefined,
-            };
-          });
-        })()
-          .catch((error) => {
-            if (reqTokenRef.current[key] !== token) return;
-            patchStore(key, (s) => ({
-              ...s,
-              loading: false,
-              error: (error as Error).message || "加载失败",
-            }));
-          })
-          .finally(() => loadingKeysRef.current.delete(key));
-        return;
-      }
-
       api
-        .activityHistory(taskId, key, 0, PAGE)
+        .activityHistory(taskId, auditHistoryQuery(key).session, 0, PAGE, {auditType:auditHistoryQuery(key).auditType})
         .then((r) => {
           if (reqTokenRef.current[key] !== token) return; // superseded
           if (r.snapshotCursor > snapshotRef.current) snapshotRef.current = r.snapshotCursor;
@@ -804,7 +762,7 @@ export function SessionsTab({
       const restore = preserveTranscriptPosition(viewport());
       patchStore(key, (s) => ({ ...s, loadingMore: true }));
       api
-        .activityHistory(taskId, key, st.earliestSeq, PAGE)
+        .activityHistory(taskId, auditHistoryQuery(key).session, st.earliestSeq, PAGE, {auditType:auditHistoryQuery(key).auditType})
         .then((r) => {
           patchStore(key, (s) => {
             const items = mergeBySeq(r.items, s.items);
@@ -912,10 +870,11 @@ export function SessionsTab({
       if (!alive || !pending.length) return;
       const batches = new Map<string, Activity[]>();
       for (const activity of pending) {
-        const key = sessionKeyOf(activity);
-        const batch = batches.get(key) ?? [];
-        batch.push(activity);
-        batches.set(key, batch);
+        for(const key of auditSessionKeys(activity,sessionKeyOf(activity))){
+          const batch = batches.get(key) ?? [];
+          batch.push(activity);
+          batches.set(key, batch);
+        }
       }
       pending = [];
       const activeK = activeKeyRef.current;
@@ -966,9 +925,10 @@ export function SessionsTab({
           if (!alive) return;
           const buckets: SessionStore = {};
           for (const a of r.items) {
-            const k = sessionKeyOf(a);
-            if (!buckets[k]) buckets[k] = emptyState();
-            buckets[k].items.push(a);
+            for(const k of auditSessionKeys(a,sessionKeyOf(a))){
+              if (!buckets[k]) buckets[k] = emptyState();
+              buckets[k].items.push(a);
+            }
           }
           for (const k of Object.keys(buckets)) {
             const st = buckets[k];
@@ -1431,7 +1391,7 @@ export function SessionsTab({
   const isMain = active.role === "mainagent";
   const isPlanner = active.role === "planner";
   const isSystem = active.role === "system";
-  const activeKey = keyForSession(active);
+  const activeKey = isSystem ? auditKey(auditFilter) : keyForSession(active);
   const activeState = store[activeKey];
   // A main turn is serialized per task (chat lock), so "busy" is task-wide: while any
   // main segment is mid-turn the active composer is disabled. Clear it the moment the
@@ -1951,7 +1911,7 @@ export function SessionsTab({
                 </span>
               )}
               <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-x-3 gap-y-1 text-xs text-muted-foreground max-sm:w-full max-sm:flex-wrap">
-                {sessionTokens[activeKey] && (
+                {!isSystem && sessionTokens[activeKey] && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <TokenMetrics usage={activeTokens} />
@@ -1959,7 +1919,7 @@ export function SessionsTab({
                     <TooltipContent>{tokenUsageDetails(activeTokens)}</TooltipContent>
                   </Tooltip>
                 )}
-                {runDuration != null && (
+                {!isSystem && runDuration != null && (
                   <span className="inline-flex items-center gap-1" title="运行时长（首步 → 末步）">
                     <ClockIcon className="size-3" />
                     {fmtDuration(runDuration)}
@@ -2014,6 +1974,12 @@ export function SessionsTab({
                     loadSession(activeKey);
                   }}
                 />
+              ) : isSystem ? (
+                <SystemAuditTimeline key={activeKey} taskId={taskId} sessionKey={activeKey} positions={transcriptPositions}
+                  filter={auditFilter} onFilter={setAuditFilter} items={activity} live={sseLive}
+                  loading={showLoader} loadingMore={activeState?.loadingMore} error={activeState?.error}
+                  hasMore={activeState?.hasMore} onEarlier={node=>loadEarlier(activeKey,()=>node)}
+                  onRetry={()=>loadSession(activeKey)} />
               ) : (
                 <SessionTranscript key={activeKey} sessionKey={activeKey} positions={transcriptPositions}
                   taskId={taskId} items={activityWithStreams(activeKey,activity)} live={active.live}
@@ -2057,7 +2023,7 @@ export function SessionsTab({
     <SessionWorkspace open={processOpen} onOpenChange={onProcessOpenChange}
       list={agentList} primaryDetail={detail}
       sessionKey={relatedSession ? `related:${relatedSession.id}` : activeKey}
-      primaryDetailLabel={relatedSession ? "执行会话" : isPlanner ? "Planner 会话" : isSystem ? "执行会话" : "Worker 会话"}
+      primaryDetailLabel={relatedSession ? "执行会话" : isPlanner ? "Planner 会话" : isSystem ? "系统事件时间线" : "Worker 会话"}
       main={
         <section aria-label="主 Agent 对话" className="task-main-conversation flex h-full min-h-0 min-w-0 flex-col">
           <div className="flex min-h-12 shrink-0 items-center justify-between gap-3 px-6 py-2 text-sm text-muted-foreground">

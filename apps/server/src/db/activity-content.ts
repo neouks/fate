@@ -8,7 +8,7 @@ const fail=(message:string,statusCode=400)=>Object.assign(new Error(message),{st
 /** Project before crossing the DB connection. Originals and authorization always
  * use the stored columns, never this presentation projection. */
 export function activityMetadataSQL(column='metadata'){
- const keys=['human_input_id','turn_id','stream_id','channel','event_type','status','role','runtime_id','mode','started_at','stop_reason','final_answer','interrupted','source','phase','planner_round','steering','worker_feedback','response','llm_transition','attachments','raw_source_only','native_recovered','native_recovery_reconciled','native_event'];
+ const keys=['execution_stop','important_fact','command_id','human_input_id','turn_id','stream_id','channel','event_type','status','role','runtime_id','mode','started_at','stop_reason','final_answer','interrupted','source','phase','planner_round','steering','worker_feedback','response','llm_transition','attachments','raw_source_only','native_recovered','native_recovery_reconciled','native_event'];
  const usage=['input','output','cacheRead','cacheWrite','totalTokens'].map(key=>{
   const value=`${column}#>'{response,usage,${key}}'`;return `'${key}',CASE WHEN jsonb_typeof(${value})='number' AND octet_length((${value})::text)<64 THEN ${value} END`;
  }).join(',');
@@ -16,7 +16,7 @@ export function activityMetadataSQL(column='metadata'){
   'model',left(${column}#>>'{response,model}',256),'provider',left(${column}#>>'{response,provider}',256),
   'stop_reason',left(${column}#>>'{response,stop_reason}',64),'has_tools',CASE WHEN jsonb_typeof(${column}#>'{response,has_tools}')='boolean' THEN ${column}#>'{response,has_tools}' END,
   'usage',jsonb_strip_nulls(jsonb_build_object(${usage})))) END`;
- const controls=keys.map(key=>`'${key}',CASE WHEN octet_length((${column}->'${key}')::text)<=2048 THEN ${column}->'${key}' ${key==='response'?`ELSE ${response}`:''} END`).join(',');
+ const controls=keys.map(key=>`'${key}',CASE WHEN octet_length((${column}->'${key}')::text)<=2048 THEN ${column}->'${key}' ${key==='response'?`ELSE ${response}`:key==='execution_stop'?`ELSE jsonb_build_object('reason',left(${column}#>>'{execution_stop,reason}',64),'summary',left(${column}#>>'{execution_stop,summary}',2000),'attempt_id',left(${column}#>>'{execution_stop,attempt_id}',64))`:''} END`).join(',');
  return `CASE WHEN octet_length(${column}::text)<=8192 THEN ${column} ELSE jsonb_strip_nulls(jsonb_build_object(${controls})) END`;
 }
 export function activityColumns(scope:StreamScope){

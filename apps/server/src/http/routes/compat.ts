@@ -1,3 +1,4 @@
+import {systemAuditWhere} from '../../engine/system-audit.js';
 import {readCoverageGraphPage} from '../../db/coverage-graph.js';
 import {activityControlFields} from '../../engine/activity-presentation.js';
 import {readActivityPage,readActivityContent,readSnapshotContent} from '../../db/activity-content.js';
@@ -217,6 +218,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
       params.push(session.startsWith("main:") ? Number(session.slice(5)) : Number(q["seg"]) || 0);
       sessionWhere += ` AND worker IN ('mainagent','main') AND COALESCE(main_seg,0)=$${params.length}`;
     }
+    else if (session === "system") sessionWhere += systemAuditWhere(q["audit_type"], params);
     else if (session === "plan") sessionWhere += ` AND worker IN ('planner','goals')`;
     else if (session.startsWith("intent:")) {
       params.push(Number(session.slice("intent:".length)));
@@ -267,6 +269,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
     const params: unknown[] = [expID];
     let where = `exploration_id=$1 AND exploration_activity_readable($1,node_id,metadata)`;
     if (session === "main") where += ` AND worker IN ('mainagent','main')`;
+    else if (session === "system") where += systemAuditWhere(q["audit_type"], params);
     else if (session === "plan") where += ` AND worker IN ('planner','goals')`;
     else if (session.startsWith("intent:")) {
       params.push(Number(session.slice("intent:".length)));
@@ -281,7 +284,7 @@ export function registerCompatRoutes(app: FastifyInstance): void {
       where += ` AND summary ILIKE $${params.length}`;
     }
     const rows = await db().query(
-      `SELECT id, kind, summary, metadata FROM activity WHERE ${where} ORDER BY id DESC LIMIT $${params.length + 1}`,
+      `SELECT id, node_id, worker, main_seg, tool, kind, summary, metadata FROM activity WHERE ${where} ORDER BY id DESC LIMIT $${params.length + 1}`,
       [...params, limit + 1],
     );
     const items = rows.rows.slice(0, limit).map((r) => ({

@@ -728,6 +728,7 @@ export interface ChatAttachment {
 }
 
 export interface Activity {
+  audit_event?: import("./system-audit").AuditEvent;
   turn_id?: string;
   stream_id?: string;
   channel?: "text" | "thinking";

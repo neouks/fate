@@ -12,6 +12,8 @@ import {
   MessageScrollerContent,
   MessageScrollerButton,
 } from "@/components/ui/message-scroller";
+import {HumanInputsContext} from '@/components/human-input';
+import {humanInputSession} from '@/lib/human-input';
 import { Transcript } from "@/components/transcript";
 import { WorkspaceEmpty, WorkspaceError } from "@/components/workspace";
 import type { Activity } from "@/lib/types";
@@ -21,8 +23,10 @@ export type TranscriptPositions = Map<string, { top: number; pinned: boolean }>;
 
 export function SessionTranscript({
   taskId, sessionKey, items, live, stopping, chat, error, loading, loadingMore,
-  hasMore, onEarlier, onRetry, positions,
+  hasMore, onEarlier, onRetry, positions, renderItems, emptyTitle,
 }: {
+  renderItems?: (items: Activity[]) => React.ReactNode;
+  emptyTitle?: string;
   taskId: string;
   sessionKey: string;
   items: Activity[];
@@ -37,6 +41,8 @@ export function SessionTranscript({
   onRetry: () => void;
   positions: TranscriptPositions;
 }) {
+  const inputs=React.useContext(HumanInputsContext);
+  const waiting=inputs?.items.some(r=>r.status==='pending'&&humanInputSession(r)===sessionKey);
   const viewport = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
     const saved = positions.get(sessionKey);
@@ -66,10 +72,10 @@ export function SessionTranscript({
             {error ? (
               <WorkspaceError error={error} onRetry={onRetry} />
             ) : items.length ? (
-              <Transcript activity={items} scrollItems live={live} taskId={taskId} chat={chat}
-                pendingStatus={stopping ? "stopping" : undefined} />
+              renderItems ? renderItems(items) : <Transcript activity={items} scrollItems live={live} taskId={taskId} chat={chat}
+                pendingStatus={stopping ? "stopping" : waiting ? "human_input" : undefined} />
             ) : (
-              <WorkspaceEmpty title={loading ? "正在同步记录…" : chat ? "开始任务对话" : "暂无执行记录"} />
+              <WorkspaceEmpty title={loading ? "正在同步记录…" : emptyTitle ?? (chat ? "开始任务对话" : "暂无执行记录")} />
             )}
           </MessageScrollerContent>
         </MessageScrollerViewport>

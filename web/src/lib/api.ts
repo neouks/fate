@@ -805,11 +805,12 @@ export const api = {
     session: string,
     before = 0,
     limit = 200,
-    position?: { around?: number; after?: number },
+    position?: { around?: number; after?: number; auditType?: string },
   ) => {
     const q = new URLSearchParams({ session, limit: String(limit) });
     if (task) q.set("task", task);
     if (before > 0) q.set("before", String(before));
+    if (position?.auditType) q.set("audit_type", position.auditType);
     if (position?.around) q.set("around", String(position.around));
     if (position?.after) q.set("after", String(position.after));
     return get<{

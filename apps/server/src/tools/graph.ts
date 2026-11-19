@@ -12,13 +12,14 @@ import {normalizeWritebackScope,writebackReceipt,savedWritebackReceipt,writeback
 
 // ─── record_fact：worker 写回事实（intent --yields--> fact）─────────────────
 
-interface FactInput { summary: string; evidence?: string; detail?:string; scope?:WritebackScope; observation_type?:'observed'|'inferred'|'negative'|'unknown';confidence?: "low" | "medium" | "high"; asset_ids?: number[]; }
+interface FactInput { summary: string; important_reason?: string; evidence?: string; detail?:string; scope?:WritebackScope; observation_type?:'observed'|'inferred'|'negative'|'unknown';confidence?: "low" | "medium" | "high"; asset_ids?: number[]; }
 
 interface RecordFactArgs extends Partial<FactInput> { facts?: FactInput[]; }
 
 export function recordFactTool(ctx: ToolRunContext) {
   const singleProperties = {
     summary: {type:'string', pattern:'\\S', description:'一句话概括相关观察形成的综合结论'},
+    important_reason: {type:'string',minLength:1,maxLength:500,pattern:'\\S',description:'可选：仅对影响目标判断、关键阻碍或后续决策的重要事实说明原因；用于系统审计，不改变执行和调度。普通请求观察不标记。'},
     evidence: {type:'string', pattern:'\\S', description:ctx.role==='worker'?'Worker 必填：支撑结论的证据原文':'支撑结论的证据原文'},
     detail: {type:'string', description:'汇总支撑结论的相关观察、验证方法、细节和限制，标明各观察的条件及不确定性'},
     scope: writebackScopeSchema,
@@ -54,6 +55,7 @@ export function recordFactTool(ctx: ToolRunContext) {
         const save=(args:Partial<FactInput>,ctx:ToolRunContext)=>ctx.db.transaction(async db=>{
         await ctx.hooks.assertOwnership?.(db);
         assertDirectWrite(args);
+        if(args.important_reason!==undefined&&(typeof args.important_reason!=='string'||!args.important_reason.trim()||Array.from(args.important_reason).length>500))throw new Error('important_reason 需要 1–500 字符');
         if (!args.summary?.trim()) throw new Error('summary 不能为空');
         if (ctx.role === 'worker' && !args.evidence?.trim()) throw new Error('事实缺少实际证据');
         const c={...ctx,db};
@@ -75,6 +77,7 @@ export function recordFactTool(ctx: ToolRunContext) {
           summary: args.summary,
           ...sourceFields(c,origin),
         };
+        if(args.important_reason)payload.important_reason=args.important_reason.trim();
         if (args.evidence) payload["evidence"] = args.evidence;
         if(args.detail)payload.detail=args.detail;
         payload.observation_type=args.observation_type??'unknown';
@@ -86,6 +89,8 @@ export function recordFactTool(ctx: ToolRunContext) {
         const factID = await s.addNode(KindFact, payload, 0, "confirmed", c.workerName ?? c.role, anchors);
         const saved=await db.query('UPDATE exploration_nodes SET tool_call_id=$2 WHERE id=$1 RETURNING content_version',[factID,c.toolCallID??null]);
         await s.link(origin.id, RelYields, factID);
+        if(args.important_reason)await s.appendActivity({node_id:factID,worker:'system',kind:'status',summary:args.summary,detail:args.important_reason.trim(),
+          metadata:{event_type:'important_fact',source:c.role,important_fact:{fact_id:factID,...(origin.kind==='intent'?{intent_id:origin.id}:{}),reason:args.important_reason.trim()}}});
         return { fact_id: factID,ref:`node:${factID}`,version:Number(saved.rows[0]!.content_version), anchored_assets: anchors.length,asset_ids:anchors,writeback:payload.writeback };
       });
         if(args.facts===undefined)return save(args,ctx);
