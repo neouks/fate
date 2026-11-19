@@ -3,7 +3,7 @@
 import {TOKEN_USAGE_NOTE} from "@/lib/token-usage";
 
 import {processPreview} from '@/lib/process-preview';
-import {terminalDiagnostic,toolOutcomeText,toolWasStopped} from '@/lib/terminal-diagnostic';
+import {toolCallState} from '@/lib/terminal-diagnostic';
 import * as React from "react";
 import {ActivityBody,ActivityContentProvider} from "@/components/activity-body";
 import {
@@ -39,7 +39,7 @@ import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { conversationTurns, isLifecycle, turnID } from "@/lib/conversation-turns";
+import { conversationTurns, isLifecycle, legacyReceiptStatus, turnID } from "@/lib/conversation-turns";
 import { Message, MessageAvatar, MessageContent, MessageFooter } from "@/components/ui/message";
 import { Attachment, AttachmentContent, AttachmentDescription, AttachmentMedia, AttachmentTitle } from "@/components/ui/attachment";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
@@ -187,7 +187,7 @@ function ProcessSegment({groups,focusActivity,children}: {groups:Group[];focusAc
   const [choice,setChoice] = React.useState<{open:boolean;focus?:number}>();
   const open = (containsFocus && choice?.focus !== focusActivity) || (choice?.open ?? true);
   const calls = groups.filter(g => g.type === "tool");
-  const failures = calls.filter(g => g.result?.is_error && !toolWasStopped(g.use,g.result)).length;
+  const failures = calls.filter(g => toolCallState(g.use,g.result)==='failed').length;
   return <Collapsible open={open} onOpenChange={open=>setChoice({open,focus:focusActivity})} data-process-segment className="min-w-0">
     <CollapsibleTrigger asChild><Button variant="ghost" className="execution-group-trigger h-auto w-full justify-start whitespace-normal px-0 py-1.5 text-left">
       <ChevronRight className={cn('transition-transform',open&&'rotate-90')}/>
@@ -230,19 +230,7 @@ function toolInputText(tool: string, raw: string): string {
     const o = JSON.parse(raw);
     if (o && typeof o.command === "string") return o.command;
   } catch {
-    // collapsed-row summaries are truncated to ~200 chars by the backend, so the
-    // JSON tail is cut off and JSON.parse fails — fall through and extract the
-    // "command" field by hand, tolerating the missing closing quote.
-  }
-  const m = raw.match(/"command"\s*:\s*"((?:\\.|[^"\\])*)/);
-  if (m) {
-    try {
-      // re-wrap the captured body and parse to unescape \n, \", \\, etc.
-      return JSON.parse('"' + m[1] + '"');
-    } catch {
-      // truncated mid-escape — unescape the common sequences best-effort.
-      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) => (c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c));
-    }
+    // Preserve malformed or truncated input verbatim, including when copied.
   }
   return raw;
 }
@@ -256,22 +244,16 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
   const located=React.useCallback(()=>{if(focused)requestAnimationFrame(()=>{if(root.current)onLocated?.(root.current);});},[focused,onLocated]);
   const {use,result}=group,toolName=use?.tool||result?.tool||"工具";
   const isTerminal=toolName.toLowerCase()==="bash"||toolName.startsWith("shell_");
-  const live=React.useContext(ExecutionLiveContext);
-  // Only this call's persisted outcome can mark it complete. A settled parent
-  // turn cannot supply a missing result (e.g. incomplete historical pages).
-  const stopped=toolWasStopped(use,result);
-  const running=live&&!result&&!stopped;
-  const state=stopped?'stopped':result?(result.is_error?'failed':'completed'):running?'running':'unknown';
-  const raw=use&&use.summary.startsWith(toolName)?use.summary.slice(toolName.length).trimStart():use?.summary??'';
-  const invalidArguments=!!result?.is_error&&/^Invalid arguments for tool "/.test(result.detail??result.summary)&&(result.detail??result.summary).includes('\n\nReceived arguments:\n');
-  const cmd=invalidArguments?'参数 JSON 解析失败':toolInputText(toolName,raw);
-  const diagnostic=isTerminal&&!stopped&&result?.is_error
-    ? terminalDiagnostic(use?.detail&&!use.detail_truncated?toolInputText(toolName,use.detail):undefined,toolOutcomeText(result))
-    : undefined;
+  const state=toolCallState(use,result);
+  const stopped=state==='stopped';
+  const running=state==='running';
+  const raw=use&&use.summary.startsWith(toolName+' ')?use.summary.slice(toolName.length).trimStart():use?.summary??'';
+  const invalidArguments=!!result?.is_error&&(result.detail??result.summary).startsWith(`Invalid arguments for tool "${toolName}":`)&&(result.detail??result.summary).includes('\n\nReceived arguments:\n');
+  const cmd=toolInputText(toolName,raw);
   const status={running:'执行中…',unknown:'结果未记录',completed:'已完成',failed:'失败',stopped:'已停止'}[state];
   const statusClass=state==='completed'?'text-[var(--status-success)]':state==='failed'?'text-destructive':'text-muted-foreground';
   const StatusIcon=state==='completed'?CheckIcon:state==='failed'?XIcon:state==='stopped'?CircleStopIcon:CircleHelpIcon;
-  const parts=[...(invalidArguments?[{step:result!,label:'原始参数（JSON 解析失败）',field:'arguments' as const}]:use?[{step:use,label:'命令',field:'detail' as const}]:[]),...(result?[{step:result,field:'detail' as const,label:stopped?'输出（已停止）':result.is_error?'输出 ✕':'输出 ✓'}]:[])];
+  const parts=[...(invalidArguments?[{step:result!,label:'工具回报的原始参数',field:'arguments' as const}]:use?[{step:use,label:isTerminal?'命令':'调用参数',field:'detail' as const}]:[]),...(result?[{step:result,field:'detail' as const,label:stopped?'输出（已停止）':result.is_error?'输出 ✕':'输出 ✓'}]:[])];
   return <div ref={root} data-source-call={focused||undefined} data-activity-id={use?.seq??result?.seq} data-terminal={isTerminal} data-tool-status={state} className={cn('execution-tool',focused&&'rounded-md border border-primary bg-accent/30 p-2')}>
     {focused&&<Badge variant="outline">{focusLabel}</Badge>}
     <button type="button" onClick={()=>setOpen(v=>!v)} aria-expanded={open} aria-controls={panelId} aria-busy={running} title={toolName} className="execution-process-trigger">
@@ -281,7 +263,6 @@ function ToolBlock({group,showWorker,focused,onLocated,focusLabel="来源调用"
       {cmd&&<span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{isTerminal?'$ ':''}{cmd}</span>}
       <span className={cn('ml-auto shrink-0 font-medium',statusClass)}>{status}</span>
     </button>
-    {diagnostic&&<p role="status" className="text-sm text-muted-foreground">{diagnostic.label}{diagnostic.code!==undefined&&` · 退出码 ${diagnostic.code}`}{open&&` · ${diagnostic.detail}`}</p>}
     {open&&<div id={panelId} data-search-body className="execution-tool-detail"><div className="execution-terminal-surface" data-terminal={isTerminal}>
       {parts.map(({step,label,field})=><section key={`${step.seq}:${field??'detail'}`} data-search-activity={step.seq} className="execution-terminal-part" aria-label={label}>
         <div className="execution-terminal-label">{label}</div>
@@ -504,13 +485,18 @@ function ExecutionTurn({turn,summary,latest,onProcessInteraction,...props}:Execu
   const last=turn.steps.at(-1)!;
   const terminal=turn.steps.findLast(s=>isLifecycle(s)||s.metadata?.event_type==='outcome');
   // A durable terminal activity may arrive before its summary in the same SSE batch.
-  const status=summary?.revision&&summary.revision>=(terminal?.seq??0)?summary.status:terminal?.metadata?.status??summary?.status;
+  const receiptStatus=terminal && (terminal.metadata?.status ?? legacyReceiptStatus(terminal));
+  const status=summary?.revision && summary.revision>=(terminal?.seq??0) && summary.status!=='unknown'
+    ? summary.status : receiptStatus ?? summary?.status;
   const ended=!!terminal||!!status&&!['running','unknown','awaiting_confirmation'].includes(status);
   const streaming=turn.steps.some(s=>s.streaming);
   const live=!ended&&(streaming||(props.live&&latest)||status==='running');
-  const interrupted=turn.steps.some(s=>s.interrupted)||status==='interrupted';
+  const interrupted=status==='interrupted';
   const failed=terminal?.is_error||status==='failed'||status==='blocked';
-  const label=status==='awaiting_confirmation'?'等待宿主确认':!ended&&props.pendingStatus&&latest?'等待停止确认':failed?'失败':status==='stopped'||status==='paused'?'已停止':status==='exhausted'?'预算耗尽':interrupted?'执行已中断':ended?'已完成':live?'运行中':'历史记录';
+  const label=status==='awaiting_confirmation'?'等待宿主确认':!ended&&props.pendingStatus&&latest?'等待停止确认':
+    status==='paused'?'已暂停':status==='timeout'?'超时':status==='exhausted'?'预算耗尽':
+    ['stopped','cancelled','canceled','aborted'].includes(status??'')?'已停止':interrupted?'执行已中断':
+    failed?'失败':status==='completed'||status==='done'?'已完成':ended?'已结束':live?'运行中':'历史记录';
   const [now,setNow]=React.useState(Date.now);
   React.useEffect(()=>{if(!live)return;const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[live]);
   const elapsed=durationLabel(summary?.started_at??null,summary?.finished_at??terminal?.ts??null,now);

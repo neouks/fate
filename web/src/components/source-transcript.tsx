@@ -177,7 +177,7 @@ export function SourceTranscript({
       if (inFlight.current) return;
       const use = page.items.find((a) => a.seq === anchor);
       const waiting =
-        use?.kind === "tool_use" &&
+        use?.kind === "tool_use" && !!use.tool_use_id &&
         !page.items.some(
           (a) =>
             a.kind === "tool_result" && a.worker === use.worker && a.tool_use_id === use.tool_use_id && a.seq > anchor,

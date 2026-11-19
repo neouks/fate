@@ -46,10 +46,12 @@ export function ActivityBody({step,enabled=true,render,onReady,copy=false,copyTe
  const shown=unavailable?undefined:page??preview,partial=!!shown&&isPartialPage(shown),live=step.seq<0&&!!step.stream_id;
  const summaryOnly=field==='detail'&&shown?.field!=='metadata'&&shown?.total_chars===0&&!!step.summary;
  const text=unavailable?'':summaryOnly?step.summary:shown?.detail??(field==='arguments'?'':step.summary),complete=!!shown&&!partial;
- const interruptedOperation=taskId&&enabled&&field==='detail'&&shown?.field!=='metadata'&&step.is_error&&/operation:(\d+) 的实际执行结果未知/.exec(text)?.[1];
+ const interruptedOperation=taskId&&enabled&&field==='detail'&&shown?.field==='detail'&&shown.offset===0&&!summaryOnly&&
+  !step.inherited&&(!step.source_task_id||step.source_task_id===taskId)&&step.kind==='tool_result'&&
+  step.intent_id&&step.tool&&step.is_error&&/^(?:[^\n]+\n)?operation:([1-9]\d*) 的实际执行结果未知；/.exec(text)?.[1];
  async function copyPage(){try{await navigator.clipboard.writeText(copyText&&shown?.field!=='metadata'?copyText(text,complete):text);toast.success(partial?'已复制当前片段':'已复制');}catch{toast.error('复制失败');}}
  return <div className="flex min-w-0 flex-col gap-2" data-activity-content={step.seq}>
-  {interruptedOperation&&<OperationInterruption key={`${taskId}:${interruptedOperation}`} taskId={taskId!} operationId={Number(interruptedOperation)}/>}
+  {interruptedOperation&&<OperationInterruption key={`${taskId}:${step.intent_id}:${step.tool}:${interruptedOperation}`} taskId={taskId!} intentId={step.intent_id!} tool={step.tool!} operationId={Number(interruptedOperation)}/>}
   {!unavailable&&(shown?.field==='metadata'?<pre className="whitespace-pre-wrap break-words">{text}</pre>:render?render(text,complete):<span className="whitespace-pre-wrap break-words">{text}</span>)}
   {summaryOnly&&<p className="text-xs text-muted-foreground">原文为空，当前显示活动摘要。</p>}
   {!unavailable&&(partial||step.detail_truncated||page?.field==='metadata')&&<p className="text-xs text-muted-foreground" role="status">{live&&!page?'实时输出片段 · ':''}原文 {shown?.total_chars?`${(shown.offset+1).toLocaleString()}–${shown.next_offset.toLocaleString()} / ${shown.total_chars.toLocaleString()} 字符`:'当前片段'}{partial?'（未显示全文）':''}</p>}

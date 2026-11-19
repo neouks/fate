@@ -1,3 +1,4 @@
+import {isLifecycle} from './conversation-turns';
 import {isSteering} from './steering';
 import type {Activity} from './types';
 export type TurnFileChange={
@@ -40,7 +41,7 @@ export function turnParts(steps:Activity[],summary?:TurnSummary){
  const candidate=summary?.final_activity?steps.find(s=>s.seq===summary.final_activity!.seq)??summary.final_activity:undefined;
  const final=candidate&&!isSteering(candidate)?candidate:undefined;
  const finalStream=final?.stream_id??final?.metadata?.stream_id;
- const process=visible.filter(s=>s.seq!==final?.seq&&!(finalStream&&(s.stream_id??s.metadata?.stream_id)===finalStream&&['text','assistant'].includes(s.kind))&&s.metadata?.event_type!=='lifecycle'&&!(s.kind==='result'&&/^(回复完成|回复已停止)$/.test(s.summary)&&!s.metadata?.worker_feedback));
+ const process=visible.filter(s=>s.seq!==final?.seq&&!(finalStream&&(s.stream_id??s.metadata?.stream_id)===finalStream&&['text','assistant'].includes(s.kind))&&!isLifecycle(s));
  // Outcomes may repeat the last native prose as an acceptance receipt. Keep
  // its original activity accessible via search, but do not print it twice.
  const body=final?.detail||final?.summary;

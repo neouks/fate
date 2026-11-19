@@ -7,8 +7,14 @@ export const streamKey = (a:Activity) => {
   const id=a.stream_id??a.metadata?.stream_id;
   return id ? `${id}:${a.channel??a.metadata?.channel??(a.kind==='thinking'?'thinking':'text')}` : undefined;
 };
-export const isLifecycle = (a:Activity) => a.metadata?.event_type==='lifecycle' ||
-  (a.kind==='result' && /^(回复完成|回复已停止)$/.test(a.summary) && !a.metadata?.worker_feedback);
+export function legacyReceiptStatus(a: Activity) {
+  if (a.kind !== 'result' || !['main','mainagent'].includes(a.worker) || a.metadata?.event_type || a.metadata?.response || a.metadata?.worker_feedback ||
+      a.stream_id || a.metadata?.stream_id || a.summary_truncated || a.detail_truncated ||
+      (a.detail && a.detail !== a.summary)) return undefined;
+  if (a.summary === '回复已停止') return 'stopped';
+  if (a.summary === '回复完成') return 'completed';
+}
+export const isLifecycle = (a: Activity) => a.metadata?.event_type === 'lifecycle' || !!legacyReceiptStatus(a);
 
 /** A host run can contain many pi messages and parallel tools. Never group across lanes. */
 export function conversationTurns(items:Activity[]):ConversationTurn[] {
@@ -47,7 +53,7 @@ export function withLiveStreams(items:Activity[], streams:StreamSnapshot[]):Acti
   const live=streams.filter(s=>!finalized.has(`${s.stream_id}:${s.channel}`)).map((s,i):Activity=>({
     seq:-100000-i,worker:s.worker,intent_id:s.intent_id,main_seg:s.main_seg,ts:s.ts,
     turn_id:s.turn_id,stream_id:s.stream_id,channel:s.channel,kind:s.channel,
-    summary:s.text,detail:s.text,streaming:s.active,interrupted:!s.active,
+    summary:s.text,detail:s.text,streaming:s.active,
     detail_start:s.text_start,detail_total_chars:s.total_chars,detail_truncated:s.truncated,
   }));
   // Existing durable order is authoritative. A snapshot follows the records that

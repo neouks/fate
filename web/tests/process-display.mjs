@@ -20,7 +20,10 @@ try{
    const worker=chat?'auto':'work#1',endStatus=theme==='dark'?'failed':width===390?'stopped':'completed';
    const act=(seq,kind,summary,extra={})=>({seq,kind,summary,detail:summary,ts,worker,intent_id:chat?undefined:'201',turn_id,metadata:{turn_id},...extra});
    const initial=[act(1,'thinking','先核对已有记录，避免重复读取。',{detail:undefined,stream_id:'thought-1'}),act(2,'tool_use','record_fact {}',{tool:'record_fact',tool_use_id:'call-1',detail:'{}'}),act(3,'tool_result',parseError.slice(0,150),{tool:'record_fact',tool_use_id:'call-1',is_error:true,detail:parseError.slice(0,8192),detail_truncated:true})];
-   initial.push(act(4,'tool_use','bash {"command":"fixture"}',{tool:'bash',tool_use_id:'cancelled'}),act(5,'tool_result','Command aborted',{tool:'bash',tool_use_id:'cancelled',is_error:true}));
+   const confirmedStop = width === 1440;
+   const bashOutput = theme === 'light' ? 'Command aborted' : '(no output)\n\nCommand exited with code 1';
+   initial.push(act(4,'tool_use','bash {"command":"fixture"}',{tool:'bash',tool_use_id:'call-2'}),
+     act(5,'tool_result',bashOutput,{tool:'bash',tool_use_id:'call-2',is_error:true,interrupted:confirmedStop}));
    const final=act(7,'text','最终答复保持原字号。',{metadata:{turn_id,final_answer:true}});
    const end=act(8,'result','执行结束',{metadata:{turn_id,event_type:'lifecycle',status:endStatus}});
    let ended=false,detailBroken=true,detailRequests=0;
@@ -77,9 +80,9 @@ try{
    assert.equal(await row.evaluate(el=>getComputedStyle(el).fontSize),'13px');
    assert.equal(await row.evaluate(el=>getComputedStyle(el).paddingTop),'4px');
    assert.equal(await segment.locator('.execution-tool > button').first().getAttribute('aria-expanded'),'false');
-   await trigger.getByText('· 1 次异常',{exact:true}).waitFor();
+   await trigger.getByText(`· ${confirmedStop ? 1 : 2} 次异常`,{exact:true}).waitFor();
    const badCall=segment.locator('[data-tool-status="failed"]').first();await badCall.locator(':scope > button').click();
-   const input=badCall.getByRole('region',{name:'原始参数（JSON 解析失败）'});
+   const input=badCall.getByRole('region',{name:'工具回报的原始参数'});
    await input.getByRole('button',{name:'下一页'}).waitFor();
    assert.equal(await input.locator('pre').innerText(),Array.from(rawArgs).slice(0,8192).join(''));
    await input.getByRole('button',{name:'下一页'}).click();
@@ -88,9 +91,12 @@ try{
    await input.getByRole('button',{name:'复制当前片段'}).click();assert.equal(await page.evaluate(()=>window.fixtureCopied),last);
    await badCall.locator(':scope > button').click();
 
-   const cancelled=segment.locator('[data-tool-status="stopped"]');
-   await cancelled.getByRole('button').click();
-   await cancelled.getByText('输出（已停止）',{exact:true}).waitFor();
+   const bashCall=segment.locator('[data-terminal="true"].execution-tool');
+   assert.equal(await bashCall.getAttribute('data-tool-status'),confirmedStop?'stopped':'failed');
+   await bashCall.getByRole('button').click();
+   await bashCall.getByText(confirmedStop?'输出（已停止）':'输出 ✕',{exact:true}).waitFor();
+   assert.equal(await bashCall.locator('pre').last().innerText(),bashOutput);
+   assert.equal(await bashCall.locator('p[role="status"]').count(),0);
    await row.click();await thought.getByRole('button',{name:'重新读取第一页'}).waitFor();
    detailBroken=false;await thought.getByRole('button',{name:'重新读取第一页'}).click();
    await thought.getByText('完整推理第一页。',{exact:true}).waitFor();
