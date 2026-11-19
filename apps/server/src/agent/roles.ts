@@ -52,7 +52,7 @@ import { workerTools, plannerTools, mainTools, goalsTools } from "../tools/index
 import { buildGraphOverview, loadConstraints } from "../tools/index.js";
 import { taskCredentials } from "../egress/credentials.js";
 import {
-  WORKER_WRAPUP, MAIN_WRAPUP, PLANNER_TASK_TIMEOUT_WRAPUP,
+  WORKER_WRAPUP, MAIN_WRAPUP, PLANNER_TASK_TIMEOUT_WRAPUP, PLANNER_WRAPUP,
   systemRolePrompt, constraintBlock, hostProtocol,
 } from "./prompts.js";
 
@@ -501,7 +501,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     summaryTargetTokens:contextPolicy.summaryTargetTokens,
     compactionInstructions:PLANNER_COMPACTION_RULES+'\n'+CONTEXT_RETENTION_RULES,
     wrapup: async ({reason}) => {
-      if(reason!=='settled')return {prompt:input.wrapupPromptOverride??(input.terminalOnly?PLANNER_TASK_TIMEOUT_WRAPUP:prc.wrapupPrompt||'预算将尽，停止新探测，保存已确定的规划并简述结果。')};
+      if(reason!=='settled')return {prompt:input.wrapupPromptOverride??(input.terminalOnly?PLANNER_TASK_TIMEOUT_WRAPUP:prc.wrapupPrompt||PLANNER_WRAPUP)};
       if(input.terminalOnly||dispatchReminded)return;
       dispatchReminded=true;
       const prompt=await plannerDispatchReminder(db,taskID,expID);

@@ -109,6 +109,7 @@ export interface PlannerReceipt {
   planning_title?:string|null;submitted_intent_ids:number[];goals:Array<{id:number;state:string}>;
   submitted_intent_total?:number;submitted_intents_truncated?:boolean;dispatch_read?:{ref:string;view:'output'};
   goals_total?:number;goals_truncated?:boolean;unresolved_dispatch_total?:number;unresolved_dispatch_refs?:string[];
+  unfinished_goal_total?:number;waiting_reason?:string;
 }
 export async function plannerReceipt(ctx:ToolRunContext,entries:readonly SessionEntry[],deliveryID:string,status:string):Promise<PlannerReceipt>{
   const grounding=await plannerGrounding(ctx,entries);
@@ -125,14 +126,22 @@ export async function plannerReceipt(ctx:ToolRunContext,entries:readonly Session
   }
   const intents=indexed?.ids??(ids.size?(await ctx.db.query("SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND id=ANY($2::bigint[]) ORDER BY id",[ctx.expID,[...ids]])).rows.map(n=>Number(n.id)):[]);
   const submittedTotal=indexed?.total??intents.length;
-  const goalRows=(await ctx.db.query("SELECT id,goal_display_state(id) state,count(*) OVER() total FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 100",[ctx.expID])).rows;
+  const goalRows=(await ctx.db.query("SELECT id,goal_display_state(id) state,count(*) OVER() total,count(*) FILTER(WHERE goal_display_state(id)<>'met') OVER() unfinished FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' ORDER BY id LIMIT 100",[ctx.expID])).rows;
   const goals=goalRows.map(n=>({id:Number(n.id),state:String(n.state)})),goalsTotal=Number(goalRows[0]?.total??0);
+  const unfinished=Number(goalRows[0]?.unfinished??0),task=await ctx.db.tasks().getTask(ctx.taskID);
+  const waitingReason=task?.paused?'任务已人工暂停，等待用户恢复':task?.status!=='running'?'任务当前不在运行状态':
+    task.execution_mode==='manual'?'手工模式，等待用户操作':task.deadline_at&&Date.now()>=new Date(task.deadline_at).getTime()?'任务已超时，不再派单':
+    !goalsTotal?'缺少可验收目标，等待补充目标':!unfinished?'全部目标已有效达成，等待宿主收官':
+    await ctx.db.exploration(ctx.expID).hasActiveIntent()?'等待已有意图推进或返回证据':
+    status!=='completed'?'规划未正常完成，按现有失败退避等待重试':
+    '目标未完成且无活跃意图，等待空闲重评；具体缺少条件及恢复条件见待办和模型原始总结';
   const raw=delivered.findLast(e=>e.type==='message'&&e.message.role==='assistant');
   const partial=grounding.reads.filter(r=>!r.fully_delivered);
   const rawRef=indexed?indexed.raw_ref:raw?`session:${raw.id}`:undefined;
   const text=[`本轮规划${status==='completed'?'正常结束':status==='budget'?'因现有预算结束':'已停止'}；宿主确认提交意图 ${submittedTotal} 条${intents.length?`（${intents.map(id=>'#'+id).join('、')}）`:''}。${indexed?.has_more?'这里只列出前 100 条；通过交付记录的 output 视图分页读取全部派单。':''}`,
     indexed?.unresolved_total?`另有 ${indexed.unresolved_total} 条历史工具返回尚无法核对；不将其算作成功或零派单，可按引用复核：${indexed.unresolved_refs.join('、')}。`:'',
     `目标当前记录：${goals.map(g=>`#${g.id} ${g.state}`).join('、')||'无'}。${goalsTotal>goals.length?`共 ${goalsTotal} 条，此处为前 ${goals.length} 条；其余通过 context_search(types=["goal"]) 分页读取。`:''}`,
+    `未完成目标 ${unfinished} 个。等待原因：${waitingReason}。`,
     '方向核验：未测方向保持未知。历史负面报告的测试范围未由宿主核验，本轮未将它们自动认定为方向已否定；覆盖率、未测资产数和 Worker 完成都不能代替方向验证。',
     grounding.incomplete_total?`原文读取：${grounding.incomplete_total} 个字段/页仍未完整返回；不能认定全文已读。\n${partial.slice(0,8).map(r=>`${r.ref} ${r.field||r.view}：已返回 ${r.delivered.map(x=>`[${x[0]},${x[1]})`).join('、')||'无'} / ${r.total_chars} 字符；未读 ${r.missing.map(x=>`[${x[0]},${x[1]})`).join('、')}`).join('\n')}`:
       `原文读取：${grounding.read_total} 个字段/页有可核验的返回记录；不据此声称历史全文或整图已读。`,
@@ -140,6 +149,7 @@ export async function plannerReceipt(ctx:ToolRunContext,entries:readonly Session
   return {version:1,delivery_id:deliveryID,raw_ref:rawRef,raw_message_hash:indexed?indexed.raw_message_hash:raw?.type==='message'?hash(raw.message):undefined,
     planning_title:indexed?indexed.planning_title:raw?.type==='message'&&raw.message.role==='assistant'?plannerTitle(raw.message.content.filter(b=>b.type==='text').map(b=>b.text).join('\n')):null,
     summary:text,grounding,submitted_intent_ids:intents,submitted_intent_total:submittedTotal,submitted_intents_truncated:indexed?.has_more??false,
+    unfinished_goal_total:unfinished,waiting_reason:waitingReason,
     ...(indexed?{dispatch_read:{ref:indexed.delivery_ref,view:'output'},unresolved_dispatch_total:indexed.unresolved_total,unresolved_dispatch_refs:indexed.unresolved_refs}:{}),goals,goals_total:goalsTotal,goals_truncated:goalsTotal>goals.length};
 }
 /** Project checked host receipts for subsequent requests. Never rewrite the JSONL.

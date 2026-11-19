@@ -3,7 +3,7 @@ import {ExecutionControlStop,executionControlReason} from '../agent/execution-co
 import {streamChanges} from './stream-changes.js';
 import {ActivityOutbox,type ActivityJournal} from './activity-outbox.js';
 import {NativeActivityRecovery} from './native-activity-recovery.js';
-import {pendingPlannerWakeups,plannerWakeupReady} from './planner-wakeup.js';
+import {pendingPlannerWakeups,plannerWakeupReady,plannerHeartbeatDue} from './planner-wakeup.js';
 import {goalsBootstrap} from '../db/goals-bootstrap.js';
 import {blackboardRevision,markWorkerReleased,recoverWorkerSettlements} from '../db/worker-drafts.js';
 import {WorkerReleaseQueue} from './worker-release-queue.js';
@@ -505,18 +505,10 @@ export class Engine {
   private async plannerLoop(rt: TaskRuntime): Promise<void> {
     let retryAfter=0,lastPlannedAt=0,lastRevision=-1;
     while (!rt.stopped) {
-      // 停滞看门狗：目标未达成且无活跃意图（frontier 空且无在跑）→ 心跳不跳过、缩短重试间隔，
-      // 否则一次"空产出轮"会让任务永久停滞（真实验证发现的缺陷：模型违反硬底线时无兜底）。
-      let stalled = false;
-      {
-        const s0 = this.db.exploration(rt.expID);
-        const c0 = await s0.executionCounts().catch(() => ({ running: 0, goals: 0, met: 0 }));
-        stalled = c0.goals > 0 && c0.met < c0.goals && !(await s0.hasActiveIntent().catch(() => true));
-      }
-      const settings = await this.db.tasks().getTask(rt.taskID);
       // Poll the durable inbox without invoking an LLM on each poll. Cross-instance
       // facts/checkpoints become visible even if a process-local notification is lost.
-      await this.waitNotify(rt, Math.min(5000,stalled ? 120_000 : (settings?.plan_heartbeat_seconds ? settings.plan_heartbeat_seconds * 1000 : this.cfg.heartbeatMs)));
+      const settings = await this.db.tasks().getTask(rt.taskID);
+      await this.waitNotify(rt, Math.min(5000,Math.max(1,settings?.plan_heartbeat_seconds ? settings.plan_heartbeat_seconds * 1000 : this.cfg.heartbeatMs)));
       if (rt.stopped) break;
       // debounce：吸收 800ms 内的突发变更。
       await new Promise((r) => setTimeout(r, this.cfg.debounceMs));
@@ -546,7 +538,8 @@ export class Engine {
       const wakeups=await pendingPlannerWakeups(this.db,rt.expID);
       const revision=await blackboardRevision(this.db,rt.expID);
       const heartbeat=Math.max(1,settings?.plan_heartbeat_seconds?settings.plan_heartbeat_seconds*1000:this.cfg.heartbeatMs);
-      const inspect=Date.now()-lastPlannedAt>=heartbeat&&(counts.running>0||revision!==lastRevision);
+      const inspect=plannerHeartbeatDue({now:Date.now(),lastPlannedAt,heartbeatMs:heartbeat,running:counts.running,
+        revisionChanged:revision!==lastRevision,unfinished:counts.met<counts.goals,hasActiveIntent:await s.hasActiveIntent()});
       if(!plannerWakeupReady(wakeups,{now:Date.now(),running:counts.running,hasControl:rt.triggers.length>0,heartbeatDue:inspect}))continue;
       if(!await this.acquirePlanner(rt))continue;
       const plannerController=new AbortController();rt.plannerAbort=plannerController;
@@ -565,6 +558,8 @@ export class Engine {
       await rt.todos.load(rt.expID);
 
       const task = await this.db.tasks().getTask(rt.taskID);
+      if(!task||task.status!=='running'||task.paused||task.queued||task.execution_mode==='manual'||
+        (task.deadline_at&&Date.now()>=new Date(task.deadline_at).getTime()))continue;
       const goal = task?.goal ?? task?.description ?? "";
 
       await this.db.query('UPDATE explorations SET round_no=round_no+1 WHERE id=$1',[rt.expID]);
@@ -578,7 +573,7 @@ export class Engine {
         ...(pending.ids.length?[`待交付领域变化：${pending.ids.length} 条${pending.more?'（后续仍有分页）':''}`]:[])];
       const triggersText=`【本轮触发】\n${reasons.length?reasons.join('\n'):'心跳巡检（本轮无待交付通知）'}`;
       const model = await this.modelFor(rt, "planner");
-      if (!model) continue;
+      if (!model) { retryAfter=Date.now()+60_000;continue; }
       // Planning itself uses an execution lease and model resources. A Planner
       // that cannot dispatch any work must still be bounded by task timeout.
       if (task) await this.db.tasks().stampFirstRun(rt.taskID, task.timeout_seconds);
@@ -636,7 +631,7 @@ export class Engine {
       const after = await s.executionCounts();
       if (after.goalsReady && after.goals > 0 && after.met === after.goals) {
         if (await this.finishTask(rt, "done", "全部目标已证明达成")) break;
-      } else if(await this.holdUnfinishedTask(rt)) break;
+      }
     }
   }
 
@@ -1237,15 +1232,19 @@ export class Engine {
       const task=(await db.query('SELECT status,paused,queued FROM tasks WHERE id=$1 FOR UPDATE',[rt.taskID])).rows[0];
       if(!task||task.status!=='running'||task.paused||task.queued)return false;
       await db.query('SELECT pg_advisory_xact_lock($1)',[-rt.expID]);
+      // Only a task without acceptance goals needs human setup. Zero dispatch
+      // with unfinished goals is an idle review, never a terminal scheduler state.
+      if((await db.exploration(rt.expID).executionCounts()).goals>0)return false;
       if(rt.work.size||rt.executions.size||await db.exploration(rt.expID).hasActiveIntent())return false;
       if((await db.query("SELECT 1 FROM engine_worker_slots WHERE task_id=$1 UNION ALL SELECT 1 FROM runtime_worker_resumes WHERE task_id=$1 AND status='pending' LIMIT 1",[rt.taskID])).rowCount)return false;
-      if((await db.query("SELECT 1 FROM blackboard_wakeups WHERE exploration_id=$1 AND acknowledged_at IS NULL LIMIT 1",[rt.expID])).rowCount)return false;
-      const row=await db.query("UPDATE tasks SET status='needs_attention',status_reason=$2,completed_at=NULL WHERE id=$1 AND status='running' AND NOT paused AND NOT queued RETURNING id",[rt.taskID,'目标尚未全部核验，当前没有可执行工作']);
+      // Bootstrap notifications do not create an acceptance goal. Keep the
+      // inbox for explicit recovery, but do not leave a goalless task spinning.
+      const row=await db.query("UPDATE tasks SET status='needs_attention',status_reason=$2,completed_at=NULL WHERE id=$1 AND status='running' AND NOT paused AND NOT queued RETURNING id",[rt.taskID,'当前没有可验收目标，需要补充目标']);
       return !!row.rowCount;
     });
     if(!changed)return false;
     rt.stopped=true;rt.started=false;this.graphMaintenance.cancel(rt.taskID);
-    this.emitActivity(rt.taskID,{kind:'status',worker:'system',summary:'任务待处理：目标尚未全部核验，未自动恢复执行'});
+    this.emitActivity(rt.taskID,{kind:'status',worker:'system',summary:'任务待处理：当前没有可验收目标，需要补充目标'});
     this.notify(rt.taskID);this.wakeWorkers(rt);
     if(rt.lease)await this.coordinator.release(rt.taskID,rt.lease);
     return true;

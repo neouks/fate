@@ -1,4 +1,5 @@
 import {WORKER_FACT_GUIDANCE,migrateWorkerFactPrompt} from './worker-fact-policy.js';
+import {PLANNER_CONTINUATION_GUIDANCE,PLANNER_CONTINUATION_WRAPUP} from './planner-continuation.js';
 import {normalizeGoalProofInstructions,GOAL_PROOF_PROTOCOL} from './goal-proof-policy.js';
 import {retireExplorationInstructions} from './retired-exploration-policy.js';
 import {upgradePlannerConvergencePrompt,PLANNER_CONVERGENCE_GUIDANCE} from './planner-convergence.js';
@@ -44,7 +45,7 @@ ${FINDING_WRITE_GUIDANCE}
 结束前补齐已识别但未写回的结果。summary 概括综合结论；相关观察、细节与测试影响放 detail，关键证据原文放 evidence。最后简述结论、已保存的记录 ID、未完成原因及测试影响。无新增事实可以直接总结，不为结束而制造记录。`;
 
 export const PRE_CONVERGENCE_PLANNER_PROMPT=BASE_PLANNER_PROMPT;
-export const PLANNER_PROMPT=upgradePlannerConvergencePrompt(PRE_CONVERGENCE_PLANNER_PROMPT);
+export const PLANNER_PROMPT=upgradePlannerConvergencePrompt(PRE_CONVERGENCE_PLANNER_PROMPT)+'\n\n'+PLANNER_CONTINUATION_GUIDANCE;
 export const WORKER_PROMPT=BASE_WORKER_PROMPT;
 
 export const MAIN_PROMPT = `你是 Main，按用户请求使用已绑定的本地、领域及外部工具，不自主连续规划。
@@ -82,9 +83,9 @@ export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
   goals: '服从宿主初始化策略：新任务在同一会话先提约束和资产，再保存目标；旧任务遵守指定阶段边界。目标栏定义最终验收结果，描述不扩写目标。目标登记引用原文完整授权句或独立目标地址行，并填其中的精确目标；不自行添加标题或把子域扩大为根域。',
   reporter: REPORTER_SAVE_GUIDANCE,
 };
-export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+findingRoleProtocol(role)+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。')+(role==='planner'?'\n'+PLANNER_CONVERGENCE_GUIDANCE:''); }
+export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+findingRoleProtocol(role)+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。')+(role==='planner'?'\n'+PLANNER_CONVERGENCE_GUIDANCE+'\n'+PLANNER_CONTINUATION_GUIDANCE:''); }
 
-export const PLANNER_WRAPUP = '本轮预算将尽，不再查找新方向。保存已有意图和待办后简短总结；没有新工作可以等待。';
+export const PLANNER_WRAPUP = PLANNER_CONTINUATION_WRAPUP;
 export const WORKER_WRAPUP = WORKER_FACT_GUIDANCE+'预算将尽，停止新探测。把已识别但尚未保存的新资产、事实和已验证漏洞分别用 insert_assets、record_fact、report_finding 写回；已经保存的不重复提交。最后简短总结关键结论、记录 ID 和未完成原因，无新增事实可以直接结束。';
 export const MAIN_WRAPUP = '本轮预算将尽，不再发起操作，简述已确认的结果及未完成事项。';
 export const WORKER_TASK_TIMEOUT_WRAPUP = WORKER_FACT_GUIDANCE+'整个任务已超时，停止新探测。写回尚未保存的已有证据，然后简短总结关键结论和未完成事项并结束。';

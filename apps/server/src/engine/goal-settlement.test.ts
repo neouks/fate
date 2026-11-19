@@ -9,7 +9,7 @@ import {proposeGoalAcceptance} from '../db/goal-integrity.js';
 import {Engine,defaultEngineConfig} from './engine.js';
 
 const dsn=process.env.TEST_GOAL_INTEGRITY_DSN;
-test('idle unfinished tasks hold without restarting, accepted goals settle without another model call',{
+test('idle unfinished tasks remain schedulable, goalless tasks hold, accepted goals settle without another model call',{
  skip:!dsn&&'isolated PostgreSQL required',
 },async t=>{
  assert.match(new URL(dsn!).pathname,/^\/test_[a-z0-9_]+$/);process.env.SERIES_PG_DSN=dsn;
@@ -30,7 +30,12 @@ test('idle unfinished tasks hold without restarting, accepted goals settle witho
  await db.query('UPDATE blackboard_wakeups SET acknowledged_at=now() WHERE exploration_id=$1',[a.exp]);
  const executing=Promise.resolve();rt.executions.add(executing);
  assert.equal(await internals.holdUnfinishedTask(rt),false,'exiting worker must settle before releasing');rt.executions.delete(executing);
- assert.equal(await internals.holdUnfinishedTask(rt),true);
+ assert.equal(await internals.holdUnfinishedTask(rt),false);
+ assert.equal((await db.tasks().getTask(a.task))!.status,'running');
+ assert.equal((await db.query('SELECT 1 FROM engine_task_leases WHERE task_id=$1',[a.task])).rowCount,1);
+ await a.graph.deleteGoal(a.goal);
+ await db.query('UPDATE blackboard_wakeups SET acknowledged_at=now() WHERE exploration_id=$1',[a.exp]);
+ assert.equal(await internals.holdUnfinishedTask(rt),true,'only missing goals enters human setup');
  assert.equal((await db.tasks().getTask(a.task))!.status,'needs_attention');
  assert.equal((await db.query('SELECT 1 FROM engine_task_leases WHERE task_id=$1',[a.task])).rowCount,0);
  await engine.run(a.task);assert.equal(requests,0,'raw run cannot implicitly revive a held task');
