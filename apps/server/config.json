@@ -8,5 +8,6 @@
     "dbname": "series",
     "sslmode": "disable"
   },
-  "skill_dir": "../../skills"
+  "skill_dir": "../../skills",
+  "frontend_url": "http://127.0.0.1:3000"
 }

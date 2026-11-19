@@ -1,4 +1,6 @@
 import {registerLogRoutes} from './routes/logs.js';
+import {registerFrontendProxy} from './frontend-proxy.js';
+import {loadConfig} from '../config/index.js';
 import {usageOutboxMetrics} from '../pi/usage-outbox.js';
 import {registerFindingReproductionRoutes} from './routes/finding-reproduction.js';
 import {monitorEventLoopDelay} from 'node:perf_hooks';
@@ -113,13 +115,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.get('/api/runtime/metrics',async()=>({database:deps.db.runtimeMetrics(),scheduler:deps.engine.runtimeMetrics(),
     streams:activityStreamMetrics(),live_producers:liveStreamMetrics(),usage_outbox:usageOutboxMetrics(deps.db),memory:process.memoryUsage(),event_loop_ms:{p50:loopDelay.percentile(50)/1e6,p95:loopDelay.percentile(95)/1e6,p99:loopDelay.percentile(99)/1e6,max:loopDelay.max/1e6}}));
 
-  // 前端静态托管（替代 Go 版 go:embed）：SERIES_STATIC_DIR 或仓库内 web/out。
-  const staticDir =
+  // Prefer a live Next frontend when configured; API handlers stay local.
+  const frontendURL = process.env.SERIES_FRONTEND_URL ?? loadConfig().frontend_url;
+  if (frontendURL) registerFrontendProxy(app, frontendURL);
+  const staticDir = frontendURL ? undefined : (
     process.env.SERIES_STATIC_DIR ??
     [
       path.join(process.cwd(), "web", "out"),
       path.join(process.cwd(), "..", "..", "web", "out"),
-    ].find((p) => existsSync(path.join(p, "index.html")));
+    ].find((p) => existsSync(path.join(p, "index.html"))));
   if (staticDir) {
     void app.register(fastifyStatic, { root: staticDir, prefix: "/" });
     // Next 静态导出为目录形式（<route>/index.html）：无扩展名的页面路径解析到目录索引。

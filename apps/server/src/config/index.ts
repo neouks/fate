@@ -17,6 +17,8 @@ export interface DatabaseConfig {
 export interface SeriesConfig {
   database?: DatabaseConfig;
   skill_dir?: string;
+  /** Next.js upstream for page/assets requests; the API stays on this server. */
+  frontend_url?: string;
 }
 
 /** 配置文件路径。优先级：SERIES_CONFIG > ./config.json（CWD）。首个存在的文件胜出。 */
