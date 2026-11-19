@@ -5,7 +5,7 @@ import {createAssistantMessageEventStream,type Provider,type AssistantMessage,ty
 import type {Database} from '../db/index.js';
 import type {UsageScope} from '../db/usage-ledger.js';
 
-import {checkWorkerTokenBudget} from '../db/worker-token-budget.js';
+import {checkWorkerTokenBudget, workerRequestMaxTokens} from '../db/worker-token-budget.js';
 
 const fields=['input','output','cacheRead','cacheWrite'] as const;
 type Field=typeof fields[number];
@@ -54,6 +54,8 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
   return (model:Model<any>,messages:any,options:SimpleStreamOptions={})=>{
    const stream=createAssistantMessageEventStream(),scope={...context()},requestID=randomUUID(),observation=new UsageObservation();
    let auditID=0,attempted=false,saved=false,sequence=0;
+   let maxTokens=options.maxTokens;
+   let requestModel=model;
    let lastMessage:AssistantMessage|undefined;
    const snapshot=()=>{const value=observation.result(undefined);return {...value,_quality:value._quality==='complete'?'partial':value._quality,_receipt_seq:++sequence};};
    const record=async(message:AssistantMessage)=>{
@@ -68,14 +70,20 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
      await assertUsageStorage(db,options.signal);
      const row=await db.transaction(async tx=>{
       if(scope.runtimeID&&!(await tx.query('SELECT id FROM runtime_role_configs WHERE id=$1 AND finished_at IS NULL AND expires_at>clock_timestamp() FOR SHARE',[scope.runtimeID])).rowCount)throw new Error('模型执行器已过期');
-      await checkWorkerTokenBudget(tx,scope);
+      const budget=await checkWorkerTokenBudget(tx,scope);
+      if(budget){
+       maxTokens=workerRequestMaxTokens(budget,model,options.maxTokens);
+       // Some PI adapters add a thinking allowance to maxTokens. Clamp the
+       // model ceiling too, so thinking cannot expand this request's reservation.
+       requestModel={...model,maxTokens};
+      }
       const audit=await tx.query(`INSERT INTO llm_request_attempts(request_id,task_id,conversation_id,role,profile_id,model,status,purpose,runtime_id)
        VALUES($1,$2,$3,$4,$5,$6,'running',$7,$8) RETURNING id`,[requestID,scope.taskID||null,scope.conversationID??null,scope.role,profile.id>0?profile.id:null,model.id,scope.purpose,scope.runtimeID??null]);
       await tx.query(`UPDATE llm_usage_ledger SET profile_name=$2,intent_id=$3,main_seg=$4,turn_id=$5,scope_key=COALESCE(runtime_id,$5,request_id) WHERE request_id=$1`,
        [requestID,profile.name,scope.intentID??null,scope.mainSegment??null,scope.turnID??null]);return audit;
      });
      auditID=Number(row.rows[0]!.id);
-     const inner=(target[key] as any).call(target,model,messages,{...options,
+     const inner=(target[key] as any).call(target,requestModel,messages,{...options,...(maxTokens===undefined?{}:{maxTokens}),
       onPayload:async(payload:unknown,m:Model<any>)=>{const result=await options.onPayload?.(payload,m);attempted=true;return result;},
       onResponse:async(r:any,m:Model<any>)=>{attempted=true;await options.onResponse?.(r,m);},
       onProviderStreamEvent:async(event:unknown,m:Model<any>)=>{const before=JSON.stringify(observation.counts);observation.observe(event,String(model.api));if(observation.seen&&JSON.stringify(observation.counts)!==before)await saveUsageReceipt(db,{requestID,auditID,status:'running',finishedAt:null,usage:snapshot()});await options.onProviderStreamEvent?.(event,m);}});

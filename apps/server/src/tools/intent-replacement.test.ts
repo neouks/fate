@@ -77,6 +77,21 @@ test('objective replacement stops the old worker before dispatch and never reviv
     assert.equal((await add('本地队列样本 E', original)).failed, false);
   });
 
+  await t.test('killing redundant work preserves durable facts, findings and their graph links',async()=>{
+    const original=(await add('已无剩余工作的本地样本')).ids[0];
+    const fact=await graph.addNode('fact',{summary:'已保存的本地观察'},0,'confirmed','fixture',[]);
+    const finding=await graph.addNode('finding',{summary:'已保存的本地发现'},0,'confirmed','fixture',[]);
+    await graph.link(original,'yields',fact);await graph.link(original,'yields',finding);
+    const findingID=(await db.query("INSERT INTO findings(task_id,node_id,name,evidence) VALUES($1,$2,'本地发现','本地证据') RETURNING id",[task,finding])).rows[0]!.id;
+    const before=(await db.query('SELECT id,payload,state FROM exploration_nodes WHERE id=ANY($1::bigint[]) ORDER BY id',[[fact,finding]])).rows;
+    assert.equal((await kill(original)).state,'stopped');
+    assert.deepEqual((await db.query('SELECT id,payload,state FROM exploration_nodes WHERE id=ANY($1::bigint[]) ORDER BY id',[[fact,finding]])).rows,before);
+    assert.equal((await db.query('SELECT evidence FROM findings WHERE id=$1',[findingID])).rows[0]!.evidence,'本地证据');
+    const stopped=(await graph.getNode(original))!;
+    assert.deepEqual((stopped.payload.execution_stop as {fact_refs:{node_id:number}[]}).fact_refs.map(r=>r.node_id).sort((a,b)=>a-b),[fact,finding].sort((a,b)=>a-b));
+    assert.equal((await db.query("SELECT 1 FROM exploration_edges WHERE src_id=$1 AND rel='yields' AND dst_id=ANY($2::bigint[])",[original,[fact,finding]])).rowCount,2);
+  });
+
   await t.test('pause, cancellation, foreign IDs, same objectives and conflicting batches cannot create replacements', async () => {
     for (const state of ['paused', 'stopped']) {
       const original = (await add(`受用户控制的本地样本 ${state}`)).ids[0];

@@ -29,8 +29,8 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   search_worker_traces: '按需检索 Worker 的历史执行过程；优先查事实与结果，定位阻塞时再读轨迹。',
   get_worker_trace: '读取指定意图的进度与执行轨迹；需要原始过程时启用 include_output，按返回游标续读。',
   prove_goal: '用仍获授权的 confirmed 事实或漏洞证明目标；任务原文、线索及撤回记录不能作证。证据须支持该目标，量化条件核对实测值。',
-  kill_work: '终止指定运行意图；先确认当前进度和原因，以返回状态确认结果。',
-  steer_work: '给所属运行中 Worker 追加纠偏，PI 在工具回合边界交付；不扩大授权。',
+  kill_work: '当前方向明确无意义、重复、越界或被取消时直接终止，保留已写回事实与 findings；以回执确认停止。已完成的正常结束，不以 kill 代替完成，不反复纠偏。',
+  steer_work: '仅用结构化 correction 缩减原验收项（stop_criteria），或向原验收项引用已有事实（reuse_evidence）；criterion_indices 是原 acceptance 的 0 起始索引。禁止自由文本新任务、改变目标或新增前置问题。收尾或完成后禁止纠偏；无意义或重复的直接 kill_work。',
   todo_write: '保存跨轮依赖待办；有依赖的步骤仅在前置满足后下发。',
   set_goals: '仅保存目标栏要求的最终结果，不从描述扩写、不把探索步骤当作目标。新任务 Goals 阶段须逐字提供 source_quote；Main 追加保持原有接口。成功返回即已保存。',
   set_constraints: CONSTRAINT_TOOL_DESCRIPTION,
@@ -48,6 +48,7 @@ export const REVIEWED_CONVERGENCE_PROVE_GOAL='当你判断某个发现/事实证
 TOOL_DESCRIPTIONS.add_intent+=' '+CONVERGENCE_ADD_INTENT_HINT;
 TOOL_DESCRIPTIONS.prove_goal=CONVERGENCE_PROVE_GOAL_HINT;
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
+  if(name==='steer_work'&&stored==='给所属运行中 Worker 追加纠偏，PI 在工具回合边界交付；不扩大授权。')stored=undefined;
   // Exact known test placeholder only; preserve intentional custom descriptions.
   if(name==='record_fact'&&['EDITED DESC','边发现边按结论写回，成功立即入图；同一结论的相关观察合并，不按请求拆节点。asset_ids 明确实际涉及资产，缺省不继承意图范围；scope 简述实际验证、未测和限制，observation_type 区分实测、推断、负面或未知。缺项仍保存但不计覆盖，evidence 保留真实证据。'].includes(String(stored)))stored=undefined;
   if(stored===PRE_CONVERGENCE_TOOL_DESCRIPTIONS[name] || name==='prove_goal'&&stored===REVIEWED_CONVERGENCE_PROVE_GOAL)stored=undefined;

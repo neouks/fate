@@ -10,6 +10,7 @@ import { buildModelSource } from './providerFromProfile.js';
 import {meterProvider} from './usage-meter.js';
 import {USAGE_STORAGE_ERROR} from './usage-outbox.js';
 import type {UsageScope} from '../db/usage-ledger.js';
+import {readWorkerTokenBudget} from '../db/worker-token-budget.js';
 
 /** The management DTO and all role sessions use this same precedence and ordered chain. */
 export async function resolveModelProfiles(db:Database,taskID:number,role:string,context?:{conversationID?:number;profileID?:number}) {
@@ -117,6 +118,8 @@ export function makeModelResolver(db:Database,build=buildModelSource):ModelResol
       setRuntimeID(id){runtimeID=id;},
       setScope(value){scope={...value};},
       setPurpose(value){purpose=value;},
+      workerTokenBudget:role==='worker'?()=>readWorkerTokenBudget(db,{...scope,taskID,role},
+        Math.max(...sources.map(s=>s.model.contextWindow+s.model.maxTokens))):undefined,
       // Each stream persists its own receipt; the process background timer drains history.
       async finish(){},
       async onResponse(message){

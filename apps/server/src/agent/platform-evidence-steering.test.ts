@@ -15,7 +15,8 @@ import {applyEvidenceRepair, prepareEvidenceRepair} from '../evidence/repair-his
 import {HISTORY_INDEX_NOTE, HISTORY_EXCERPT_NOTE, HISTORY_OMITTED_NOTE} from '../evidence/history-placeholder.js';
 import {CONTEXT_LAYOUT_VERSION} from './prompt-context.js';
 import {normalizeContract} from './intent-contract.js';
-import {DIRECTION_AUTONOMY_POLICY, latestWorkerSteering, workerMandate} from './direction-autonomy.js';
+import {stoppedWorkerCriteria} from './worker-correction.js';
+import {DIRECTION_AUTONOMY_POLICY, workerMandate} from './direction-autonomy.js';
 
 const dsn = process.env.TEST_PLATFORM_EVIDENCE_DSN;
 test('platform evidence writes, shared direction context and durable native steering', {skip: !dsn && 'isolated PostgreSQL required'}, async t => {
@@ -93,35 +94,38 @@ test('platform evidence writes, shared direction context and durable native stee
     await db.transaction(tx => assert.rejects(() => applyEvidenceRepair(tx, task, item), /已变化/));
   });
 
-  await t.test('latest steering overrides conflicting acceptance after restoration without changing authorization', async () => {
-    const steer = async (intent: number, text: string, status = 'submitted') => graph.appendActivity({node_id: intent, worker: 'fixture-worker', kind: 'status', tool: 'steer_work', detail: text,
-      metadata: {event_type: 'steering', steering: {status}}});
-    await steer(first, 'A 已由其他 Worker 验证；停止 A，只回答 B');
+  await t.test('restoration retains validated reductions but never promotes free text into the mandate', async () => {
+    const steer = async (intent: number, text: string, status = 'submitted',indices?:number[]) => graph.appendActivity({node_id: intent, worker: 'fixture-worker', kind: 'status', tool: 'steer_work', detail: text,
+      metadata: {event_type: 'steering', steering: {status,...(indices?{scope_version:1,correction:{kind:'stop_criteria',criterion_indices:indices}}:{})}}});
+    await steer(first, '宿主停止原验收项 A', 'submitted', [0]);
+    await steer(first, '任意新任务不能覆盖原始目标');
     await steer(second, '其他 Worker 的私有纠偏');
     await steer(first, '未交付的消息', 'failed');
-    assert.equal(await latestWorkerSteering(db, exp, first), 'A 已由其他 Worker 验证；停止 A，只回答 B');
+    assert.deepEqual(await stoppedWorkerCriteria(db, exp, first), [0]);
     const dir = await mkdtemp(join(tmpdir(), 'fate-steering-'));
     const runtime = await ModelRuntime.create({authPath: join(dir, 'auth.json'), modelsPath: join(dir, 'models.json'), refreshOnCreate: false});
     const faux = fauxProvider({provider: 'steering-fixture'});
     await runtime.registerNativeProvider(faux.provider);
     const options = {cwd: dir, agentDir: dir, resumeSessionPath: join(dir, 'session.jsonl'), modelRuntime: runtime, model: faux.getModel(),
       systemPrompt: 'Local fixture', toolAllowlist: [], contextLayout: CONTEXT_LAYOUT_VERSION,
-      boundaryContext: async () => workerMandate(first, payload, contract, '[]', await latestWorkerSteering(db, exp, first))};
+      boundaryContext: async () => workerMandate(first, payload, contract, '[]', await stoppedWorkerCriteria(db, exp, first))};
     let runner: AgentRunner | undefined;
     const inspect = (expected: string) => (context: {messages: unknown[]}) => {
       const text = JSON.stringify(context.messages);
-      for (const part of [expected, '已被纠偏取消的项无需补做', '禁止修改样本', '已有有效的共享事实可作为结论依据']) assert.ok(text.includes(part), part);
+      for (const part of [expected, '其余原验收项与原目标、授权、禁止事项保持有效', '禁止修改样本', '已有有效的共享事实可作为结论依据']) assert.ok(text.includes(part), part);
       assert.ok(!text.includes('其他 Worker 的私有纠偏'));
+      assert.ok(!text.includes('任意新任务不能覆盖原始目标'));
+      assert.ok(!text.includes('B 也已有充分证据'));
       return fauxAssistantMessage('已引用共享证据，无需重复操作');
     };
     try {
       runner = await AgentRunner.create(options);
-      faux.setResponses([inspect('停止 A，只回答 B')]);
+      faux.setResponses([inspect('停止原验收项 [0]')]);
       await runner.prompt('fixture');
       await runner.dispose(); runner = undefined;
       await steer(first, 'B 也已有充分证据，结束当前意图');
       runner = await AgentRunner.create(options);
-      faux.setResponses([inspect('B 也已有充分证据')]);
+      faux.setResponses([inspect('停止原验收项 [0]')]);
       await runner.prompt('恢复后核对当前工作');
       assert.deepEqual((await graph.getNode(first))!.payload.contract, contract, 'authorization contract is not rewritten by steering');
     } finally {

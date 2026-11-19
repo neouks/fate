@@ -46,7 +46,7 @@ export interface EngineHooks {
   /** planner/mainagent 杀掉一条在跑意图。 */
   killWork?: (expID: number, intentID: number, reason: string, source?:string) => Promise<void>;
   /** Native pi steering delivered at the next model boundary, without blocking writeback. */
-  steerWork?: (expID: number, intentID: number, message: string, source?:string) => Promise<void>;
+  steerWork?: (expID: number, intentID: number, correction: import('../agent/worker-correction.js').WorkerCorrection, source?:string) => Promise<void>;
 }
 
 export interface ToolRunContext {

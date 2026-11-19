@@ -1,4 +1,5 @@
 import {DIRECTION_AUTONOMY_POLICY} from '../agent/direction-autonomy.js';
+import type {WorkerCorrection} from '../agent/worker-correction.js';
 import {CONVERGENCE_ADD_INTENT_HINT} from '../agent/planner-convergence.js';
 // 意图工具：add_intent（唯一意图生成入口，含去重与 mainagent 直投下发）、
 // dispatch_intents、kill_work / steer_work（引擎回调）、todo_write（planner 跨轮共享）。
@@ -217,7 +218,7 @@ export function killWorkTool(ctx: ToolRunContext) {
     {
       name: "kill_work",
       description:
-        "终止一条在跑（或卡住的）意图。用于明显无效/重复/越界的方向——先看 get_worker_trace 确认实际进度再杀。",
+        "确认当前方向明确无意义、重复、越界或被取消时直接终止，不反复纠偏或追加替代工作；保留已经写回的事实和 findings。已完成的意图应正常结束，不以 kill 代替完成。必要时用 get_worker_trace 核对实际进度。",
       promptSnippet: "终止在跑意图",
       parameters: {
         type: "object",
@@ -241,28 +242,33 @@ export function killWorkTool(ctx: ToolRunContext) {
   );
 }
 
-interface SteerWorkArgs { intent_id: number; message: string; }
+interface SteerWorkArgs { intent_id: number; correction: WorkerCorrection; }
 
 export function steerWorkTool(ctx: ToolRunContext) {
   return domainTool<SteerWorkArgs>(
     {
       name: "steer_work",
       description:
-        "通过 pi steering 向运行意图追加纠偏，在当前工具回合完成后的模型边界交付，不阻断检查点或结果提交。" +
-        "仅用于同一目标内调整方法、复用证据或缩减剩余工作；不得替换业务目标。目标变化时先 kill_work，确认结束后 add_intent 并填写 replaces_intent_id。原授权和禁止事项仍有效。已有有效共享证据直接复用，不要求每个 Worker 重做。",
+        "仅通过 PI steering 缩减当前意图的已有验收项，或向原验收项引用已有事实；不接受自由文本任务，不改目标、授权或新增前置工作。" +
+        "进入收尾或已完成时禁止纠偏；已完成正常结束，明确无意义或重复的直接 kill_work，保留已写回数据。",
       promptSnippet: "运行中纠偏（不打断）",
       parameters: {
         type: "object",
+        additionalProperties: false,
         properties: {
           intent_id: { type: "integer" },
-          message: { type: "string", description: "给该 worker 的指令" },
+          correction: {type:'object',additionalProperties:false,properties:{
+            kind:{type:'string',enum:['stop_criteria','reuse_evidence']},
+            criterion_indices:{type:'array',minItems:1,maxItems:10,items:{type:'integer',minimum:0},description:'原意图 acceptance 的从 0 开始索引；stop_criteria 停止这些项，reuse_evidence 仅向这些项引用证据'},
+            fact_ids:{type:'array',minItems:1,maxItems:20,items:{type:'integer',minimum:1},description:'仅 reuse_evidence 使用：当前任务已有有效 fact/finding 节点 ID'},
+          },required:['kind','criterion_indices']},
         },
-        required: ["intent_id", "message"],
+        required: ["intent_id", "correction"],
       },
       transactional:false,
       async run(args, c) {
         if (!c.hooks.steerWork) throw new Error("当前运行环境不支持 steer_work");
-        await c.hooks.steerWork(c.expID, args.intent_id, args.message,c.role);
+        await c.hooks.steerWork(c.expID, args.intent_id, args.correction,c.role);
         return { steered: args.intent_id };
       },
     },

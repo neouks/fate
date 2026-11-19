@@ -10,7 +10,7 @@ export type WorkerStopReason = 'completed'|'partial'|'blocked'|'missing_result'|
 
 const labels:Record<WorkerStopReason,string> = {
   completed:'当前意图执行结束',partial:'已提交部分结果',blocked:'已提交阻塞结果',missing_result:'会话结束但未提交可验收结果',invalid_result:'结果验收失败',
-  token_limit:TOKEN_LIMIT_REACHED,token_usage_unknown:TOKEN_USAGE_UNCERTAIN,
+  token_limit:'Worker token 预算已结束',token_usage_unknown:TOKEN_USAGE_UNCERTAIN,
   turn_limit:'模型请求轮数预算耗尽',duration_limit:'Worker 执行时间预算耗尽',task_timeout:'任务时间上限已到',
   planner_terminated:'Planner 终止当前意图',main_terminated:'Main 终止当前意图',user_cancelled:'用户取消当前意图',
   task_paused:'任务已暂停',intent_paused:'当前意图已暂停',task_completed:'任务目标已达成',task_ended:'任务已结束或删除',

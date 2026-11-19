@@ -4,6 +4,7 @@ import {roleAllowsTool,roleToolRejection,PLANNER_CAPABILITY_PROTOCOL} from '../a
 import {classifyResourceCall,type ResourceCall,type McpOwner} from './resource-usage.js';
 import {loadBoundSkills} from '../agent/skill-files.js';
 import {ActivityDelivery} from './activity-delivery.js';
+import type {WorkerTokenBudget} from '../db/worker-token-budget.js';
 import {nativeStreamID,withNativeActivity,type NativeActivityIdentity,type NativeActivityReference} from './native-activity.js';
 import type {ToolLoading} from '../agent/tool-loading.js';
 import {platformMcpExtension,hasDeferredMcp,MCP_RESOURCE_TOOLS,toolDiscoveryInstructions} from './platform-mcp.js';
@@ -86,7 +87,7 @@ export interface WrapupDecision {
 
 /** 外部预算函数：每次 agent 即将 settle 时询问。返回 undefined 表示正常运行结束 */
 export interface WrapupContext {
-  reason: 'turn_limit' | 'duration_limit' | 'settled';
+  reason: 'turn_limit' | 'duration_limit' | 'token_limit' | 'settled';
   usedRequests: number;
   remainingRequests?: number;
 }
@@ -140,6 +141,8 @@ export interface AgentRunnerOptions {
   taskContext?: string;
   /** Host-owned durable completion; checked after paired tool results are saved. */
   stopWhen?: () => Promise<boolean>;
+  /** Bounded Workers finish on a natural final response; queued input must not reopen them. */
+  stopOnFinalResponse?: boolean;
   reserveSettlementTurns?: number;
   boundaryContext?: () => Promise<string>;
   /** Request-only projection; native transcript stays immutable, including during compaction. */
@@ -165,7 +168,7 @@ export interface AgentRunnerOptions {
   boundedRunHistory?:boolean;
   onRequestSize?: (size: ReturnType<typeof requestSize>,purpose?:'conversation'|'compaction') => void | Promise<void>;
 	mcpGuard?: (server:string,method:string,tool?:string)=>Promise<void>;
-	modelPolicy?: { isStreaming?():boolean; onResponse(message: unknown): Promise<void>; retry(signal?:AbortSignal): Promise<boolean>; setPurpose?(purpose: 'conversation'|'compaction'):void; setRuntimeID?(id:string):void; setScope?(scope:import('../db/usage-ledger.js').UsageScope):void; finish?():Promise<void> };
+	modelPolicy?: { isStreaming?():boolean; onResponse(message: unknown): Promise<void>; retry(signal?:AbortSignal): Promise<boolean>; setPurpose?(purpose: 'conversation'|'compaction'):void; setRuntimeID?(id:string):void; setScope?(scope:import('../db/usage-ledger.js').UsageScope):void; finish?():Promise<void>; workerTokenBudget?():Promise<WorkerTokenBudget|undefined> };
 	signal?: AbortSignal;
 	maxTurns?: number;
 	maxDurationMs?: number;
@@ -222,7 +225,7 @@ export interface RunResult {
 	/** 最后一条助手文本（若有） */
 	lastAssistantText: string | undefined;
 	stopReason?: "completed" | "aborted" | "budget";
-	budgetReason?: "turn_limit" | "duration_limit";
+	budgetReason?: "turn_limit" | "duration_limit" | "token_limit";
   settlementReason?: GuardSettlementReason;
 }
 
@@ -245,6 +248,7 @@ export class AgentRunner {
 	private modelError: string | undefined;
   private hostContextFailure: {error?:Error} = {};
   private domainCompletion = {done:false};
+  private finalResponse = {done:false};
 	private settled!: (result: RunResult) => void;
 	private settledPromise!: Promise<RunResult>;
 
@@ -277,23 +281,49 @@ export class AgentRunner {
     }
     const closing: ClosingState = { active: false };
     const domainCompletion = {done:false};
+    const finalResponse = {done:false};
+    let clearWorkerQueue = () => {};
     let turns = 0;
     const wrapupContext = (reason: WrapupContext['reason']): WrapupContext => ({reason,
       usedRequests: turns + compactionHealth.requests,
-      remainingRequests: opts.maxTurns ? Math.max(0, opts.maxTurns + (opts.wrapup ? (opts.maxWrapupTurns ?? 1) : 0) - turns - compactionHealth.requests) : undefined,
+      remainingRequests: Number.isFinite(requestLimit()) ? Math.max(0, requestLimit() - turns - compactionHealth.requests) : undefined,
     });
     const closingPrompt = (prompt: string) => opts.settlementTools ? `${CLOSING_RULE}\n${prompt}` : prompt;
+    let tokenClosingLimit = Infinity;
+    let tokenClosingPrompt = '';
+    let tokenNeedsWrapup = false;
     const requestLimit=()=>Math.min(
       opts.maxTurns?opts.maxTurns+(opts.wrapup?(opts.maxWrapupTurns??1):0):Infinity,
       closing.control?.limit??Infinity,
+      tokenClosingLimit,
     );
     let enterClosing = () => {closing.active=true;};
     if(opts.platform) validatePlatformRunner(opts.platform.role,opts,opts.platform.taskID);
     opts.resourceOwners??=new Map();
     const activityDelivery = new ActivityDelivery();
     const hostContextFailure: {error?:Error} = {};
+    const refreshTokenBudget = async (afterResponse = false) => {
+      if (!opts.settlementTools || tokenClosingPrompt) return;
+      const budget = await opts.modelPolicy?.workerTokenBudget?.();
+      if (!budget?.closing) return;
+      const decision = await opts.wrapup?.(wrapupContext('token_limit'));
+      tokenClosingPrompt = `Worker token 总预算 ${budget.limit}，进入收尾时已用 ${budget.used}，剩余 ${budget.remaining}。预留收尾额度 ${budget.reserve}，收尾及压缩均计入同一总预算。停止新操作，先用 record_fact 和 report_finding 写回尚未保存的已有事实与已验证发现，已有记录不要重复；finding 仅简述并关联证据，不生成完整报告。最后简述已保存记录和未完成事项。\n${decision?.prompt ?? ''}`;
+      closing.reason = 'token_limit';
+      tokenClosingLimit = turns + compactionHealth.requests + (afterResponse ? 1 : 0) + Math.max(1, opts.maxWrapupTurns ?? 2);
+      tokenNeedsWrapup = afterResponse;
+      enterClosing();
+      activityDelivery.emit(() => opts.onActivity?.({kind:'host_status',phase:'closing',text:tokenClosingPrompt}));
+    };
     let invalidateNativeEntries=()=>{};
     const activityExtension: ExtensionFactory = api => {
+      api.on('message_end', event => {
+        if(opts.stopOnFinalResponse && event.message.role==='assistant' && event.message.stopReason==='stop'
+          && !event.message.content.some(block=>block.type==='toolCall')){
+          finalResponse.done=true;
+          if(!closing.active)domainCompletion.done=true;
+          clearWorkerQueue();
+        }
+      });
       const drain = async (_event: unknown, context: {abort():void}) => {
         try { await activityDelivery.drain(); } catch { context.abort(); }
       };
@@ -344,6 +374,7 @@ export class AgentRunner {
       });
       api.on('context', async (event,context) => {
         try {
+        await refreshTokenBudget();
         // Keep legacy feedback in the audit session, never in Agent coordination.
         let messages=projectRecallHistory(opts.projectMessages?.(event.messages)??event.messages);
         if(opts.contextLayout)messages.push({role:'custom',customType:'host_task_context',display:false,timestamp:Date.now(),content:hostTaskContext(opts.cwd,opts.taskContext)});
@@ -356,6 +387,7 @@ export class AgentRunner {
           messages.push({role:'custom',customType:'execution_budget',display:false,timestamp:Date.now(),content:
             '【本次执行预算，以此为准】'+(budget.remainingRequests===undefined?'配置为不限模型请求轮数；时间限制、暂停和授权仍生效。':`已用 ${budget.usedRequests} 次，剩余最多 ${budget.remainingRequests} 次模型请求（含收尾和压缩）；工具失败后的重试也占用轮数。`)+
             (closing.active ? CLOSING_RULE : '当前仍在执行阶段；完成本意图即可提交，不必用满预算。')+
+            (tokenClosingPrompt ? `\n${tokenClosingPrompt}` : '')+
             (closing.control?`\n【宿主收尾，以此为准】${closing.control.prompt}；剩余最多 ${Math.max(0,requestLimit()-turns-compactionHealth.requests)} 次请求（含压缩）。写回已有观察并总结，不重试探测。`:'' )});
         }
         return {messages};
@@ -375,6 +407,7 @@ export class AgentRunner {
         if(text!==original && text)return {message:{...message,content:[{type:'text' as const,text}]}};
       });
       api.on('before_provider_request', async (event,context) => {
+        if(finalResponse.done){context.abort();return event.payload;}
         if(hostContextFailure.error){context.abort();return event.payload;}
         if(closing.active)enterClosing();
         const payload=opts.contextLayout?stableToolPayload(event.payload):event.payload;
@@ -394,8 +427,15 @@ export class AgentRunner {
 			compaction: { enabled: true,...opts.compactionSettings },
 		});
 		const modelPolicyExtension: ExtensionFactory = (pi) => {
-			pi.on('message_end', async event => {
-				if(event.message.role === 'assistant') await opts.modelPolicy?.onResponse(event.message);
+			pi.on('message_end', async (event,context) => {
+				if(event.message.role === 'assistant') {
+          await opts.modelPolicy?.onResponse(event.message);
+          // Meter receipts are durable before this hook; close before tool dispatch.
+          if(event.message.stopReason!=='error' && event.message.stopReason!=='aborted') {
+            try { await refreshTokenBudget(true); }
+            catch(error) { hostContextFailure.error=error instanceof Error?error:new Error(String(error)); context.abort(); }
+          }
+        }
 			});
 			pi.on('agent_before_settle', async (event,context) => {
         const signal=opts.signal&&context.signal?AbortSignal.any([opts.signal,context.signal]):opts.signal??context.signal;
@@ -438,7 +478,7 @@ export class AgentRunner {
 		const wrapupExtension: ExtensionFactory | undefined = opts.wrapup
 			? (pi) => {
 					pi.on('agent_before_settle', async (event): Promise<AgentBeforeSettleEventResult | undefined> => {
-						if (closing.control || event.outcome !== 'completed' || (opts.maxTurns && turns >= opts.maxTurns)) return undefined;
+						if (closing.control || tokenClosingPrompt || event.outcome !== 'completed' || (opts.maxTurns && turns >= opts.maxTurns)) return undefined;
 						const maxTurns = opts.maxWrapupTurns ?? 1;
 						if (this_wrapupUsed(opts) >= maxTurns) return undefined;
 						const decision = await opts.wrapup?.(wrapupContext('settled'));
@@ -468,18 +508,30 @@ export class AgentRunner {
     const failedCalls = new Map<string,string>();
     const worker = opts.platform?.role === 'worker';
 		const budgetExtension: ExtensionFactory = (pi) => {
-      enterClosing=()=>{closing.active=true;if(opts.settlementTools)pi.setActiveTools(pi.getActiveTools()
-        .filter(name=>opts.settlementTools!.includes(name) && name!==closing.control?.excludedTool));};
+      enterClosing=()=>{if(!closing.active)clearWorkerQueue();closing.active=true;if(opts.settlementTools)pi.setActiveTools(pi.getAllTools().map(tool=>tool.name)
+        .filter(name=>permitted(name) && opts.settlementTools!.includes(name) && name!==closing.control?.excludedTool));};
       pi.on('agent_start', () => { rejectedIntentTurns = 0; failedCalls.clear(); });
       pi.on('turn_start',(_event,context)=>{
         if(turns+compactionHealth.requests>=requestLimit()){
-          if(!closing.control)closing.reason='turn_limit';context.abort();
+          if(!closing.control && !tokenClosingPrompt)closing.reason='turn_limit';context.abort();
         }
       });
 			pi.on('turn_end', async (_event, context) => {
 				turns++;
+        if(finalResponse.done){clearWorkerQueue();context.abort();return;}
         if(opts.stopOnRecoveryBlock?.()){context.abort();return;}
         if(await opts.stopWhen?.()){domainCompletion.done=true;context.abort();return;}
+        if(tokenClosingPrompt){
+          if(turns+compactionHealth.requests>=requestLimit()){
+            if(_event.message.role==='assistant'&&_event.message.content.some(b=>b.type==='toolCall'))context.abort();
+            return;
+          }
+          if(tokenNeedsWrapup){
+            tokenNeedsWrapup=false;
+            return {continue:true,entries:[{type:'custom_message' as const,customType:'server_token_budget',content:closingPrompt(tokenClosingPrompt),display:true}]};
+          }
+          return;
+        }
         const intentResults = _event.toolResults.filter(result => result.toolName === 'add_intent');
         const intentSucceeded = intentResults.some(result => !result.isError);
         if (intentSucceeded) {
@@ -629,6 +681,13 @@ export class AgentRunner {
     }
     invalidateNativeEntries=()=>{runner.entryCache=undefined;};
     runner.domainCompletion=domainCompletion;
+    runner.finalResponse=finalResponse;
+    clearWorkerQueue=()=>{
+      if(!opts.stopOnFinalResponse)return;
+      const queue=session.clearQueue();
+      const count=queue.steering.length+queue.followUp.length;
+      if(count)activityDelivery.emit(()=>opts.onActivity?.({kind:'host_status',phase:'steering_discarded',text:`Worker 已收尾或完成，取消 ${count} 条待处理消息；不追加执行。`}));
+    };
     runner.hostContextFailure=hostContextFailure;
     runner.closing = closing;
     runner.wrapupContext = wrapupContext;
@@ -760,8 +819,8 @@ export class AgentRunner {
 				this.emitActivity({ kind: 'queue_update', steering: event.steering, followUp: event.followUp });
 				break;
 			case 'agent_settled':
-				this.emitActivity({ kind: 'settled', aborted: this.domainCompletion.done?false:event.aborted, stopReason:this.domainCompletion.done?'completed':this.closing.control?.reason??(this.budgetExceeded||this.closing.reason==='turn_limit'||this.closing.reason==='duration_limit'?'budget':event.aborted?'aborted':'completed') });
-				this.settled({ aborted: this.domainCompletion.done?false:event.aborted, lastAssistantText: this.session.getLastAssistantText(), stopReason: this.domainCompletion.done?"completed":this.budgetExceeded || this.closing.reason==='turn_limit' || this.closing.reason==='duration_limit' ? "budget" : event.aborted ? "aborted" : "completed", budgetReason:this.domainCompletion.done?undefined:this.budgetReason??(this.closing.reason==='settled'?undefined:this.closing.reason),settlementReason:this.domainCompletion.done?undefined:this.closing.control?.reason });
+				this.emitActivity({ kind: 'settled', aborted: this.domainCompletion.done?false:event.aborted, stopReason:this.domainCompletion.done?'completed':this.closing.control?.reason??(this.budgetExceeded||this.closing.reason==='turn_limit'||this.closing.reason==='duration_limit'||this.closing.reason==='token_limit'?'budget':event.aborted?'aborted':'completed') });
+				this.settled({ aborted: this.domainCompletion.done?false:event.aborted, lastAssistantText: this.session.getLastAssistantText(), stopReason: this.domainCompletion.done?"completed":this.budgetExceeded || this.closing.reason==='turn_limit' || this.closing.reason==='duration_limit' || this.closing.reason==='token_limit' ? "budget" : event.aborted ? "aborted" : "completed", budgetReason:this.domainCompletion.done?undefined:this.budgetReason??(this.closing.reason==='settled'?undefined:this.closing.reason),settlementReason:this.domainCompletion.done?undefined:this.closing.control?.reason });
 				this.resetSettled();
 				break;
 			default:
@@ -792,9 +851,10 @@ export class AgentRunner {
     const closingTimer = this.opts.maxDurationMs && this.opts.settlementTools && this.opts.wrapup ? setTimeout(() => {
       void (async()=>{
         const decision = await this.opts.wrapup?.(this.wrapupContext('duration_limit'));
-        if(!active || this.opts.signal?.aborted || !decision)return;
-        this.closing.active=true;this.closing.reason='duration_limit';
-        await this.steer('时间预算即将耗尽。'+CLOSING_RULE+'\n'+decision.prompt);
+        if(!active || this.opts.signal?.aborted || this.finalResponse.done || this.closing.active || !decision)return;
+        this.closing.active=true;this.closing.reason??='duration_limit';
+        if(this.opts.stopOnFinalResponse)this.session.clearQueue();
+        await this.session.sendCustomMessage({customType:'server_duration_budget',content:'时间预算即将耗尽。'+CLOSING_RULE+'\n'+decision.prompt,display:true},{deliverAs:'steer'});
       })().catch(()=>{ /* The hard deadline remains authoritative. */ });
     }, this.opts.maxDurationMs - Math.min(30_000, this.opts.maxDurationMs * 0.1)) : undefined;
 		try {
@@ -821,14 +881,33 @@ export class AgentRunner {
 
 	/** 运行中注入 steering 消息（当前回合工具跑完后、下一次 LLM 调用前生效） */
 	async steer(text: string): Promise<'queued' | 'handled'> {
+    this.assertAcceptingInput();
     await this.assertSkillInput(text);
-		return (await this.session.steer(text)) as 'queued' | 'handled';
+    this.assertAcceptingInput();
+    const disposition=await this.session.steer(text);
+    // PI input handlers can await. A final response/closing transition may win that race.
+    if(this.opts.stopOnFinalResponse && this.phase!=='running'){
+      this.session.clearQueue();
+      this.assertAcceptingInput();
+    }
+		return disposition as 'queued' | 'handled';
 	}
+
+  get phase():'running'|'closing'|'completed'{
+    return this.finalResponse.done||this.domainCompletion.done?'completed':this.closing.active?'closing':'running';
+  }
+  private assertAcceptingInput(){
+    if(this.opts.stopOnFinalResponse&&this.phase!=='running')throw Object.assign(new Error('Worker 已进入收尾或完成，不再接受纠偏或追加工作'),{statusCode:409});
+  }
 
 	/** 排队 follow-up（本轮彻底结束后再生效） */
 	async followUp(text: string): Promise<'queued' | 'handled'> {
+    this.assertAcceptingInput();
     await this.assertSkillInput(text);
-		return (await this.session.followUp(text)) as 'queued' | 'handled';
+    this.assertAcceptingInput();
+    const disposition=await this.session.followUp(text);
+    if(this.opts.stopOnFinalResponse&&this.phase!=='running'){this.session.clearQueue();this.assertAcceptingInput();}
+		return disposition as 'queued' | 'handled';
 	}
 
 	/** 中止当前运行并等待 idle */

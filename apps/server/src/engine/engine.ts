@@ -12,6 +12,7 @@ import {recoverExpiredRuntimes} from './runtime-config.js';
 import {workerStopReceipt,failureReason,type WorkerStopReason} from './worker-outcome.js';
 import {ConversationService} from './conversations.js';
 import {normalizeContract,validateResult,type IntentResult} from '../agent/intent-contract.js';
+import {correctionMessage,stoppedWorkerCriteria,validateWorkerCorrection,type WorkerCorrection} from '../agent/worker-correction.js';
 import {validateResultEvidence} from '../tools/coordination.js';
 import {randomUUID} from 'node:crypto';
 import {pendingPlannerContext,acknowledgePlannerContext} from '../db/planner-context.js';
@@ -61,7 +62,7 @@ export function defaultEngineConfig(): EngineConfig {
 /** worker 被中断的原因（终态映射依据，对齐 Go cancelcause）。 */
 export type AbortCause = "pause" | "cancel" | "kill" | "task-timeout" | "stop" | "lease-lost" | "task-completed" | "task-ended" | "shutdown";
 
-type SteeringRunner = {steer(message:string):Promise<'queued'|'handled'>};
+type SteeringRunner = {readonly phase?:'running'|'closing'|'completed';steer(message:string):Promise<'queued'|'handled'>};
 interface WorkHandle {
   turnID: string;
   abort: (cause: AbortCause, detail?:string) => Promise<void>;
@@ -1029,16 +1030,20 @@ export class Engine {
       return ['stopped','done','blocked','exhausted'].includes(node.state);
     });
     const handle = rt.work.get(intentID);
+    // A completed result wins a late kill. Do not rewrite it as planner_terminated.
+    if(terminal || handle?.readyRunner?.phase==='completed'){
+      await handle?.done;
+      return;
+    }
     if (!handle) {
-      if (terminal) return;
       throw new Error(`意图 #${intentID} 不在当前执行器运行，尚未确认停止`);
     }
     await handle.abort("kill",`${source}: ${reason}`);
     await handle.done;
   }
 
-  async steerWork(taskID:number,intentID:number,message:string,source='planner'){
-    if(!message.trim()||Array.from(message).length>4000)throw Object.assign(new Error('纠偏消息需要 1–4000 字符'),{statusCode:400});
+  async steerWork(taskID:number,intentID:number,input:string|WorkerCorrection,source='planner'){
+    if(source==='user'&&(typeof input!=='string'||!input.trim()||Array.from(input).length>4000))throw Object.assign(new Error('纠偏消息需要 1–4000 字符'),{statusCode:400});
     const rt=this.rt(taskID);
     if(!rt)throw Object.assign(new Error('当前执行器没有运行此任务，请刷新后重试'),{statusCode:409});
     const handle=rt.work.get(intentID);
@@ -1047,18 +1052,39 @@ export class Engine {
     await this.coordinator.assert(taskID,rt.lease!);
     const node=await this.db.exploration(rt.expID).getNode(intentID);
     if(!node||node.kind!=='intent'||node.state!=='running'||rt.paused||rt.stopped)throw Object.assign(new Error('意图已暂停或结束'),{statusCode:409});
+    let correction:WorkerCorrection|undefined;
+    if(source!=='user'){
+      correction=validateWorkerCorrection(input,normalizeContract(node.payload.contract,String(node.payload.summary??'')),
+        await stoppedWorkerCriteria(this.db,rt.expID,intentID));
+      if(correction.fact_ids?.length){
+        const rows=(await this.db.query(`SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND id=ANY($2::bigint[])
+          AND kind IN ('fact','finding') AND state IN ('confirmed','origin') AND exploration_node_readable($1,id)`,[rt.expID,correction.fact_ids])).rows;
+        const readable=new Set(rows.map(row=>Number(row.id)));
+        for(const id of correction.fact_ids)if(!readable.has(id))
+          throw Object.assign(new Error(`证据 #${id} 不是当前任务有效的事实或 finding`),{statusCode:400});
+      }
+      if(correction.kind==='reuse_evidence' && (await this.db.query(`SELECT 1 FROM activity
+        WHERE exploration_id=$1 AND node_id=$2 AND kind='status' AND tool='steer_work'
+        AND metadata->>'event_type'='steering' AND metadata#>>'{steering,scope_version}'='1'
+        AND metadata#>>'{steering,status}' IN ('submitted','delivered')
+        AND metadata#>'{steering,correction}'=$3::jsonb LIMIT 1`,[rt.expID,intentID,JSON.stringify(correction)])).rows.length)
+        throw Object.assign(new Error('相同证据纠偏已提交，不重复追加工作'),{statusCode:409});
+    }
+    const message=correction?correctionMessage(correction):input as string;
     const runner=await Promise.race([handle.runner,handle.done.then(()=>undefined)]);
     if(!runner||handle.settled||handle.cause||rt.paused||rt.stopped||rt.work.get(intentID)!==handle)throw Object.assign(new Error('Worker 已退出或正在停止'),{statusCode:409});
+    if(runner.phase&&runner.phase!=='running')throw Object.assign(new Error('Worker 已进入收尾或完成，不再接受纠偏或追加工作'),{statusCode:409});
     // User input reaches PI unchanged: native skill/template expansion and
     // extension input handlers own its interpretation, exactly as in PI chat.
-    const disposition=await runner.steer(source==='user'?message:`【${source} 对当前意图的纠偏；不扩大授权】\n${message}\n仅在同一目标内调整方法、复用证据或缩减剩余工作；已取消的工作无需为补齐原验收而重做。若业务目标已变化，保存已有事实并结束，由 Planner 停止旧意图、下发新意图。原授权和禁止事项仍有效。`);
+    const disposition=await runner.steer(message);
     const id=randomUUID();
     // Platform control activity is distinct from pi's internal steering message role.
     // Native enqueue confirms submission only, not delivery or semantic effect.
     await this.db.exploration(rt.expID).appendActivity({
       node_id:intentID,worker:node.owner,kind:'status',tool:'steer_work',summary:message,detail:message,
       metadata:{event_type:'steering',turn_id:handle.turnID,source,
-        steering:{id,source,intent_id:intentID,target_turn_id:handle.turnID,status:disposition==='handled'?'handled':'submitted'}},
+        steering:{id,source,intent_id:intentID,target_turn_id:handle.turnID,status:disposition==='handled'?'handled':'submitted',
+          ...(correction?{scope_version:1,correction}:{})}},
     });
     return {id,intent_id:intentID,turn_id:handle.turnID,status:disposition};
   }
@@ -1375,7 +1401,7 @@ export class Engine {
         void expID;
         await this.killWork(rt.taskID, intentID, reason,source);
       },
-      steerWork: async (expID: number, intentID: number, message: string,source?:string) => {
+      steerWork: async (expID: number, intentID: number, message: WorkerCorrection,source?:string) => {
         void expID;
         await this.steerWork(rt.taskID, intentID, message,source);
       },

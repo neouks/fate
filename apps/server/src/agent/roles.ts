@@ -1,4 +1,5 @@
-import {workerMandate,latestWorkerSteering,plannerDispatchReminder,WORK_COORDINATION_GUIDANCE} from './direction-autonomy.js';
+import {stoppedWorkerCriteria} from './worker-correction.js';
+import {workerMandate,plannerDispatchReminder,WORK_COORDINATION_GUIDANCE} from './direction-autonomy.js';
 import {plannerConvergenceState} from './planner-convergence.js';
 import {resolveShell} from '../config/execution.js';
 import {targetProxy} from '../egress/upstream.js';
@@ -158,7 +159,7 @@ export interface WorkerRunInput {
   egressScope?: string;
   wrapupPromptOverride?: string;
   /** Host cancellation and PI native steering. */
-  onRunner?: (runner: { abort(): Promise<void>;steer(message:string):Promise<'queued'|'handled'> }) => void | Promise<void>;
+  onRunner?: (runner: { readonly phase:'running'|'closing'|'completed';abort(): Promise<void>;steer(message:string):Promise<'queued'|'handled'> }) => void | Promise<void>;
 }
 
 /** worker 会话文件：确定性键，断点续跑身份（Go: WorkerSessionID）。 */
@@ -178,7 +179,7 @@ export interface RunUsage {
 export interface WorkerRunResult {
   aborted: boolean;
   stopReason?: "completed" | "aborted" | "budget";
-  budgetReason?: 'turn_limit' | 'duration_limit';
+  budgetReason?: 'turn_limit' | 'duration_limit' | 'token_limit';
   settlementReason?: import('../pi/runner.js').GuardSettlementReason;
   failure?: string;
   lastAssistantText: string | undefined;
@@ -294,8 +295,9 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
     compactionSettings:contextPolicy.compactionSettings,
     summaryTargetTokens:contextPolicy.summaryTargetTokens,
     reserveSettlementTurns: 2,
+    stopOnFinalResponse: true,
     boundaryContext: async()=>workerMandate(intent.id,intent.payload,contract,assetsJSON,
-      await latestWorkerSteering(db,expID,intent.id))+'\n'+await constraints.context()+'\n'+await contextNeedBoundary(ctx),
+      await stoppedWorkerCriteria(db,expID,intent.id))+'\n'+await constraints.context()+'\n'+await contextNeedBoundary(ctx),
     compactionInstructions:CONTEXT_RETENTION_RULES,
     intentID:intent.id,
     cwd: runDir,
@@ -351,7 +353,7 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
   });
   try {
     ctx.sessionEntries=()=>runner.sessionEntries;
-    await input.onRunner?.({ abort: () => runner.abort(),steer:message=>runner.steer(message) });
+    await input.onRunner?.({ get phase(){return runner.phase;},abort: () => runner.abort(),steer:message=>runner.steer(message) });
     const res = await runner.prompt(firstUser);
     await runner.acknowledgeNativeActivities();
     return { ...res, usage: counter.usage() };
