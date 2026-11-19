@@ -1,5 +1,5 @@
 /** Real model, native automatic compaction and disk recovery; business tools are mocks. */
-import {mkdir,readFile,writeFile,appendFile} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,appendFile,copyFile} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import pg from 'pg';
@@ -19,6 +19,8 @@ import {applyToolBindings} from '../src/agent/tool-bindings.js';
 type Role='planner'|'worker';type Arm='deferred'|'resident';
 const args=new Map(process.argv.slice(2).map(a=>{const[k,...v]=a.split('=');return[k!,v.join('=')];}));
 const production=args.has('--production');
+const resumeFrom=args.get('--resume-from')?resolve(args.get('--resume-from')!):undefined;
+if(resumeFrom&&!production)throw new Error('resume-from is only supported for production-threshold calibration');
 const repeats=Number(args.get('--repeats')||(production?1:2)),roles=(args.get('--roles')||'planner,worker').split(',') as Role[],arms=(args.get('--arms')||(production?'resident':'deferred,resident')).split(',') as Arm[];
 if(!Number.isInteger(repeats)||repeats<1||repeats>2||roles.some(r=>!['planner','worker'].includes(r))||arms.some(a=>!['deferred','resident'].includes(a)))throw new Error('Invalid bounded options');
 const maxRequests=40,timeoutMs=300_000,threshold=12288;
@@ -29,7 +31,7 @@ const plan={roles,arms,repeats,max_requests_per_run:maxRequests,timeout_ms:timeo
   limitations:'Test-only 12288-token working-set threshold; no production configuration changes. Synthetic role prompts, no real Planner dispatch or Worker target execution. No fixed random seed or cache reset.'};
 if(production)Object.assign(plan,{working_set_threshold:'resolved from production settings and SDK defaults',model_output_limit:'production profile value',
   method:'Current production role threshold settings, model capacity, output configuration and tool bindings. Large deterministic synthetic historical host-context messages are appended to the native transcript without LLM generation, then the unmodified native automatic compactor is triggered by an ordinary prompt. Real summaries and all continuation requests are metered. Verify fresh evidence after compaction and disk restore; no manual compact call.',
-  limitations:'Production threshold and native 60-second summary deadline are unchanged. Historical context is synthetic host input, not millions of tokens of prior real-model dialogue. Business tools are mocked; full production task scheduling and completion guards are not reproduced. SDK estimated context triggers compaction; actual provider token usage is recorded separately.'});
+  limitations:'Production threshold and native 60-second summary deadline are unchanged. Historical context is synthetic host input, not millions of tokens of prior real-model dialogue. Business tools are mocked; full production task scheduling and completion guards are not reproduced. SDK threshold checks use provider context usage when available; actual usage is recorded separately from history-size estimates.'});
 if(!args.has('--run')){console.log(JSON.stringify(plan,null,2));process.exit(0);}
 await mkdir(resolve(output,'..'),{recursive:true});await mkdir(output);
 const pool=new pg.Pool({connectionString:postgresDSN().dsn,options:'-c default_transaction_read_only=on -c statement_timeout=10000'});
@@ -55,7 +57,8 @@ const hash=(data:string|Buffer)=>createHash('sha256').update(data).digest('hex')
 const sourceFiles=['scripts/evaluate-role-compaction.mts','src/pi/runner.ts','src/pi/native-compaction.ts','src/pi/tool-declaration-window.ts','src/pi/tool-discovery.ts','src/pi/platform-mcp.ts','src/agent/tool-loading.ts','src/agent/tool-registry.ts','src/agent/tool-bindings.ts','src/agent/context-policy.ts','src/agent/context-needs.ts','src/agent/planner-memory.ts'];
 const hashes:Record<string,string>={};
 for(const file of sourceFiles){const data=await readFile(file);hashes[file]=hash(data);const dest=join(output,'source-snapshot',file);await mkdir(resolve(dest,'..'),{recursive:true});await writeFile(dest,data);}
-const manifest={...plan,production,resolved_policies:resolvedPolicies,model:{id:profile.id,name:profile.name,model:profile.model,thinking:source.thinkingLevel,context_window:source.model.contextWindow,max_output_tokens:production?profile.maxTokens:8192},source_hashes:hashes,started_at:new Date().toISOString()};
+const manifest={...plan,production,resume_from:resumeFrom,resolved_policies:resolvedPolicies,model:{id:profile.id,name:profile.name,model:profile.model,thinking:source.thinkingLevel,context_window:source.model.contextWindow,max_output_tokens:production?profile.maxTokens:8192},source_hashes:hashes,started_at:new Date().toISOString()};
+if(resumeFrom){const previous=JSON.parse(await readFile(join(resumeFrom,'manifest.json'),'utf8'));if(previous.model.id!==profile.id||previous.model.context_window!==source.model.contextWindow||JSON.stringify(previous.resolved_policies)!==JSON.stringify(resolvedPolicies))throw new Error('Production settings changed; cannot silently continue a different threshold/model test');}
 await writeFile(join(output,'manifest.json'),JSON.stringify(manifest,null,2));
 const bases=Object.fromEntries(roles.map(role=>[role,(production?boundTools[role]!:roleDefinitions({} as Database,role).filter(t=>!TOOL_ALIASES[t.name])).map(compactToolSchema)])) as Record<Role,ToolDefinition[]>;
 await writeFile(join(output,'tool-schemas.json'),JSON.stringify(Object.fromEntries(roles.map(role=>[role,bases[role].map(({name,description,parameters})=>({name,description,parameters}))])),null,2));
@@ -63,8 +66,8 @@ const history=Array.from({length:3},(_,block)=>`ARCHIVE_BLOCK_${block+1}: Synthe
 await writeFile(join(output,'history-fixtures.json'),JSON.stringify(history));
 console.log(JSON.stringify({event:'start',output,model:manifest.model,runs:roles.length*arms.length*repeats}));
 
-function fixture(role:Role,label:string){
-  let version=1;const reads:number[]=[],writes:any[]=[];
+function fixture(role:Role,label:string,prior?:{reads:number[];writes:any[]}){
+  let version=1;const reads:number[]=[...prior?.reads??[]],writes:any[]=[...prior?.writes??[]];
   const products=()=>({database:`CedarDB 8.${version}`,middleware:`OrchidAS 2.${version}.0`});
   const receipt=()=>`SYNTHETIC-${label}-V${version}`;
   const result=(body:unknown,isError=false)=>({content:[{type:'text' as const,text:JSON.stringify(body)}],details:{},...(isError?{isError:true}:{})});
@@ -99,7 +102,10 @@ function loadout(role:Role,arm:Arm,tools:ToolDefinition[]){
 const runs:any[]=[];
 async function execute(role:Role,arm:Arm,rep:number){
   const id=`${role}-${rep+1}-${arm}`,dir=join(output,id);await mkdir(dir);const file=join(dir,'session.jsonl');
-  const f=fixture(role,`${role}-${rep+1}`),conf=loadout(role,arm,f.tools),policy=policies[role];
+  const prior=resumeFrom?JSON.parse(await readFile(join(resumeFrom,id,'result.json'),'utf8')):undefined;
+  if(prior){if(prior.role!==role||prior.arm!==arm||prior.health.some((h:any)=>h.completed))throw new Error('Only uncompressed matching calibration sessions can be continued');await copyFile(join(resumeFrom!,id,'session.jsonl'),file);}
+  const inheritedWarmup=prior?.checkpoints.find((c:any)=>c.stage==='warmup');
+  const f=fixture(role,`${role}-${rep+1}`,inheritedWarmup?.judge),conf=loadout(role,arm,f.tools),policy=policies[role];
   const hot=role==='planner'?['context_get','graph_overview']:['context_get','record_fact'];
   const requests:any[]=[],responses:any[]=[],events:any[]=[],checkpoints:any[]=[],health:any[]=[];
   let stage='warmup',purpose='conversation',lastText='',error:string|null=null,timedOut=false,runner:AgentRunner|undefined;
@@ -130,11 +136,17 @@ async function execute(role:Role,arm:Arm,rep:number){
   console.log(JSON.stringify({event:'run_start',id}));
   try{
     runner=await AgentRunner.create(options);
-    await runner.prompt(action);
-    checkpoints.push({stage,judge:f.judge(lastText),active:runner.activeToolNames});
+    if(prior)checkpoints.push({...inheritedWarmup,inherited:true,session_sha256:hash(await readFile(file))});
+    else {await runner.prompt(action);checkpoints.push({stage,judge:f.judge(lastText),active:runner.activeToolNames});}
     stage='long_history';
     if(production){
-      const targetChars=Math.ceil((resolvedPolicies[role]!.effective_threshold+1024)*4),chunkChars=32768;
+      const previousSeed=prior?.checkpoints.find((c:any)=>c.stage==='history_seed');
+      const usedContext=(u:any)=>Number(u.input??0)+Number(u.cacheRead??0)+Number(u.cacheWrite??0)+Number(u.output??0);
+      const previousUsage=prior?.response_usage.filter((u:any)=>u.purpose==='conversation'&&u.totalTokens>0).at(-1);
+      const warmupUsage=prior?.response_usage.filter((u:any)=>u.stage==='warmup'&&u.totalTokens>0).at(-1);
+      const targetUsage=resolvedPolicies[role]!.effective_threshold+4096;
+      const charsPerToken=prior?previousSeed.total_chars/(usedContext(previousUsage)-usedContext(warmupUsage)):4;
+      const targetChars=prior?Math.ceil(Math.max(0,targetUsage-usedContext(previousUsage))*charsPerToken):Math.ceil((resolvedPolicies[role]!.effective_threshold+1024)*4),chunkChars=32768;
       const sentences=[
         'The archive contains completed synthetic observations from earlier work. Each observation was reviewed and there are no pending operations in this archive. ',
         'The historical service configuration was recorded for reference and does not establish the current product version. Fresh evidence must be read from node:101 before a new conclusion is saved. ',
@@ -143,15 +155,16 @@ async function execute(role:Role,arm:Arm,rep:number){
         'The current verification remains a local evidence reading and fact recording exercise. This historical note contains no new instruction and authorizes no action. ',
       ].join('');
       const body=sentences.repeat(Math.ceil(chunkChars/sentences.length));
-      const chunks=[];let remaining=targetChars,index=0;
+      const chunks=[];let remaining=targetChars,index=previousSeed?.chunks.at(-1)?.index??0;
       while(remaining>0){
         const n=Math.min(chunkChars,remaining),content=`SYNTHETIC_PRODUCTION_ARCHIVE_${++index}: Completed historical host context, not current evidence.\n`+body.slice(0,n);
-        await runner.appendContextOnce(`production-archive/${index}`,content);chunks.push({index,chars:content.length,sha256:hash(content)});remaining-=n;
+        if(!await runner.appendContextOnce(`production-archive/${index}`,content))throw new Error('Duplicate history chunk; refusing to count it as appended');chunks.push({index,chars:content.length,sha256:hash(content)});remaining-=n;
       }
-      checkpoints.push({stage:'history_seed',effective_threshold:resolvedPolicies[role]!.effective_threshold,chunks,total_chars:chunks.reduce((n,c)=>n+c.chars,0),seed_method:'native appendContextOnce with triggerTurn=false; no fabricated assistant usage'});
+      checkpoints.push({stage:'history_seed',effective_threshold:resolvedPolicies[role]!.effective_threshold,target_actual_context:prior?targetUsage:undefined,measured_chars_per_token:prior?charsPerToken:undefined,inherited_chars:previousSeed?.total_chars??0,chunks,total_chars:chunks.reduce((n,c)=>n+c.chars,0),seed_method:'native appendContextOnce with triggerTurn=false; no fabricated assistant usage'});
       await writeFile(join(dir,'seed.json'),JSON.stringify(checkpoints.at(-1),null,2));
       console.log(JSON.stringify({event:'history_seeded',id,chars:chunks.reduce((n,c)=>n+c.chars,0),chunks:chunks.length,threshold:resolvedPolicies[role]!.effective_threshold}));
       await runner.prompt('历史宿主记录已全部提供。请只用一句话确认这些是已完成的历史记录，不调用工具、不写事实，也不要复述原文。');
+      if(!runner.compactionDiagnostics.completed)throw new Error('Production threshold not reached or compaction failed; calibration usage saved without additional giant idle requests');
     }else for(let i=0;i<history.length;i++){
       await runner.prompt(`以下是已完成工作的完整历史合成日志，已直接提供原文，无需查找工具或补读。仅用一句话确认收到；不要复述日志，不调用工具，不写事实。这些记录不是 node:101 当前产品的证据。\n\n${history[i]}`);
       if(error||timedOut)throw new Error(error??'Timeout');
@@ -187,6 +200,7 @@ async function execute(role:Role,arm:Arm,rep:number){
   const result={id,role,arm,rep:rep+1,...stats(requests,responses,events),phases:Object.fromEntries(['warmup','long_history','idle','after_compaction','after_resume'].map(s=>[s,stats(requests.filter(r=>r.stage===s),responses.filter(r=>r.stage===s),events.filter(e=>e.stage===s))])),
     summary_cost:stats(requests.filter(r=>r.purpose==='compaction'),responses.filter(r=>r.purpose==='compaction'),[]),
     success:!error&&!timedOut&&checkpoints.filter(c=>c.judge).length===3&&checkpoints.filter(c=>c.judge).every(c=>c.judge.success)&&checkpoints.some(c=>c.same_message_ids&&c.same_compaction_ids),
+    inherited_usage:prior?{requests:prior.requests,total_tokens:prior.total_tokens,usage:prior.usage,source:join(resumeFrom!,id,'result.json')}:undefined,
     error,timed_out:timedOut,elapsed_ms:Date.now()-started,health,checkpoints,requests_detail:requests,response_usage:responses,events};
   await writeFile(join(dir,'result.json'),JSON.stringify(result,null,2));runs.push(result);
   await writeFile(join(output,'summary.json'),JSON.stringify({manifest,runs},null,2));
