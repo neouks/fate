@@ -52,12 +52,19 @@ test('truncated, binary and large evidence stays explicitly incomplete instead o
  }
 });
 
-test('source-only partial HTTP evidence is preserved with an explicit gap',async()=>{
+test('source-only evidence stays unchanged without the removed generic packet warning',async()=>{
  const {db,repro}=fixture();
  repro.steps=[{id:'s',action:'核对已有证据',request:'GET /sample HTTP/1.1',response:'{"ok":true}',expected:'',proves:'仅有片段',source:'evidence'}];
  const result=await prepareReproduction(db,repro,{taskID:7,evidence:'GET /sample HTTP/1.1\n{"ok":true}'},true);
- assert.match(result!.steps[0]!.packet_note!,/未包含完整 HTTP/);
+ assert.equal(result!.steps[0]!.packet_note,undefined);
+ assert.equal(result!.steps[0]!.request,'GET /sample HTTP/1.1');
  assert.equal(result!.steps[0]!.response,'{"ok":true}');
+ // Old stored notes also disappear from exports without rewriting evidence.
+ result!.steps[0]!.packet_note='原始证据未包含完整 HTTP 请求与响应（起始行、Header、空行或 Body 缺失），保留已知内容，不补造。';
+ const report=assembleReport({name:'fixture',reproduction:result,evidence_version:1,report_evidence_version:1});
+ assert.doesNotMatch(report,/原始证据未包含完整 HTTP/);
+ assert.match(report,/GET \/sample HTTP\/1\.1/);
+ assert.match(report,/\{"ok":true\}/);
 });
 
 test('Reporter template, host protocol and tool schema agree on concise prose without a word cap',()=>{

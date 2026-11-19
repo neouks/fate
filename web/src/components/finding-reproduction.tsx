@@ -53,7 +53,7 @@ export function FindingReproductionPanel({finding,contextTask,readOnly,onChanged
  {!workspaceEvidence&&<><Markdown text={descriptionText}/>{discovery}</>}
  {repro?<><p>入口：{repro.entry_point||"未记录"}</p>{repro.prerequisites.length>0&&<ul className="list-inside list-disc">{repro.prerequisites.map((p,i)=><li key={i}>{p}</li>)}</ul>}
  {repro.steps.map((step,i)=><React.Fragment key={step.id}><p>{i+1}. {step.action||"验证"}</p>{step.expected&&<p>{step.expected}</p>}{step.proves&&<p>{step.proves}</p>}
- {(step.packet_note||step.truncated)&&<Alert><AlertDescription>{step.packet_note||"当前为证据片段，完整内容请查看证据来源。"}</AlertDescription></Alert>}
+ {!step.packet_note?.startsWith('原始证据未包含完整 HTTP 请求与响应')&&(step.packet_note||step.truncated)&&<Alert><AlertDescription>{step.packet_note||"当前为证据片段，完整内容请查看证据来源。"}</AlertDescription></Alert>}
  <Packet label="请求 / 命令" value={step.request}/><Packet label="响应 / 输出" value={step.response}/>
  {step.traffic_id&&<div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={()=>void downloadBody(step.traffic_id!,"request")}>下载请求 Body</Button><Button variant="outline" disabled={busy} onClick={()=>void downloadBody(step.traffic_id!,"response")}>下载响应 Body</Button></div>}
  {(step.source||step.source_ref)&&<Button variant="outline" onClick={()=>void readSource(step.id)}>查看完整证据来源</Button>}

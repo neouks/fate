@@ -77,12 +77,7 @@ export async function expandTrafficPackets(db:Database,repro:Reproduction|null,t
  if(!repro)return repro;
  for(const step of repro.steps){
   delete step.packet_note;
-  if(!step.traffic_id){
-   const httpContext=/^https?:/i.test(repro.entry_point)||/^HTTP\//.test(step.response)||/^[A-Z]+ \S+ HTTP\//.test(step.request);
-   if(httpContext&&(!/^[A-Z]+ \S+ HTTP\/\d(?:\.\d)?\r?\n/.test(step.request)||!/^HTTP\/\d(?:\.\d)? \d{3}[^\r\n]*\r?\n/.test(step.response)||![step.request,step.response].every(v=>/\r?\n\r?\n/.test(v))))
-    step.packet_note='原始证据未包含完整 HTTP 请求与响应（起始行、Header、空行或 Body 缺失），保留已知内容，不补造。';
-   continue;
-  }
+  if(!step.traffic_id)continue;
   const snap=(await db.query(`SELECT s.*,e.truncated AS capture_truncated FROM traffic_evidence_snapshots s
    LEFT JOIN traffic_exchanges e ON e.id=s.id WHERE s.id=$1 AND s.task_id=$2`,[step.traffic_id,taskID])).rows[0];
   if(!snap)throw invalid('流量引用不存在或不属于当前任务');
@@ -148,7 +143,7 @@ export function assembleReport(f:Record<string,unknown>,images:Array<{id:string;
  for(const [i,s]of r.steps.entries()){
   out.push(`${i+1}. ${s.action||'验证'}`,'',...[s.expected,s.proves].filter(Boolean),'');
   if(!s.verified)out.push('> Worker 提交的过程；尚未关联可核对的原始证据。','');
-  if(s.packet_note||s.truncated)out.push('> '+(s.packet_note||'以下为证据片段，完整内容请读取证据来源。'),'');
+  if(!s.packet_note?.startsWith('原始证据未包含完整 HTTP 请求与响应')&&(s.packet_note||s.truncated))out.push('> '+(s.packet_note||'以下为证据片段，完整内容请读取证据来源。'),'');
   if(s.request)out.push('请求 / 命令：',fence(s.request),'');else out.push('缺少原始请求 / 命令。','');
   if(s.response)out.push('响应 / 输出：',fence(s.response),'');else out.push('缺少原始响应 / 输出。','');
   if(s.traffic_id)out.push(`[流量证据 ${s.traffic_id}](/function/findings/detail?id=${encodeURIComponent(String(f.id))})`,'');
