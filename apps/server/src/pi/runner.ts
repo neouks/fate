@@ -1,3 +1,4 @@
+import {WORKER_FACT_GUIDANCE} from '../agent/worker-fact-policy.js';
 import {humanInputUI,maskedHumanResult,type HumanInputHandler} from './human-input.js';
 import {ActiveClock} from './active-clock.js';
 import {projectRecallHistory} from './recall-history.js';
@@ -314,7 +315,7 @@ export class AgentRunner {
       const budget = await opts.modelPolicy?.workerTokenBudget?.();
       if (!budget?.closing) return;
       const decision = await opts.wrapup?.(wrapupContext('token_limit'));
-      tokenClosingPrompt = `Worker token 总预算 ${budget.limit}，进入收尾时已用 ${budget.used}，剩余 ${budget.remaining}。预留收尾额度 ${budget.reserve}，收尾及压缩均计入同一总预算。停止新操作，先用 record_fact 和 report_finding 写回尚未保存的已有事实与已验证发现，已有记录不要重复；finding 仅简述并关联证据，不生成完整报告。最后简述已保存记录和未完成事项。\n${decision?.prompt ?? ''}`;
+      tokenClosingPrompt = `Worker token 总预算 ${budget.limit}，进入收尾时已用 ${budget.used}，剩余 ${budget.remaining}。预留收尾额度 ${budget.reserve}，收尾及压缩均计入同一总预算。停止新操作。${WORKER_FACT_GUIDANCE}先用 record_fact 和 report_finding 写回尚未保存的已有事实与已验证发现，已有记录不要重复；finding 仅简述并关联证据，不生成完整报告。最后简述已保存记录和未完成事项。\n${decision?.prompt ?? ''}`;
       closing.reason = 'token_limit';
       tokenClosingLimit = turns + compactionHealth.requests + (afterResponse ? 1 : 0) + Math.max(1, opts.maxWrapupTurns ?? 2);
       tokenNeedsWrapup = afterResponse;

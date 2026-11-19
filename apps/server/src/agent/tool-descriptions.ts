@@ -20,7 +20,7 @@ export const PREVIOUS_CONTEXT_GET_DESCRIPTION = '按 items 读取引用；summar
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
   add_intent: '创建工作意图。summary 说明要做什么和目的，asset_ids 引用相关资产，parent_ids/contract.basis 引用已有事实。根据目标、依赖和证据决定工作粒度，可明确接口、参数、步骤及验收要求；contract 按需填写。实际调用并核对逐项成功回执才算派单；已有相同工作不重复提交，局部交叉先核对已有产出。',
   dispatch_intents: '请求宿主下发已有待执行意图，仅 Main 可用；执行前检查任务状态和意图归属。',
-  record_fact: '保存新增事实，相关观察合并为同一结论。单条传 summary 等顶层字段；批量只传 facts 数组，不混用。asset_ids 仅列实际涉及资产，缺省不继承意图范围；scope 描述实际验证范围。核对逐项回执。',
+  record_fact: '保存新增事实。Worker 默认一个意图在收尾时把相关观察总结成一条 fact 一次写回，summary 概括综合结论，detail 汇总观察、方法、细节和限制，evidence 保留关键原文。只有确实独立、无法归并的结论才拆分。单条传 summary 等顶层字段；独立结论批量只传 facts 数组，不混用。asset_ids 仅列实际涉及资产，scope 描述实际验证范围。核对逐项回执，部分成功只重试失败项。',
   asset_search: '检索本任务及直接来源资产摘要。普通检索提供 DSL，untested=true 查无明确范围测试记录的资产，不代表从未测试；legacy_tested 提示历史范围待核实。用 next_offset 续页，详情用 asset_get。',
   asset_get: '按 ids 和字段组读取资产；identity/fingerprint 默认返回，dns/params/auth/extra 按需选择。field 使用 JSON Pointer；next 参数原样续读 Unicode 正文。',
   insert_assets: '边发现边用 assets 数组登记资产。按 Schema 填写各类型字段：record_value 必须为数组，endpoint 使用 url/method/params，HTTP service 使用 url 和指纹，app 使用 app_name。results/errors 逐项返回，成功即入图，探索结论用 record_fact。',
@@ -65,11 +65,12 @@ export const PRE_CONVERGENCE_TOOL_DESCRIPTIONS:Record<string,string>={add_intent
 export const REVIEWED_CONVERGENCE_PROVE_GOAL='当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。';
 TOOL_DESCRIPTIONS.add_intent+=' '+CONVERGENCE_ADD_INTENT_HINT;
 TOOL_DESCRIPTIONS.prove_goal=CONVERGENCE_PROVE_GOAL_HINT;
+const PREVIOUS_FACT_DESCRIPTION = '保存新增事实，相关观察合并为同一结论。单条传 summary 等顶层字段；批量只传 facts 数组，不混用。asset_ids 仅列实际涉及资产，缺省不继承意图范围；scope 描述实际验证范围。核对逐项回执。';
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
   if(name==='add_intent'&&typeof stored==='string')stored=retireExplorationInstructions('add_intent',stored);
   if(name==='steer_work'&&stored==='给所属运行中 Worker 追加纠偏，PI 在工具回合边界交付；不扩大授权。')stored=undefined;
   // Exact known test placeholder only; preserve intentional custom descriptions.
-  if(name==='record_fact'&&['EDITED DESC','边发现边按结论写回，成功立即入图；同一结论的相关观察合并，不按请求拆节点。asset_ids 明确实际涉及资产，缺省不继承意图范围；scope 简述实际验证、未测和限制，observation_type 区分实测、推断、负面或未知。缺项仍保存但不计覆盖，evidence 保留真实证据。'].includes(String(stored)))stored=undefined;
+  if(name==='record_fact'&&[PREVIOUS_FACT_DESCRIPTION,describeToolContract('record_fact',PREVIOUS_FACT_DESCRIPTION),'EDITED DESC','边发现边按结论写回，成功立即入图；同一结论的相关观察合并，不按请求拆节点。asset_ids 明确实际涉及资产，缺省不继承意图范围；scope 简述实际验证、未测和限制，observation_type 区分实测、推断、负面或未知。缺项仍保存但不计覆盖，evidence 保留真实证据。'].includes(String(stored)))stored=undefined;
   if(stored===PRE_CONVERGENCE_TOOL_DESCRIPTIONS[name] || name==='prove_goal'&&stored===REVIEWED_CONVERGENCE_PROVE_GOAL)stored=undefined;
   if(name==='report_finding'&&isPreviousFindingDescription(stored))stored=undefined;
   if(name==='report_conversation_finding'&&stored==='绑定任务的 Pentest 原子提交有证据的漏洞')stored=undefined;

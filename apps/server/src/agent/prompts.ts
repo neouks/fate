@@ -1,3 +1,4 @@
+import {WORKER_FACT_GUIDANCE,migrateWorkerFactPrompt} from './worker-fact-policy.js';
 import {normalizeGoalProofInstructions,GOAL_PROOF_PROTOCOL} from './goal-proof-policy.js';
 import {retireExplorationInstructions} from './retired-exploration-policy.js';
 import {upgradePlannerConvergencePrompt,PLANNER_CONVERGENCE_GUIDANCE} from './planner-convergence.js';
@@ -36,10 +37,11 @@ ${FINDING_PLANNER_GUIDANCE}
 意图提交即入 frontier；简述判断、派单和等待原因后直接结束，不提交完成工具、不轮询等待 Worker。`;
 
 export const BASE_WORKER_PROMPT = `你是 Worker，执行当前意图给定的工作，遵守用户要求和授权范围，然后停止。受阻时如实说明原因，不扩展任务。
-边发现边写回，不必等到结束：新资产用 insert_assets 登记；新的探索结论用 record_fact 直接写入探索图；亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。同一结论的相关观察合并保存，不按每次请求、接口或参数生成事实；独立结论分别写回。asset_ids 只列本结论实际涉及的资产，漏洞只列实际受影响资产，不继承整个意图范围。scope 用简短文字说明实际测试范围、未测部分和适用限制；observation_type 区分实测、推断、负面结果和未知。未测不能当作已否定，背景资产不能当作已验证目标。不编造证据。
+新资产用 insert_assets 及时登记；${WORKER_FACT_GUIDANCE}
+亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。asset_ids 只列本结论实际涉及的资产，漏洞只列实际受影响资产，不继承整个意图范围。scope 用简短文字说明实际测试范围、未测部分和适用限制；observation_type 区分实测、推断、负面结果和未知。未测不能当作已否定，背景资产不能当作已验证目标。不编造证据。
 ${FINDING_WRITE_GUIDANCE}
 按需 context_search/context_get 读取上下文；来源任务只读。新发现资产及时登记，执行仍遵守当前意图和授权，中间文件写当前工作目录，不向其他 Agent 发消息。
-结束前补齐已识别但未写回的结果。summary 用一句通俗结论；细节与测试影响放 detail/evidence。最后简述结论、已保存的记录 ID、未完成原因及测试影响。无新增事实可以直接总结，不为结束而制造记录。`;
+结束前补齐已识别但未写回的结果。summary 概括综合结论；相关观察、细节与测试影响放 detail，关键证据原文放 evidence。最后简述结论、已保存的记录 ID、未完成原因及测试影响。无新增事实可以直接总结，不为结束而制造记录。`;
 
 export const PRE_CONVERGENCE_PLANNER_PROMPT=BASE_PLANNER_PROMPT;
 export const PLANNER_PROMPT=upgradePlannerConvergencePrompt(PRE_CONVERGENCE_PLANNER_PROMPT);
@@ -74,7 +76,7 @@ export function builtinPrompt(role: string): string | null { return ROLE_PROMPTS
 
 /** One host-owned completion rule, also applied when the operator supplies a custom role prompt. */
 export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
-  worker: '只执行当前这一条意图；每次动作前先检查最新操作约束。约束优先于意图和纠偏，冲突动作不执行。Worker 不派单；遇到拒绝或参数错误，按原因改正，避免原样重试或绕过权限。可调整方法，不接续其他方向；完成或受阻后写回并退出，不因总目标未达成而继续。按当前意图执行，按结论写回，不要求逐请求记录。record_fact 每条附非空 evidence；批量以逐项回执确认写回。显式 asset_ids 是实际关联；缺省不继承意图资产。scope 说明已测、未测及限制；缺失范围保留为未知，不自动计覆盖。执行中边发现边用 record_fact/report_finding 直接写回图谱，成功后立即可见；结束前补齐遗漏并输出简短总结，无新增事实可以直接结束。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。',
+  worker: '只执行当前这一条意图；每次动作前先检查最新操作约束。约束优先于意图和纠偏，冲突动作不执行。Worker 不派单；遇到拒绝或参数错误，按原因改正，避免原样重试或绕过权限。可调整方法，不接续其他方向；完成或受阻后写回并退出，不因总目标未达成而继续。按当前意图执行，按结论写回，不要求逐请求记录。record_fact 每条附非空 evidence；批量以逐项回执确认写回。显式 asset_ids 是实际关联；缺省不继承意图资产。scope 说明已测、未测及限制；缺失范围保留为未知，不自动计覆盖。'+WORKER_FACT_GUIDANCE+'亲自验证的漏洞用 report_finding 保存。记录成功后立即可见，结束时输出简短总结。当前协议不提供 checkpoint_intent、complete_intent 或 replace_node_id，历史会话中的这些要求已失效；不提交 criteria/publish_ids 验收表。旧草稿仅供复核，不自动发布。',
   planner: PLANNER_CAPABILITY_PROTOCOL+'add_intent 统一传 intents 数组，单条也放入数组，每项必填非空 summary。parent_ids 仅引用当前任务节点；直接来源任务用 contract.basis 填 node_id 和内容版本。参数失败先按错误纠正，不重复发同一调用。按实际需要说明工作及步骤，contract 按需提供。局部重叠返回 related_intent_ids 提示，精确重复仍复用原意图。覆盖数字只表示有范围测试记录，未覆盖数字不能代替历史检索。意图事务提交即入 frontier，正常总结直接结束。paused 表示用户暂停该意图，等待用户通过按钮恢复；不得用新意图继续其未完成步骤来绕过暂停。record_plan_decision 和旧规划槽位协议已停用；已提交工作不因本轮随后失败而撤销。',
   mainagent: '新工作用 add_intent 的 intents 数组，每项必填非空 summary。已有工作用 dispatch_intents 提供 1–10 个明确意图 ID；仅在用户明确要求批量下发时使用 all_open: true。',
   goals: '服从宿主初始化策略：新任务在同一会话先提约束和资产，再保存目标；旧任务遵守指定阶段边界。目标栏定义最终验收结果，描述不扩写目标。目标登记引用原文完整授权句或独立目标地址行，并填其中的精确目标；不自行添加标题或把子域扩大为根域。',
@@ -83,9 +85,9 @@ export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
 export function hostProtocol(role: string): string { return '各司其职：按授权查询探索图、证据和 Worker 活动；Main/Planner 只纠偏所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+findingRoleProtocol(role)+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。')+(role==='planner'?'\n'+PLANNER_CONVERGENCE_GUIDANCE:''); }
 
 export const PLANNER_WRAPUP = '本轮预算将尽，不再查找新方向。保存已有意图和待办后简短总结；没有新工作可以等待。';
-export const WORKER_WRAPUP = '预算将尽，停止新探测。把已识别但尚未保存的新资产、事实和已验证漏洞分别用 insert_assets、record_fact、report_finding 写回；已经保存的不重复提交。最后简短总结关键结论、记录 ID 和未完成原因，无新增事实可以直接结束。';
+export const WORKER_WRAPUP = WORKER_FACT_GUIDANCE+'预算将尽，停止新探测。把已识别但尚未保存的新资产、事实和已验证漏洞分别用 insert_assets、record_fact、report_finding 写回；已经保存的不重复提交。最后简短总结关键结论、记录 ID 和未完成原因，无新增事实可以直接结束。';
 export const MAIN_WRAPUP = '本轮预算将尽，不再发起操作，简述已确认的结果及未完成事项。';
-export const WORKER_TASK_TIMEOUT_WRAPUP = '整个任务已超时，停止新探测。写回尚未保存的已有证据，然后简短总结关键结论和未完成事项并结束。';
+export const WORKER_TASK_TIMEOUT_WRAPUP = WORKER_FACT_GUIDANCE+'整个任务已超时，停止新探测。写回尚未保存的已有证据，然后简短总结关键结论和未完成事项并结束。';
 export const PLANNER_TASK_TIMEOUT_WRAPUP = '整个任务已超时，不再派单。仅用现有证据核对目标并简短总结，然后结束。';
 
 export function renderPrompt(template: string, vars: Record<string, string>): string {
@@ -125,6 +127,7 @@ export async function systemRolePrompt(db: Database, role: string, vars: Record<
   let effective=role==='planner'&&!protocol.includes(PLANNER_CAPABILITY_PROTOCOL)?protocol+'\n'+PLANNER_CAPABILITY_PROTOCOL:protocol;
   const findingPolicy=findingRoleProtocol(role);
   if(findingPolicy&&!effective.includes(findingPolicy))effective+='\n'+findingPolicy;
+  if(role==='worker'&&!effective.includes(WORKER_FACT_GUIDANCE))effective+='\n'+WORKER_FACT_GUIDANCE;
   if(['planner','mainagent'].includes(role))effective+='\n'+GOAL_PROOF_PROTOCOL;
   return composeRolePrompt(body,effective);
 }
@@ -175,6 +178,7 @@ export async function migrateBuiltinPrompts(db: Database): Promise<void> {
   });
   await retireWorkerTablePrompt(db,WORKER_PROMPT);
   await migrateFindingWritePolicy(db,{planner:PLANNER_PROMPT,worker:WORKER_PROMPT});
+  await migrateWorkerFactPrompt(db,WORKER_PROMPT);
 }
 
 const OLD_WORKER_WRAPUP = "预算将尽，停止新探测。现在用 record_fact/report_finding 汇总已有的最终观察，取得节点 ID 后立即 complete_intent 引用并发布；已有暂存稿可直接引用或修订。不能完成的条件用 partial/blocked 和剩余条件说明，没有事实就如实提交 blocked；不要等待验收全部完成才写回，也不要只写检查点或文字总结。";

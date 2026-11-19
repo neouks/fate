@@ -18,9 +18,9 @@ interface RecordFactArgs extends Partial<FactInput> { facts?: FactInput[]; }
 
 export function recordFactTool(ctx: ToolRunContext) {
   const singleProperties = {
-    summary: {type:'string', pattern:'\\S', description:'一句话自包含事实结论'},
+    summary: {type:'string', pattern:'\\S', description:'一句话概括相关观察形成的综合结论'},
     evidence: {type:'string', pattern:'\\S', description:ctx.role==='worker'?'Worker 必填：支撑结论的证据原文':'支撑结论的证据原文'},
-    detail: {type:'string', description:'方法或限制，不重复摘要或证据'},
+    detail: {type:'string', description:'汇总支撑结论的相关观察、验证方法、细节和限制，标明各观察的条件及不确定性'},
     scope: writebackScopeSchema,
     observation_type: {type:'string', enum:['observed','inferred','negative','unknown'], description:'区分实测、推断、负面或未知'},
     confidence: {type:'string', enum:['low','medium','high'], description:'默认 medium'},
@@ -30,8 +30,8 @@ export function recordFactTool(ctx: ToolRunContext) {
   return domainTool<RecordFactArgs>(
     {
       name: "record_fact",
-      description: "将增量结论写入探索图；Worker 必须附证据。单条使用顶层字段，批量只传 facts；核对逐项回执。",
-      promptSnippet: "写回探索事实（正面/负面结论都要，带证据）",
+      description: "Worker 默认在意图收尾时将相关观察汇总为一条 fact 一次写回，细节放 detail，必须附 evidence。只有确实独立、无法归并的结论才用 facts 批量提交；核对逐项回执。",
+      promptSnippet: "汇总相关观察后写回事实，细节放 detail，附真实证据",
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -40,7 +40,7 @@ export function recordFactTool(ctx: ToolRunContext) {
           facts: {
             type: 'array', minItems: 1, maxItems: 20,
             items: {type:'object', properties:singleProperties, required, additionalProperties:false},
-            description: '每项独立保存；整批失败返回工具错误，部分成功按同序结果处理',
+            description: '仅用于彼此独立、无法归并的结论，在一次调用中提交；每项独立保存，部分成功只重试失败项',
           },
         },
         oneOf: [

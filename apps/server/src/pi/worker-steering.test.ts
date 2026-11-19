@@ -36,7 +36,7 @@ test('native PI steering reaches the next request after tools finish and honors 
     release();const result=await run;
     assert.equal(result.lastAssistantText,'已按纠偏总结 B');
     assert.match(JSON.stringify(runner.sessionEntries),new RegExp(correction));
-  }finally{release();await run?.catch(()=>{});await runner.dispose();await rm(dir,{recursive:true,force:true});}
+  }finally{release();await run?.catch(()=>{});await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:50});}
 });
 
 test('queued correction cannot reopen a Worker after its natural final response',{timeout:5000},async()=>{
@@ -61,7 +61,7 @@ test('queued correction cannot reopen a Worker after its natural final response'
     assert.equal(runner.phase,'completed');assert.ok(statuses.includes('steering_discarded'));
     assert.doesNotMatch(JSON.stringify(runner.sessionEntries),/queued-new-work|queued-follow-up/);
     await assert.rejects(runner.steer('late correction'),{statusCode:409});
-  }finally{release();await run?.catch(()=>{});await runner.dispose();await rm(dir,{recursive:true,force:true});}
+  }finally{release();await run?.catch(()=>{});await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:50});}
 });
 
 test('closing rejects steering and follow-up, clears pending work and permits saved-record writeback',{timeout:5000},async()=>{
@@ -96,7 +96,7 @@ test('closing rejects steering and follow-up, clears pending work and permits sa
     release();const result=await run;
     assert.equal(result.settlementReason,'basis_changed');
     assert.equal(operations,0);assert.equal(saves,1);assert.equal(faux.state.callCount,3);
-  }finally{releaseFirst();release();await run?.catch(()=>{});await runner.dispose();await rm(dir,{recursive:true,force:true});}
+  }finally{releaseFirst();release();await run?.catch(()=>{});await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:50});}
 });
 
 test('an awaiting native input handler cannot enqueue new work after completion',{timeout:5000},async()=>{
@@ -118,5 +118,5 @@ test('an awaiting native input handler cannot enqueue new work after completion'
     releaseRequest();assert.equal((await run).stopReason,'completed');
     releaseInput();await rejected;
     assert.equal(faux.state.callCount,1);assert.doesNotMatch(JSON.stringify(runner.sessionEntries),/late-input/);
-  }finally{releaseRequest();releaseInput();await run?.catch(()=>{});await runner.dispose();await rm(dir,{recursive:true,force:true});}
+  }finally{releaseRequest();releaseInput();await run?.catch(()=>{});await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:50});}
 });
