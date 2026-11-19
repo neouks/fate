@@ -11,6 +11,10 @@ import {
   PanelLeftIcon,
   FolderIcon,
   FingerprintIcon,
+  ClipboardListIcon,
+  BugIcon,
+  NetworkIcon,
+  ArrowLeftRightIcon,
   Settings2Icon,
   ArchiveIcon,
   ArrowLeftIcon,
@@ -66,12 +70,12 @@ const TrafficTab = dynamic(() => import("./_tabs/traffic-tab").then((m) => m.Tra
   loading: TaskDetailLoading,
 });
 const TABS = [
-  { value: "sessions", label: "任务" },
-  { value: "profiles", label: "画像" },
-  { value: "findings", label: "发现" },
-  { value: "graph", label: "探索" },
-  { value: "files", label: "文件" },
-  { value: "traffic", label: "流量" },
+  { value: "sessions", label: "任务", icon: ClipboardListIcon },
+  { value: "profiles", label: "画像", icon: FingerprintIcon },
+  { value: "findings", label: "发现", icon: BugIcon },
+  { value: "graph", label: "探索", icon: NetworkIcon },
+  { value: "files", label: "文件", icon: FolderIcon },
+  { value: "traffic", label: "流量", icon: ArrowLeftRightIcon },
 ];
 
 function mergeTaskStats(task: Task, stats: Stats | null): Task {
@@ -310,11 +314,11 @@ function TaskDetailInner() {
         </div>
         <Tabs value={tab} onValueChange={setTab} className="task-header-tabs min-w-0 overflow-x-auto">
           <TabsList aria-label="任务导航" className="min-w-max">
-            {TABS.map((t) => (
-              <TabsTrigger value={t.value} key={t.value}>
-                {t.value === "profiles" && <FingerprintIcon aria-hidden="true" />}
-                {t.label}
-                {t.value === "findings" && findingCount !== null && (
+            {TABS.map(({ value, label, icon: Icon }) => (
+              <TabsTrigger value={value} key={value}>
+                <Icon data-icon="inline-start" aria-hidden="true" />
+                {label}
+                {value === "findings" && findingCount !== null && (
                   <span className="ml-1 rounded-md bg-muted px-1.5 text-xs tabular-nums">{findingCount}</span>
                 )}
               </TabsTrigger>
