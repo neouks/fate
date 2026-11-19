@@ -1,3 +1,4 @@
+import {INTENT_RETRY_GUIDANCE,intentRetryArgumentError} from './input-contracts.js';
 import type {WorkerCorrection} from '../agent/worker-correction.js';
 import {CONVERGENCE_ADD_INTENT_HINT} from '../agent/planner-convergence.js';
 // 意图工具：add_intent（唯一意图生成入口，含去重与 mainagent 直投下发）、
@@ -32,10 +33,15 @@ const intentFields = {
                 contract: {type:'object',description:'可选执行要求，可补充目标、步骤、验收条件及边界。objective/acceptance 省略时沿用 summary；work 仅在已有稳定方向标识时使用。',properties:{
                   objective:{type:'string',description:'需要完成的工作，可明确执行步骤；后续补全须说明哪项用户要求仍缺数据或哪些已读证据矛盾，充分结论不重复核验'},acceptance:{type:'array',description:'可省略；仅描述结果所需结论、证据和覆盖说明，可明确接口与步骤，不预设成败结论。补全仅覆盖实际受影响对象与缺口及停止条件，明确沿用未受影响结论；不附加顺便复核其他对象的可选项，不追加用户未要求的全集/隐藏入口证明。',minItems:1,maxItems:10,items:{type:'string'}},out_of_scope:{type:'array',maxItems:20,items:{type:'string'}},
                   basis:{type:'array',description:'直接来源任务的证据放在此处，不放 parent_ids。填写已读取 fact/finding 的顶层 version/content_version，可为 0；read_receipt.version、writeback.version 是格式版本，不能作为依据版本。goal、intent 不是事实依据。',maxItems:20,items:{type:'object',properties:{node_id:{type:'integer',minimum:1},version:{type:'integer',minimum:0,description:'节点内容版本，不是读取回执或写回格式版本'}},required:['node_id','version']}},
-                  work:{type:'object',properties:{resource:{type:'string'},question_key:{type:'string'},method_class:{type:'string'},identity:{type:'string'}},required:['resource','question_key','method_class','identity']},
+                  work:{type:'object',description:'稳定工作身份，四项与派单资产范围共同参与匹配；重试沿用原值。旧意图没有 work 时，按原 summary 和资产范围核对，不要补造身份。',properties:{
+                    resource:{type:'string',minLength:1,maxLength:2000,pattern:'\\S',description:'原工作资源标识，URL 或 asset:ID；重试保持资源一致'},
+                    question_key:{type:'string',minLength:1,maxLength:200,pattern:'\\S',description:'稳定问题类别；匹配时忽略大小写和连续空白'},
+                    method_class:{type:'string',minLength:1,maxLength:200,pattern:'\\S',description:'稳定方法类别；匹配时忽略大小写和连续空白'},
+                    identity:{type:'string',minLength:1,maxLength:200,pattern:'\\S',description:'稳定区分标识；去除首尾空白后精确匹配，大小写敏感'},
+                  },required:['resource','question_key','method_class','identity']},
                   allowed_tools:{type:'array',items:{type:'string'},maxItems:50,description:'默认省略，不要复制能力目录生成白名单，也不要仅因只读要求填写；让 Worker 自选已绑定且获授权的工具。仅明确需要限制时填写精确工具名，见 graph_overview.worker_capabilities；HTTP GET 使用 http_request，不能编造 http_get 等别名。内部写回和已绑定 Skill 文档的读取不受此清单限制。'},
                 }},
-                retry_of:{type:'integer',minimum:1},retry_kind:{type:'string',enum:['new_evidence','transient_failure']},retry_reason:{type:'string',maxLength:2000},
+                retry_of:{type:'integer',minimum:1,description:INTENT_RETRY_GUIDANCE},retry_kind:{type:'string',enum:['new_evidence','transient_failure'],description:'new_evidence 需要新的有效 contract.basis；transient_failure 仅重试 blocked/exhausted/stopped 的可恢复故障。与 retry_of、retry_reason 一起提供。'},retry_reason:{type:'string',minLength:1,maxLength:2000,pattern:'\\S',description:'非空重试原因，说明故障恢复条件或新增依据；与 retry_of、retry_kind 一起提供。'},
               };
 
 function readIntentItems(args: AddIntentArgs): IntentItem[] {
@@ -52,6 +58,8 @@ function readIntentItems(args: AddIntentArgs): IntentItem[] {
     if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.summary !== 'string' || !item.summary.trim() || item.summary.length > 2000) {
       throw new Error('Invalid arguments for tool "add_intent": ' + path + 'summary 必须是 1–2000 字符的非空方向说明');
     }
+    const retryError=intentRetryArgumentError(item as unknown as Record<string,unknown>,path);
+    if(retryError)throw new Error('Invalid arguments for tool "add_intent": '+retryError);
     if (Object.hasOwn(item, 'basis'))
       throw new Error('Invalid arguments for tool "add_intent": ' + path + 'basis 只能放在 contract.basis 中');
     if (item.parent_ids !== undefined && item.parent_id !== undefined)
@@ -77,7 +85,11 @@ export function addIntentTool(ctx: ToolRunContext) {
           intents: {
             type: "array", minItems: 1, maxItems: 4,
             description: "1–4 个可独立执行的方向；一个方向只放一个元素。每个元素都会创建真实工作，不要把说明、备注、重复概述或对上一项的引用作为额外元素。每项必填独立完整的 summary，任一项无效整批不提交",
-            items: { type: "object", properties: intentFields, required: ["summary"], additionalProperties: false },
+            items: { type: "object", properties: intentFields, required: ["summary"], additionalProperties: false,
+              allOf:[
+                {anyOf:[{required:['retry_of','retry_kind','retry_reason']},{not:{anyOf:[{required:['retry_of']},{required:['retry_kind']},{required:['retry_reason']}]}}]},
+                {not:{required:['retry_of','replaces_intent_id']}},
+              ] },
           },
         },
         required: ["intents"],

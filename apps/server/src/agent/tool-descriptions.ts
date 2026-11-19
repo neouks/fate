@@ -2,7 +2,7 @@ import {HUMAN_INPUT_RULES} from '../pi/human-input.js';
 import {retireExplorationInstructions} from './retired-exploration-policy.js';
 import {normalizeGoalProofInstructions} from './goal-proof-policy.js';
 import {FINDING_WRITE_GUIDANCE,isPreviousFindingDescription} from './finding-write-policy.js';
-import {describeToolContract,recognizedHistoricalDescription} from './tool-description-policy.js';
+import {describeToolContract,recognizedHistoricalDescription,mandatoryToolContract,PREVIOUS_REQUIRED_TOOL_CONTRACTS} from './tool-description-policy.js';
 import {CONSTRAINT_TOOL_DESCRIPTION} from './constraint-policy.js';
 import {WEB_SEARCH_DESCRIPTION} from '../search/policy.js';
 import { LEGACY_TOOL_DESCRIPTIONS } from './prompt-legacy.js';
@@ -77,6 +77,7 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
   if(name==='context_get'&&[PREVIOUS_CONTEXT_GET_DESCRIPTION,PREVIOUS_CONTEXT_GET_DESCRIPTION+' 任一项失败则调用标为失败，成功项仍保留；长正文需选择 field，按 read_options 选择读取。'].includes(String(stored)))stored=undefined;
   if(name==='steer_work'&&stored===TOOL_DESCRIPTIONS.steer_work+' 仅同一目标内调整方法、复用证据或缩减剩余工作，不能替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。')stored=undefined;
   if(Object.hasOwn(PREVIOUS_READ_CONTRACT_DESCRIPTIONS,name)&&stored===PREVIOUS_READ_CONTRACT_DESCRIPTIONS[name])stored=undefined;
+  if(Object.hasOwn(PREVIOUS_REQUIRED_TOOL_CONTRACTS,name)&&stored===TOOL_DESCRIPTIONS[name]!+PREVIOUS_REQUIRED_TOOL_CONTRACTS[name]!)stored=undefined;
   stored=recognizedHistoricalDescription(name,stored);
   if(name==='set_constraints'&&stored==='保存用户明确的允许或禁止约束，写明具体目标。')return {description:CONSTRAINT_TOOL_DESCRIPTION,source:'builtin'};
   const priorPagedDefault = '按 items 批量读取引用。summary 只读索引，detail 读详情，output 读结果；field 选 JSON Pointer 字段。parents/members 每页最多 20 条；有 next_offset 时用 page_cursor 和 offset 读完本页，再用 next_cursor 翻页并重置 offset。沿用 version，冲突重新检索。';
@@ -95,7 +96,7 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
   if (name === 'tool_search' && stored === '按需发现已绑定工具；使用英文工具名或关键词') return {description, source: 'builtin'};
   if (name === 'web_search' && stored === 'DeepSeek 官方网络搜索') return {description, source: 'builtin'};
   if (typeof stored === 'string' && stored.trim() && stored !== description && stored !== LEGACY_TOOL_DESCRIPTIONS[name] && stored !== TOOL_DESCRIPTIONS[name] && !previous)
-    return { description: normalizeGoalProofInstructions(stored), source: 'custom' };
+    return { description: mandatoryToolContract(name,normalizeGoalProofInstructions(stored)), source: 'custom' };
   return { description, source: 'builtin' };
 }
 

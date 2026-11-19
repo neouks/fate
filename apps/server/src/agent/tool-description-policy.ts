@@ -1,3 +1,4 @@
+import {CONTEXT_ITEM_LIMIT_GUIDANCE,INTENT_RETRY_GUIDANCE} from '../tools/input-contracts.js';
 import { WORKER_FINDING_BRIEF, FINDING_WRITE_GUIDANCE } from './finding-write-policy.js';
 import { REPORTER_SAVE_GUIDANCE } from '../evidence/report-sections.js';
 
@@ -35,11 +36,26 @@ export function roleToolDescription(name:string,resolved:{description:string;sou
   return description;
 }
 
+/** Exact previously shipped suffixes, also used to recognize stored defaults. */
+export const PREVIOUS_REQUIRED_TOOL_CONTRACTS:Record<string,string> = {
+  add_intent: ' 目标变化先 kill_work 确认旧意图结束，再在新项填写 replaces_intent_id；不能通过 steer_work 在旧会话更换目标。统一传 1–4 项 intents，单条也放入数组，每项各填非空 summary。parent_ids 仅限本任务；直接来源任务用 contract.basis 的 node_id 和实际内容版本。',
+  context_get: ' 首次省略 field 返回整个视图 JSON 的有界分页；将返回的 next_item 原样放入 items 续读，不只复制 offset。切换字段或版本时按 read_options 从 offset=0 重读，不混用坐标。version 可选，只使用返回的实际版本，不猜测。任一项失败则调用标为失败，成功项仍保留，只重试失败项。',
+};
+
+/** Runtime requirements cannot be replaced by editable business guidance. */
+export function mandatoryToolContract(name: string, description: string): string {
+  const contract = name === 'context_get' ? CONTEXT_ITEM_LIMIT_GUIDANCE : name === 'add_intent' ? INTENT_RETRY_GUIDANCE : undefined;
+  if(!contract)return description;
+  for(const part of [PREVIOUS_REQUIRED_TOOL_CONTRACTS[name]!.trim(),contract])
+    if(!description.includes(part))description+=' '+part;
+  return description;
+}
+
 /** Shared by the tool catalog and role-specific declarations. */
 export function describeToolContract(name: string, description: string): string {
+  description = mandatoryToolContract(name, description);
   if (name === 'asset_search') return description + ' DSL 可用 tested==true 或 tested==false 筛选任务覆盖状态，与 untested 共享角色权限及覆盖度开关。';
   if (name === 'prove_goal') return description + ' 每次只证明一项目标；证据校验成功后直接标记 met，明确的资产覆盖度 100% 另由宿主核对实时覆盖记录。以 met/all_goals_met 回执为准。';
-  if (name === 'add_intent') return description + ' 目标变化先 kill_work 确认旧意图结束，再在新项填写 replaces_intent_id；不能通过 steer_work 在旧会话更换目标。统一传 1–4 项 intents，单条也放入数组，每项各填非空 summary。parent_ids 仅限本任务；直接来源任务用 contract.basis 的 node_id 和实际内容版本。';
   if (name === 'dispatch_intents') return description + ' 提交非空 intent_ids；仅用户明确要求批量下发时传 all_open: true。';
   if (name === 'record_fact') return description.replace('缺项仍保存但不计覆盖','缺少资产或 scope 时仍保存但不计覆盖')
     + ' Worker 每条事实必填非空 evidence；不得提交历史压缩占位符或猜测的保存编号。批量逐项核对结果，整批失败返回工具错误。';
@@ -47,7 +63,6 @@ export function describeToolContract(name: string, description: string): string 
   if (name === 'kill_work') return description + ' 支持等待中或运行中意图；核对返回 state，停止失败不得下发替代意图，不能绕过用户暂停或取消。';
   if (name === 'insert_assets') return description + ' 整批失败返回工具错误，部分成功只重试失败项。';
   if (name === 'register_user_target') return description + ' evidence 引用完整原句或独立目标地址行。精确域名用 subdomain；root_domain 仅用于原文明确的通配根域。';
-  if (name === 'context_get') return description + ' 首次省略 field 返回整个视图 JSON 的有界分页；将返回的 next_item 原样放入 items 续读，不只复制 offset。切换字段或版本时按 read_options 从 offset=0 重读，不混用坐标。version 可选，只使用返回的实际版本，不猜测。任一项失败则调用标为失败，成功项仍保留，只重试失败项。';
   if (name === 'context_search') return description + ' source=operations/needs 不支持图谱筛选 q/types/state/asset_id。';
   return description;
 }

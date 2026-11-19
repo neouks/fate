@@ -369,7 +369,10 @@ export class ExplorationStore {
       if(payload.retry_of){
         const previous=(await tx.query<IndexedIntent>(`SELECT ${projection} FROM intent_work_index w JOIN exploration_nodes n ON n.id=w.intent_id
           WHERE w.exploration_id=$1 AND w.intent_id=$2`,[this.expID,Number(payload.retry_of)])).rows[0];
-        if(!previous||!sameWork(previous))throw new Error('retry_of 必须指向本任务的同一项工作');
+        if(!previous)throw new Error('INTENT_RETRY_NOT_FOUND: retry_of 未引用本任务中的意图；先用 context_search 查找并用 context_get 读取原意图。');
+        if(!sameWork(previous))throw new Error('INTENT_RETRY_WORK_MISMATCH: retry_of 引用存在，但工作身份或派单资产范围不一致。'+
+          (contract.work&&previous.has_work?'双方都有 contract.work，需保持 resource/question_key/method_class/identity 及原派单资产范围一致。':'任一方没有 contract.work 时，可按规范化 summary 与相同派单资产范围匹配；改写 summary 或补造 work 不能建立同一工作关系。')+
+          '请用 context_get 读取 node:'+previous.id+' 核对原工作身份与范围，不要删除 retry_of 绕过去重。');
       }
       const existingRow=(await tx.query<IndexedIntent>(`SELECT ${projection}
         FROM intent_work_index w JOIN exploration_nodes n ON n.id=w.intent_id
@@ -381,11 +384,15 @@ export class ExplorationStore {
         if(payload.retry_of&&existing.cancelled_by_user===true)throw new Error('用户已取消此意图，不能借重试绕过');
         if(payload.retry_of&&Number(payload.retry_of)===Number(row.id)&&!['open','running','paused'].includes(row.state)){
           const reason=payload.retry_reason;
-          if(typeof reason!=='string'||!reason.trim())throw new Error('重试必须说明原因');
+          if(typeof reason!=='string'||!reason.trim())throw new Error('INTENT_RETRY_REASON_REQUIRED: retry_reason 必须提供非空重试原因');
           const oldBasis=(existing.contract as {basis?:{node_id:number;version:number;report_revision?:number}[]}|undefined)?.basis??[];
           const transient=payload.retry_kind==='transient_failure'&&['blocked','exhausted','stopped'].includes(row.state);
           const changed=payload.retry_kind==='new_evidence'&&contract.basis.some(ref=>!oldBasis.some(old=>old.node_id===ref.node_id&&old.version-(old.report_revision??0)===ref.version-(ref.report_revision??0)));
-          if(!transient&&!changed)throw new Error('重试需可恢复故障或新的有效事实依据');
+          if(!transient&&!changed)throw new Error(payload.retry_kind==='transient_failure'
+            ? 'INTENT_RETRY_STATE: retry_kind=transient_failure 仅适用于 blocked/exhausted/stopped，原意图当前 state='+row.state+'；请核对原意图状态。'
+            : payload.retry_kind==='new_evidence'
+              ? 'INTENT_RETRY_BASIS_UNCHANGED: retry_kind=new_evidence 要求 contract.basis 包含新增或有效版本变化的事实依据；重复原依据或仅修改报告文字不满足条件。'
+              : 'INTENT_RETRY_KIND: retry_kind 必须为 transient_failure 或 new_evidence；同时提供非空 retry_reason。');
         }else{
           await tx.commit();return {id:Number(row.id),created:false,dedup:{version:3,strength:identity.strength,match:'equivalent_work'}};
         }

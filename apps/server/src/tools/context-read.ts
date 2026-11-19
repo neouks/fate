@@ -1,3 +1,4 @@
+import {CONTEXT_ITEM_LIMIT_GUIDANCE,contextItemLimitError} from './input-contracts.js';
 import {contextEvidence} from './context-evidence.js';
 import {unicodeLength,unicodeSlice} from '../unicode.js';
 import {ReadSelectionRequired,ReadVersionChanged,fieldReadOptions,type ReadCoordinate} from './read-coordinate.js';
@@ -182,7 +183,15 @@ function checkReadVersion(item:RecallItem,version:number|undefined,view:string){
 }
 export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({name:'context_get',readOnly:true,
   description:'批量读取 node:ID、activity:ID、operation:ID、output:UUID、attachment:URL编码路径、traffic:UUID:request|response；证据引用按返回 offset_unit/next_item 续读；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
-  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^((node|activity|operation):[1-9][0-9]*|session:[a-zA-Z0-9_-]+|(output|attachment|traffic):.+)$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string',description:'JSON Pointer，例如 /payload/evidence、历史会话 /content。首次省略时读取整个视图 JSON 的第一页；续读使用 next_item 的明确字段和偏移。空字符串选择整个视图 JSON，其偏移不能用于内嵌证据字段。'},offset:{type:'integer',minimum:0},max_chars:{type:'integer',minimum:1,maximum:24000,description:'本条 node/activity/operation/session 的 Unicode 字符上限，同时受顶层总上限约束。其他证据引用使用其原生分页。'},version:{type:'integer',minimum:0,description:'图节点版本；session: 原文引用不使用此参数。'},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref'],allOf:[{not:{required:['ref','max_chars'],properties:{ref:{pattern:'^(output|attachment|traffic):'}}}}]}},max_chars:{type:'integer',minimum:256,maximum:24000,description:'本次批量读取的总字符上限；items 内可另设每条上限。'}},required:['items']},
+  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^((node|activity|operation):[1-9][0-9]*|session:[a-zA-Z0-9_-]+|(output|attachment|traffic):.+)$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string',description:'JSON Pointer，例如 /payload/evidence、历史会话 /content。首次省略时读取整个视图 JSON 的第一页；续读使用 next_item 的明确字段和偏移。空字符串选择整个视图 JSON，其偏移不能用于内嵌证据字段。'},offset:{type:'integer',minimum:0},max_chars:{type:'integer',minimum:1,maximum:24000,description:'本条 Unicode 字符上限，同时受顶层总上限约束。'+CONTEXT_ITEM_LIMIT_GUIDANCE},version:{type:'integer',minimum:0,description:'图节点版本；session: 原文引用不使用此参数。'},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref'],allOf:[{not:{required:['ref','max_chars'],properties:{ref:{pattern:'^(output|attachment|traffic):'}}}}]}},max_chars:{type:'integer',minimum:256,maximum:24000,description:'本次批量读取的总字符上限；items 内可另设每条上限。'}},required:['items']},
+  prepareArguments(input) {
+    const args=input as RecallArgs;
+    if(Array.isArray(args?.items))for(const [index,item] of args.items.entries()){
+      const error=contextItemLimitError(item,index);
+      if(error)throw new Error(error);
+    }
+    return args;
+  },
   async run(args,ctx){
     if(!args.items&&args.ref){const result=await legacyContextGetTool(ctx).execute(ctx.toolCallID??'legacy-read',args as never,ctx.signal,undefined,{} as never);if(result.isError)throw new Error((result.content[0] as {text:string}).text);return JSON.parse((result.content[0] as {text:string}).text);}
     if(!args.items?.length||args.items.length>5)throw new Error('items 需要 1–5 个引用');
@@ -194,7 +203,7 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
         await recallPermission(ctx,'context_get');
         if(item.max_chars!==undefined){
           if(!Number.isSafeInteger(item.max_chars)||item.max_chars<1||item.max_chars>24000)throw new Error('items.max_chars 必须是 1–24000 的整数');
-          if(/^(output|attachment|traffic):/.test(item.ref))throw new Error('本证据引用使用原生分页及 offset_unit，不支持 items.max_chars；请移除此参数后按 next_item 续读');
+          const error=contextItemLimitError(item,i);if(error)throw new Error(error);
         }
         const evidence=await contextEvidence(ctx,item);
         if(evidence){items.push(evidence);bytes-=Buffer.byteLength(JSON.stringify(evidence));budget-=400;continue;}
