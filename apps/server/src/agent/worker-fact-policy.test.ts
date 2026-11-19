@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import historical from './fixtures/historical-assignment-prompts.json' with {type:'json'};
 import type {Database} from '../db/index.js';
 import {WORKER_PROMPT,systemRolePrompt} from './prompts.js';
-import {WORKER_FACT_GUIDANCE,migrateWorkerFactPrompt} from './worker-fact-policy.js';
+import {WORKER_FACT_GUIDANCE,WORKER_COMPLETION_GUIDANCE,normalizeWorkerInstructions,migrateWorkerFactPrompt,migrateWorkerInstructionCleanup} from './worker-fact-policy.js';
 import {effectiveToolDescription} from './tool-descriptions.js';
 import {describeToolContract} from './tool-description-policy.js';
 
@@ -55,4 +55,33 @@ test('persisted fact tool descriptions upgrade raw and schema-expanded defaults'
     assert.match(resolved.description,/一条 fact 一次写回/);
   }
   assert.equal(effectiveToolDescription('record_fact','unused','用户自定义工具说明').source,'custom');
+});
+
+const oldHeading='**边发现边写回**（写进图才算数，脑子/文字里的不算；每得一个结果立刻写，别攒到最后被步数耗尽丢掉）。三种写回，别串图：';
+const oldFact='同一结论的相关观察合并保存；独立结论分别写回，不规定一意图通常只能写一条事实。';
+test('selected custom/old prompts lose only shipped conflicts; current completion policy occurs once',async()=>{
+ const custom='用户要求：关键结论必须独立复核两次；原始证据逐字保留。';
+ for(const template of [oldHeading+'\n'+oldFact+'\n'+custom,WORKER_PROMPT,WORKER_PROMPT+'\n'+WORKER_COMPLETION_GUIDANCE]){
+  const db={platform:()=>({getAgentByKey:async()=>({id:'worker'}),currentPrompt:async()=>template})} as unknown as Database;
+  for(const override of [undefined,oldHeading+'\n仅保存已有结果']){
+   const prompt=await systemRolePrompt(db,'worker',{},false,override);
+   assert.ok(!prompt.includes('每得一个结果立刻写'));assert.ok(!prompt.includes('不规定一意图通常只能写一条事实'));
+   assert.equal(prompt.split(WORKER_FACT_GUIDANCE).length,2);assert.equal(prompt.split(WORKER_COMPLETION_GUIDANCE).length,2);
+   assert.match(prompt,/用户明确要求复核、原证据失败或相互矛盾/);
+   assert.match(prompt,/可选字段为空/);
+   if(template.includes(custom))assert.ok(prompt.includes(custom));
+  }
+ }
+ assert.equal(normalizeWorkerInstructions(custom),custom);
+ assert.equal(normalizeWorkerInstructions(normalizeWorkerInstructions(oldHeading)),normalizeWorkerInstructions(oldHeading));
+});
+
+test('cleanup appends one selected version after the old migration, preserving unrelated custom text',async()=>{
+ const original=oldHeading+'\n'+oldFact+'\n用户自定义授权范围';
+ const f=fixture(original);
+ await migrateWorkerFactPrompt(f.db,WORKER_PROMPT);assert.equal(f.versions.length,0);
+ await migrateWorkerInstructionCleanup(f.db);await migrateWorkerInstructionCleanup(f.db);
+ assert.deepEqual(f.versions,[normalizeWorkerInstructions(original)]);
+ assert.ok(f.versions[0]!.includes('用户自定义授权范围'));
+ const clean=fixture('用户要求每项复核两次');await migrateWorkerInstructionCleanup(clean.db);assert.deepEqual(clean.versions,[]);
 });

@@ -1,4 +1,5 @@
 import {pendingHumanInputSources} from '../db/human-input.js';
+import {normalizeWorkerInstructions} from './worker-fact-policy.js';
 import {stoppedWorkerCriteria} from './worker-correction.js';
 import {workerMandate,plannerDispatchReminder,WORK_COORDINATION_GUIDANCE} from './worker-assignment.js';
 import {plannerConvergenceState} from './planner-convergence.js';
@@ -322,7 +323,7 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
     wrapup: async ({reason}) => {
       // Natural completion ends immediately, including runs with no new observations.
       if (reason === 'settled') return undefined;
-      return { prompt: input.wrapupPromptOverride ?? (rc.wrapupPrompt || WORKER_WRAPUP) };
+      return { prompt: normalizeWorkerInstructions(input.wrapupPromptOverride ?? (rc.wrapupPrompt || WORKER_WRAPUP)) };
     },
     maxWrapupTurns: rc.wrapupMaxTurns || 2,
     settlementTools: WORKER_SETTLEMENT_TOOLS,
