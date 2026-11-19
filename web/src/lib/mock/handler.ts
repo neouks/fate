@@ -35,6 +35,7 @@ import type {
   ScopeRow,
   Task,
   TaskArchive,
+  TaskAssetProfile,
   TaskAssetMutation,
   TaskAssetScopeMutation,
   TaskCategory,
@@ -1942,6 +1943,33 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   // ── stats ──
   if (path === "/stats") {
     return D.stats(task, { tasks: mockTasks, findings: mockFindings, activeTask: mockActiveTask });
+  }
+
+  if (seg[0] === "tasks" && seg[2] === "profiles" && m === "GET") {
+    const profiles = new Map<string, TaskAssetProfile>();
+    for (const asset of mockAssets) {
+      if (!asset.ip || !mockTaskAssetOwner(seg[1], asset)) continue;
+      const ports = asset.type === "ip" ? asset.open_ports ?? [] :
+        (asset.type === "service" || asset.type === "endpoint") && asset.port ? [{ port: asset.port, service: asset.service_name }] : [];
+      for (const { port, service } of ports) {
+        const key = asset.ip + "/" + port;
+        const profile = profiles.get(key) ?? { ip: asset.ip, port, observations: [], checks: [] } as TaskAssetProfile;
+        profile.observations.push({ asset_id: String(asset.id), domain: asset.domain ?? null, service: service ?? null,
+          bound_domains: asset.bound_domains ?? [], technologies: asset.technologies ?? [], title: asset.page_title ?? null,
+          fingerprint: asset.favicon_mmh3 ?? null, seen: asset.last_seen, waf: null, source_ip_block: null });
+        // Explicit demo anchor for the existing read-only Worker feedback fixture.
+        if (seg[1] === "t-acme-web" && asset.id === 10) {
+          const check = mockIntents.find(item => item.id === "101");
+          if (check) profile.checks.push({ intent_id: check.id, state: check.state,
+            summary: "接口权限核验", activity: String(mockActivity.find(a => a.intent_id === check.id && a.seq === 408)?.seq ?? "") || null });
+        }
+        profiles.set(key, profile);
+      }
+    }
+    const page = Number(q.get("page") ?? 1), limit = Number(q.get("limit") ?? 25);
+    const items = [...profiles.values()].sort((a,b) => a.ip.localeCompare(b.ip) || a.port - b.port);
+    for (const p of items) p.observations.sort((a,b) => b.seen.localeCompare(a.seen));
+    return { items: items.slice((page - 1) * limit, page * limit), total: items.length, page };
   }
 
   // ── assets ──

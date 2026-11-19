@@ -226,20 +226,32 @@ export function registerCompatRoutes(app: FastifyInstance): void {
       params.push(Number(q["seg"]) || 0);
       sessionWhere += ` AND COALESCE(main_seg,0)=$${params.length}`;
     }
-    if (before > 0) {
-      params.push(before);
-      var rows = await readActivityPage(db(),'task',`exploration_id=$1 AND id <= $2 AND (kind<>'round' OR worker='planner')${sessionWhere} AND id < $${params.length}`,params,'DESC',limit);
-    } else {
-      var rows = await readActivityPage(db(),'task',`exploration_id=$1 AND id <= $2 AND (kind<>'round' OR worker='planner')${sessionWhere}`,params,'DESC',limit);
+    const around = q2n(q["around"], 0);
+    const after = q2n(q["after"], 0);
+    const forward = before <= 0 && around <= 0 && after > 0;
+    const baseWhere = `exploration_id=$1 AND id <= $2 AND (kind<>'round' OR worker='planner')${sessionWhere}`;
+    const sessionParams = [...params];
+    let where = baseWhere;
+    if (before > 0 || around > 0 || forward) {
+      params.push(before > 0 ? before : around > 0 ? around : after);
+      const operator = before > 0 ? "<" : around > 0 ? "<=" : ">";
+      where += ` AND id ${operator} $${params.length}`;
     }
-    const items = rows.rows.map(mapActivity).reverse();
+    const rows = await readActivityPage(db(), "task", where, params, forward ? "ASC" : "DESC", limit);
+    const chronological = forward ? rows.rows : rows.rows.reverse();
+    const earliest = Number(chronological[0]?.id ?? 0);
+    const latest = Number(chronological.at(-1)?.id ?? 0);
+    const hasNewer = forward ? rows.hasMore : latest > 0 && latest < snapshot && Boolean((await db().query(
+      `SELECT 1 FROM activity WHERE ${baseWhere} AND id > $${sessionParams.length + 1} LIMIT 1`,
+      [...sessionParams, latest],
+    )).rowCount);
     return {
-      items,
+      items: chronological.map(mapActivity),
       snapshot_cursor: snapshot,
-      earliest_cursor: items.length > 0 ? Number(rows.rows[rows.rows.length - 1]!["id"]) : 0,
-      latest_cursor: items.length > 0 ? Number(rows.rows[0]!["id"]) : 0,
-      has_newer: items.length > 0 ? Number(rows.rows[0]!["id"]) < snapshot : false,
-      has_more: rows.hasMore,
+      earliest_cursor: earliest,
+      latest_cursor: latest,
+      has_newer: hasNewer,
+      has_more: forward ? after > 0 : rows.hasMore,
     };
   });
 

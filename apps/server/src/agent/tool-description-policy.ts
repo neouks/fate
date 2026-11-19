@@ -24,6 +24,7 @@ export function roleToolDescription(name:string,resolved:{description:string;sou
   if (resolved.source !== 'builtin') return resolved.description;
   if (name==='report_finding' && role==='worker') return WORKER_FINDING_BRIEF+' '+FINDING_WRITE_GUIDANCE;
   if (name==='report_finding' && role==='pentest') return resolved.description.replaceAll('report_finding','report_conversation_finding');
+  if (name==='get_finding' && role==='reporter') return resolved.description+' content 为分页 JSON，含原始 evidence、reproduction 和 traffic_evidence 流量绑定；按 next_offset 读完后合并理解。已生成且可由结构化字段精确还原的重复 report 不再返回；其他历史报告保留。';
   if (name === 'update_finding_report') return resolved.description + (role === 'reporter'
     ? ' ' + REPORTER_SAVE_GUIDANCE : ' 提交 report_sections 或兼容的非空 report。');
   let description = resolved.description;

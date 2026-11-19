@@ -265,6 +265,36 @@ export interface Asset {
   tested_by?: string;
 }
 
+export interface ProtectionObservation {
+  detected: boolean;
+  observed_at: string;
+  source_ip: string | null;
+}
+
+export interface TaskAssetProfile {
+  ip: string;
+  port: number;
+  observations: {
+    asset_id: string;
+    domain: string | null;
+    service: string | null;
+    bound_domains: string[];
+    technologies: string[];
+    title: string | null;
+    fingerprint: string | null;
+    seen: string;
+    waf: ProtectionObservation | null;
+    source_ip_block: ProtectionObservation | null;
+  }[];
+  checks: { intent_id: string; state: string; summary: string | null; activity: string | null }[];
+}
+
+export interface TaskProfilesPage {
+  items: TaskAssetProfile[];
+  page: number;
+  total: number;
+}
+
 export interface AssetOrigin {
   task_id: number;
   session: string;

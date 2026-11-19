@@ -1,4 +1,4 @@
-export type TaskView = "sessions" | "findings" | "graph" | "files" | "traffic";
+export type TaskView = "sessions" | "profiles" | "findings" | "graph" | "files" | "traffic";
 export function taskNavigation(params: Pick<URLSearchParams, "get">) {
   const tab = params.get("tab") || "sessions";
   const explore = tab === "coverage" || tab === "assets" ? tab : params.get("explore") || "graph";
@@ -11,7 +11,7 @@ export function taskNavigation(params: Pick<URLSearchParams, "get">) {
       ? "findings"
       : ["graph", "coverage", "assets"].includes(tab)
         ? "graph"
-        : ["sessions", "findings", "files", "traffic"].includes(tab)
+        : ["sessions", "profiles", "findings", "files", "traffic"].includes(tab)
           ? (tab as TaskView)
           : "sessions";
   return {

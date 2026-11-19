@@ -10,6 +10,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   PanelLeftIcon,
   FolderIcon,
+  FingerprintIcon,
   Settings2Icon,
   ArchiveIcon,
   ArrowLeftIcon,
@@ -59,12 +60,14 @@ const OverviewTab = dynamic(() => import("./_tabs/overview-tab").then((m) => m.O
   loading: TaskDetailLoading,
 });
 
+const ProfilesTab = dynamic(() => import("./_tabs/profiles-tab").then((m) => m.ProfilesTab), { loading: TaskDetailLoading });
 const FilesTab = dynamic(() => import("./_tabs/files-tab").then((m) => m.FilesTab), { loading: TaskDetailLoading });
 const TrafficTab = dynamic(() => import("./_tabs/traffic-tab").then((m) => m.TrafficTab), {
   loading: TaskDetailLoading,
 });
 const TABS = [
   { value: "sessions", label: "任务" },
+  { value: "profiles", label: "画像" },
   { value: "findings", label: "发现" },
   { value: "graph", label: "探索" },
   { value: "files", label: "文件" },
@@ -309,6 +312,7 @@ function TaskDetailInner() {
           <TabsList aria-label="任务导航" className="min-w-max">
             {TABS.map((t) => (
               <TabsTrigger value={t.value} key={t.value}>
+                {t.value === "profiles" && <FingerprintIcon aria-hidden="true" />}
                 {t.label}
                 {t.value === "findings" && findingCount !== null && (
                   <span className="ml-1 rounded-md bg-muted px-1.5 text-xs tabular-nums">{findingCount}</span>
@@ -370,6 +374,11 @@ function TaskDetailInner() {
           {visitedSections.includes("overview") && <div hidden={section !== "overview"} className="task-scroll-panel min-h-0 flex-1"><OverviewTab taskId={id} /></div>}
           {visitedSections.includes("broadcast") && <div hidden={section !== "broadcast"} className="task-scroll-panel min-h-0 flex-1"><BroadcastTab taskId={id} /></div>}
         </section>
+        {tab === "profiles" && (
+          <section aria-label="资产画像" className="task-scroll-panel">
+            <ProfilesTab key={id} taskId={id} />
+          </section>
+        )}
         {visited.includes("findings") && (
           <section hidden={tab !== "findings"} className="task-scroll-panel task-findings-panel">
             <FindingsTab taskId={id} active={tab === "findings"} findingRef={searchParams.get("finding")} search={searchParams.toString()} />

@@ -2023,7 +2023,7 @@ export function SessionsTab({
                 onSent={()=>loadSession(activeKey)} />
             )}
             {active.role === "worker" &&
-              !active.inherited &&
+              !active.inherited && !focused && !invalidFocus &&
               (active.status === "running" || active.status === "paused") && (
               <div className="flex items-center justify-between gap-3 border-t p-3">
                 <span className="text-sm text-muted-foreground" role="status">
@@ -2041,7 +2041,7 @@ export function SessionsTab({
           </div>
 
   );
-  const detail = relatedSession
+  const detail = relatedSession && !focused
     ? <RelatedSessionDetail key={relatedSession.id} row={relatedSession} />
     : !isMain ? processDetail : undefined;
   return <TooltipProvider delayDuration={300}>

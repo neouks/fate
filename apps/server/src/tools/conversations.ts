@@ -8,6 +8,7 @@ import {domainTool} from './define.js';
 import type {ToolRunContext} from './context.js';
 import type {Engine} from '../engine/engine.js';
 import {findingEvidence} from '../evidence/store.js';
+import {reporterFindingInput,REPORTER_PAGE_CHARACTERS} from '../evidence/reporter-input.js';
 export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'admitTask'|'pause'|'notify'>,options:{profileID?:number;pendingReports?:Set<number>;onSaved?:()=>void}={}){
  const tools:ToolDefinition[]=[],role=ctx.role,taskID=ctx.taskID,id=ctx.conversationID??0,profileID=options.profileID??0;
  if(role!=='goals')tools.push(webSearchTool(ctx));
@@ -33,11 +34,13 @@ export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'a
      const reporter=role==='reporter';
      tools.push(domainTool<{finding_id:number;offset?:number}>({name:'get_finding',description:'读取漏洞、证据版本及绑定；报告正文使用 offset 续读。',readOnly:true,parameters:{type:'object',properties:{finding_id:{type:'integer'},offset:{type:'integer',minimum:0}},required:['finding_id']},async run(a,c){
      const f=(await c.db.query('SELECT * FROM findings WHERE id=$1 AND ($2::bigint=0 OR task_id=$2) AND finding_readable(id)',[a.finding_id,taskID])).rows[0];if(!f)throw new Error('漏洞不存在或未获当前任务授权');if(role==='reporter'&&(!f.report||f.report_evidence_version==null||Number(f.report_evidence_version)!==Number(f.evidence_version)))pendingReports.add(Number(f.id));
-     const body=Array.from(JSON.stringify(f)),off=Math.max(0,a.offset??0),end=Math.min(body.length,off+1500);
+     const evidence=await findingEvidence(c.db,a.finding_id);
+     const pageSize=reporter?REPORTER_PAGE_CHARACTERS:1500;
+     const body=Array.from(reporter?reporterFindingInput(f,evidence):JSON.stringify(f)),off=Math.max(0,a.offset??0),end=Math.min(body.length,off+pageSize);
      const prior=reads.get(Number(f.id));
-     const read=prior&&prior.evidence===Number(f.evidence_version)&&prior.revision===Number(f.report_revision)?prior:{evidence:Number(f.evidence_version),revision:Number(f.report_revision),ranges:[] as Array<[number,number]>,total:body.length,complete:false};
+     const read=prior&&prior.evidence===Number(f.evidence_version)&&prior.revision===Number(f.report_revision)&&prior.total===body.length?prior:{evidence:Number(f.evidence_version),revision:Number(f.report_revision),ranges:[] as Array<[number,number]>,total:body.length,complete:false};
      read.ranges.push([Math.min(off,body.length),end]);read.ranges.sort((x,y)=>x[0]-y[0]);let covered=0;for(const [start,stop] of read.ranges){if(start>covered)break;covered=Math.max(covered,stop);}read.complete=covered>=body.length;reads.set(Number(f.id),read);
-     return {finding_id:Number(f.id),evidence_version:Number(f.evidence_version),report_revision:Number(f.report_revision),read_complete:read.complete,content:body.slice(off,off+1500).join(''),next_offset:off+1500<body.length?off+1500:null,evidence:await findingEvidence(c.db,a.finding_id)};
+     return {finding_id:Number(f.id),evidence_version:Number(f.evidence_version),report_revision:Number(f.report_revision),read_complete:read.complete,content:body.slice(off,end).join(''),next_offset:end<body.length?end:null,...(reporter?{content_format:'finding_with_traffic_evidence',offset_unit:'unicode'}:{evidence})};
     }},ctx) as never,domainTool<{finding_id:number;evidence_version:number;report?:string;report_revision?:number;report_sections?:unknown;reproduction?:unknown}>({name:'update_finding_report',transactional:false,description:'先读完漏洞证据，再带版本保存精简自然语言报告。复现 HTTP 请求和响应引用完整协议报文，优先用真实 traffic_id 展开 Header 和 Body；缺失说明，不补造。',parameters:{
       type:'object',
       properties:{

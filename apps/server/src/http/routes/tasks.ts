@@ -1,6 +1,7 @@
 import {registerGoalAcceptanceRoutes} from './goal-acceptance.js';
 import {aggregateUsage} from '../../db/usage-ledger.js';
 import {requireTaskGoal} from "../../agent/task-goal.js";
+import { taskProfiles } from "../../db/task-profiles.js";
 import {assetContextCTE} from '../../db/asset-query.js';
 import {registerOperationRoutes} from './operations.js';
 import {executionSnapshot,executionSnapshots} from '../../engine/coordinator.js';
@@ -413,6 +414,19 @@ export function registerTaskRoutes(app: FastifyInstance): void {
       for(let pos=0;pos<ids.length;pos++)await tx.query(`INSERT INTO task_llm_profiles(task_id,profile_id,position) VALUES($1,$2,$3)`,[taskID,ids[pos],pos]);
     });
     return { ok: true, llm_profile_ids: ids, active_llm_profile_id: activeID ?? first };
+  });
+
+  app.get("/api/tasks/:id/profiles", async (req, reply) => {
+    const taskId = Number((req.params as { id: string }).id);
+    const q = req.query as { page?: string; limit?: string };
+    const page = Number(q.page ?? 1);
+    const limit = Number(q.limit ?? 25);
+    if (!Number.isSafeInteger(taskId) || taskId <= 0 || !Number.isSafeInteger(page) || page < 1 ||
+        !Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(page * limit)) {
+      return reply.code(400).send({ error: "任务或分页参数无效" });
+    }
+    await taskExploration(taskId);
+    return taskProfiles(app.db, taskId, page, limit);
   });
 
   // GET /api/tasks/:id/asset-refs?asset_id= — 某资产在本任务探索图里的意图/事实/发现引用。
