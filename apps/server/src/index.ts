@@ -5,7 +5,7 @@ import { makeModelResolver } from "./pi/modelResolver.js";
 // 激活 llm_profile → pi-ai 自定义 provider），监听 HTTP。
 // 出口网关（:8788）随 -proxy 启动；本入口的职责与 Go 版 cmd/series/main.go 对齐（去除 selfupdate）。
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { buildModelSource } from "./pi/providerFromProfile.js";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { buildApp } from "./http/app.js";
@@ -17,7 +17,9 @@ import { postgresDSN, skillDir, redactDSN } from "./config/index.js";
 import { Engine, defaultEngineConfig, type ModelResolver } from "./engine/engine.js";
 import type { ModelSource } from "./agent/roles.js";
 
-const VERSION = process.env.SERIES_VERSION ?? "dev-ts";
+// Source and compiled entry points both sit one level below the package manifest.
+// Keep the product version separate from deployment dates and Git commit IDs.
+const VERSION: string = process.env.SERIES_VERSION ?? JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 interface Flags {
   addr: string;

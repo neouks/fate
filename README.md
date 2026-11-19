@@ -16,6 +16,9 @@ AI 自主渗透测试系统 —— TypeScript / Node 22 + [pi SDK](https://githu
 
 ## 快速开始
 
+正式版本使用 `主版本.次版本.修订号`（当前为 `0.6.4`），Git 标签使用 `v0.6.4` 格式。
+后端默认读取 `apps/server/package.json` 的版本；发布日期与 Git 提交号单独保存在发布记录中，不拼接到页面版本号。
+
 ```bash
 # 1) 数据库 + 后端（docker compose）
 cp .env.example .env        # 填 POSTGRES_PASSWORD
