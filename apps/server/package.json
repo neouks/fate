@@ -1,6 +1,6 @@
 {
   "name": "@series/server",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": true,
   "description": "SERIES TypeScript 后端（pi SDK 重构版）",
   "type": "module",
