@@ -1,3 +1,4 @@
+import { publicTransport } from '../../search/public-web.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import Fastify from 'fastify';
@@ -87,8 +88,8 @@ test('saving selected roles synchronizes Agent flags and bindings and exposes se
       const tool=webSearchTool(runContext(f.db,1,1,role as 'worker'));
       const bound=await applyToolBindings(f.db,role,[tool]);
       const options=toolLoadout(role,{customTools:bound,toolAllowlist:bound.map(t=>t.name)});
-      assert.deepEqual(options.toolLoading.initialActive,['web_search']);
-      assert.deepEqual(options.toolLoading.deferred,[]);
+      assert.deepEqual(options.toolLoading.initialActive,[]);
+      assert.deepEqual(options.toolLoading.deferred,['web_search']);
       assert.match(options.customTools[0]!.description,/需要最新信息/);
     }
     await save({web_search_enabled:true,agent_roles:['planner']});
@@ -132,4 +133,55 @@ test('empty results succeed while upstream failures, malformed data and cancella
     const controller = new AbortController(); controller.abort();
     await assert.rejects(deepseekSearch(f.db, { query: 'test' }, { signal: controller.signal }), /已取消/);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test('manual scoped references work while reporter search stays revoked', async t => {
+  const f = fixture(), app = Fastify();
+  app.decorate('db', f.db);
+  registerConfigRoutes(app);
+  t.after(() => app.close());
+  const save = (body: object) => app.inject({method: 'PUT', url: '/api/settings/web-search', payload: {web_search_enabled: true, ...body}});
+  assert.equal((await save({sources:['cnblogs'], default_source:'cnblogs'})).statusCode, 400);
+  assert.equal((await save({agent_roles:['reporter']})).statusCode,400);
+  const saved = await save({sources:['bing','cnblogs'], default_source:'cnblogs', agent_roles:[]});
+  assert.equal(saved.json().ready, true);
+  assert.deepEqual(saved.json().effective_agent_roles, []);
+  await save({api_key:''});
+  assert.equal((await app.inject('/api/settings/web-search')).json().default_source, 'cnblogs');
+  const data = ['https://www.cnblogs.com/demo/p/3.html', 'https://www.cnblogs.com/demo/p/3.html?utm_source=test#top',
+    'https://cnblogs.com.evil.example/u/p/5','https://www.cnblogs.com/login','javascript:bad'];
+  let requests = 0;
+  t.mock.method(publicTransport,'fetch',async (url:URL, init:RequestInit) => {
+    requests++;
+    assert.match(url.searchParams.get('q')!, /site:cnblogs\.com/);
+    assert.equal(new Headers(init.headers).has('authorization'), false);
+    return new Response('<rss><channel>'+data.map(link=>'<item><title>组件维护说明</title><link>'+link+'</link></item>').join('')+'</channel></rss>');
+  });
+  const args = {query:'Tomcat 9 维护'};
+  const manual = await app.inject({method:'POST',url:'/api/settings/web-search/test',payload:args});
+  assert.deepEqual(manual.json().results.map((r: {engine:string;source:string}) => [r.engine,r.source]), [['bing','cnblogs']]);
+  assert.doesNotMatch(manual.body, /evil\.example|utm_source|javascript:bad/);
+  // Simulate a legacy installation with both the old binding and the role flag.
+  await f.db.query('INSERT INTO tools', [JSON.stringify(['reporter'])]);
+  await f.db.query('UPDATE agents SET web_search', [['reporter']]);
+  const tool = webSearchTool(runContext(f.db,0,0,'reporter',{conversationID:42}));
+  assert.deepEqual(await applyToolBindings(f.db,'reporter',[tool]),[]);
+  assert.ok((await tool.execute('already-loaded',args)).isError);
+  assert.equal(requests, 1);
+});
+
+test('all three execution roles share multi-source search while reporter cannot load either tool',async t=>{
+ const f=fixture();f.settings.set('web_search_enabled','true');
+ f.settings.set('public_reference_sources',JSON.stringify({sources:['github'],default_source:'github'}));
+ let requests=0;
+ t.mock.method(publicTransport,'fetch',async()=>{requests++;return Response.json({items:[{full_name:'golang/go',html_url:'https://github.com/golang/go',description:'The Go programming language'}]});});
+ for(const role of ['worker','planner','mainagent'] as const){
+  (await f.db.platform().getAgentByKey(role))!.webSearch=true;
+  const ctx=runContext(f.db,0,0,role);
+  const tool=webSearchTool(ctx);
+  const out=await tool.execute(role,{query:'repo:golang/go',source:'github',count:1});
+  assert.ok(!out.isError,JSON.stringify(out));
+  await tool.execute(role+'-again',{query:'repo:golang/go',source:'github',count:1});
+ }
+ assert.equal(requests,3);
 });

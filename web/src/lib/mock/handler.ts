@@ -1,7 +1,7 @@
 // Mock 路由：把 (method, path) 映射到 lib/mock/data 的静态数据。
 // 未命中的一律返回安全默认（[] / {} / {ok:true}），保证任何页面都不崩。
 // 只在 NEXT_PUBLIC_MOCK=1 时经由 api.ts 的 http() 短路进入这里。
-import type { NotificationQuery } from "../types";
+import type { NotificationQuery, WebSearchSettings } from "../types";
 
 // 已删除模块的就地桩（路由保留、返回空），避免大面积改动调用点。
 class StubLedger {
@@ -2790,7 +2790,23 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     }
     return D.settings;
   }
-  if (path === "/settings/web-search/test") return { ok: true, count: 5, backend: D.settings.web_search_backend };
+  if (path === "/settings/web-search") {
+    if (m === "PUT") {
+      const patch = b as Partial<WebSearchSettings>;
+      demoSearch = { ...demoSearch, sources: patch.sources ?? demoSearch.sources,
+        default_source: patch.default_source ?? demoSearch.default_source,
+        agent_roles: patch.agent_roles ?? demoSearch.agent_roles,
+        web_search_enabled: patch.web_search_enabled ?? demoSearch.web_search_enabled,
+        deepseek_key_set: b.clear_key ? false : Boolean(b.api_key || demoSearch.deepseek_key_set) };
+      demoSearch.web_search_backend = demoSearch.default_source;
+      demoSearch.ready = demoSearch.deepseek_key_set || (demoSearch.default_source === "auto"
+        ? demoSearch.sources.some(s => s !== "deepseek") : demoSearch.default_source !== "deepseek");
+      demoSearch.effective_agent_roles = demoSearch.web_search_enabled
+        ? demoSearch.agent_roles.filter(role => ["planner","worker","mainagent"].includes(role) && demoSearch.ready) : [];
+    }
+    return { ...demoSearch };
+  }
+  if (path === "/settings/web-search/test") return { ok: false, error: "演示模式使用模拟数据，联网测试需要连接后端" };
   if (path === "/settings/global-proxy/test") {
     return {
       ok: true,
@@ -3134,4 +3150,6 @@ export const mockFindingDeletionFeedback: {
   deleted_at: string;
 }[] = [];
 
+let demoSearch: WebSearchSettings = { sources:["deepseek"], default_source:"deepseek", web_search_backend:"deepseek",
+  web_search_enabled:false, agent_roles:[], effective_agent_roles:[], ready:false, credential_source:"", deepseek_key_set:false };
 let httpEntrySettings = { enabled: false, username: "entry", password_set: false };

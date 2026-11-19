@@ -1,6 +1,6 @@
 import {ToolResultError} from './errors.js';
 import {reporterTrafficTools} from './reporter-traffic.js';
-import {webSearchTool} from './web-search.js';
+import {webSearchTool,webReadTool} from './web-search.js';
 import {archiveReport,prepareReproduction,attachStepTraffic,assembleReport,reproductionSchema,expandTrafficPackets} from '../evidence/reproduction.js';
 import {reportSections,reportSectionsSchema} from '../evidence/report-sections.js';
 import {requireTaskGoal} from "../agent/task-goal.js";
@@ -12,7 +12,7 @@ import {findingEvidence} from '../evidence/store.js';
 import {reporterFindingInput,REPORTER_PAGE_CHARACTERS} from '../evidence/reporter-input.js';
 export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'admitTask'|'pause'|'notify'>,options:{profileID?:number;pendingReports?:Set<number>;onSaved?:()=>void}={}){
  const tools:ToolDefinition[]=[],role=ctx.role,taskID=ctx.taskID,id=ctx.conversationID??0,profileID=options.profileID??0;
- if(role!=='goals')tools.push(webSearchTool(ctx));
+ if(role==='mainagent'||role==='worker'||role==='planner')tools.push(webSearchTool(ctx),webReadTool(ctx));
  tools.push(...reporterTrafficTools(ctx));
  const reads=new Map<number,{evidence:number;revision:number;ranges:Array<[number,number]>;total:number;complete:boolean}>();
  const pendingReports=options.pendingReports??new Set<number>(),onSaved=options.onSaved??(()=>{});

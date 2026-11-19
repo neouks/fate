@@ -914,7 +914,8 @@ export async function seedBuiltins(db: Database): Promise<void> {
   });
   const store = new PlatformStore(db);
   const extensionTools:Array<[string,string,string[]]>=[
-   ['web_search','DeepSeek 官方网络搜索',['worker','planner','mainagent','auto','pentest','reporter']],
+   ['web_search','DeepSeek 官方网络搜索',['worker','planner','mainagent']],
+   ['web_read','读取公开技术文档正文',['worker','planner','mainagent']],
    ...['shell_open','shell_send','shell_read','shell_close','shell_list'].map(key=>[key,'当前 PI 执行会话的交互终端',['worker','planner','mainagent']] as [string,string,string[]]),
    ['context_search','检索授权探索节点、执行结果与冷图原文',['worker','planner','mainagent','pentest','auto','goals','reporter']],
    ['context_get','按稳定引用分页读取节点详情与血缘',['worker','planner','mainagent','pentest','auto','goals','reporter']],

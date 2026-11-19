@@ -270,7 +270,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const showConfig = agentKey !== "mainagent" && agentKey !== "goals";
   // web search applies to every conversational/executing agent except the one-shot
   // goals decomposer; it's gated by the global master switch.
-  const showWebSearch = agentKey !== "goals";
+  const showWebSearch = ["planner", "worker", "mainagent"].includes(agentKey);
   // interactive shell (持久 PTY 会话工具族) 同样对除 goals 外的 agent 开放;无全局门控。
   const showInteractiveShell = agentKey !== "goals";
   // 每个 agent(含 goals/mainagent)都跑在某个 LLM 上,故「默认模型」绑定对所有 agent 开放。
@@ -635,7 +635,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       <TabsContent value="tools" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
         <p className="text-muted-foreground mb-3 text-xs">勾选绑定给此 Agent 的内置工具。</p>
         <div className="grid gap-2">
-          {tools.map((t) => {
+          {tools.filter(t => !["web_search", "web_read"].includes(t.key) || ["planner", "worker", "mainagent"].includes(agentKey)).map((t) => {
             const isTraffic = TRAFFIC_TOOL_KEYS.has(t.key);
             const gated = isTraffic && !captureOn; // traffic tools need 流量捕获 on
             return (

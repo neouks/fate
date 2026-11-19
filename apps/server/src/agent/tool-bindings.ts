@@ -19,12 +19,13 @@ export async function applyToolBindings<T extends { name: string }>(db: import("
     const description=byKey.get(tool.name)?.description;
     if ('description' in tool) Object.assign(tool, {description:roleToolDescription(tool.name,effectiveToolDescription(tool.name, String(tool.description ?? ''), description),role)});
   }
-  const searchAllowed = tools.some(t=>t.name==='web_search') ? await webSearchAllowed(db,role) : false;
+  const searchAllowed = tools.some(t=>['web_search','web_read'].includes(t.name)) ? await webSearchAllowed(db,role) : false;
   const autoTraffic=tools.some(t=>REPORTER_TRAFFIC_TOOLS.includes(t.name))?await db.platform().getBool('agent_traffic_binding',false):false;
   return tools.filter((t) => {
     if(REPORTER_TRAFFIC_TOOLS.includes(t.name)&&!autoTraffic)return false;
-    if(t.name==='web_search'&&!searchAllowed)return false;
+    if(['web_search','web_read'].includes(t.name)&&!searchAllowed)return false;
     if(!roleAllowsTool(role,t.name)||RETIRED_TOOLS.has(t.name))return false;
+    if(t.name==='web_read'){const search=byKey.get('web_search');if(search&&(search.enabled===false||!Array.isArray(search.agents)||!search.agents.includes(role)))return false;}
     const canonical=byKey.get(TOOL_ALIASES[t.name]??'');
     if(canonical&&(canonical.enabled===false||!Array.isArray(canonical.agents)||!canonical.agents.includes(role)))return false;
     const row = byKey.get(t.name);

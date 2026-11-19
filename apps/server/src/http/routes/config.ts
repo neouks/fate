@@ -1,3 +1,4 @@
+import { readPreferences } from '../../search/sources.js';
 import {executionSettings,EXECUTION_DEFAULTS,resolveShell,pythonInterpreter,runProgram} from '../../config/execution.js';
 import {normalizeProbeProxy} from './global-proxy.js';
 import {registerWebSearchRoutes} from './web-search.js';
@@ -237,7 +238,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       platform().workers(),
       platform().getSetting("active_task"),
     ]);
-    return { ...await executionSettings(app.db),workers,web_search_enabled:await platform().getBool('web_search_enabled',false),web_search_backend:'deepseek',llm_pool_enabled:await platform().getBool('llm_pool_enabled',false),llm_pool_bind_fallback:await platform().getBool('llm_pool_bind_fallback',false),runtime_resource_policy:await configuredRuntimeResources(app.db),
+    return { ...await executionSettings(app.db),workers,web_search_enabled:await platform().getBool('web_search_enabled',false),web_search_backend:(await readPreferences(app.db)).default_source,llm_pool_enabled:await platform().getBool('llm_pool_enabled',false),llm_pool_bind_fallback:await platform().getBool('llm_pool_bind_fallback',false),runtime_resource_policy:await configuredRuntimeResources(app.db),
       planner_context_budget_tokens:Number((await platform().getSetting('planner_context_budget_tokens'))??CONTEXT_DEFAULTS.planner),
       [WORKER_TOKEN_LIMIT]:await workerTokenLimit(app.db),
       worker_context_budget_tokens:Number((await platform().getSetting('worker_context_budget_tokens'))??CONTEXT_DEFAULTS.worker),
@@ -268,7 +269,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     }catch(error){return reply.code(400).send({error:(error as Error).message});}
 
     if(b.web_search_enabled!==undefined&&typeof b.web_search_enabled!=='boolean')return reply.code(400).send({error:'web_search_enabled 必须为布尔值'});
-    if(b.web_search_backend!==undefined&&b.web_search_backend!=='deepseek')return reply.code(400).send({error:'网络搜索使用 DeepSeek 官方搜索'});
+    if(b.web_search_backend!==undefined && b.web_search_backend!==(await readPreferences(app.db)).default_source) return reply.code(400).send({error:'请在网络搜索设置中一起保存启用来源和默认来源'});
     const poolKeys=['llm_pool_enabled','llm_pool_bind_fallback'] as const;
     for(const key of poolKeys)if(b[key]!==undefined&&typeof b[key]!=='boolean')return reply.code(400).send({error:`${key} 必须为布尔值`});
     let resources:ReturnType<typeof resourcePolicy>|undefined;
@@ -289,7 +290,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
       for(const key of [WORKER_TOKEN_LIMIT,'pi_context_policy','pi_mcp_loading','task_concurrency_enabled','task_concurrency_limit','active_task'])if(b[key]!==undefined)await tx.platform().setSetting(key,String(b[key]));
       for(const key of Object.keys(EXECUTION_DEFAULTS))if(b[key]!==undefined)await tx.platform().setSetting(key,String(b[key]).trim());
       if(b.web_search_enabled!==undefined){await tx.platform().setSetting('web_search_enabled',String(b.web_search_enabled));out.web_search_enabled=b.web_search_enabled;}
-      if(b.web_search_backend!==undefined){await tx.platform().setSetting('web_search_backend','deepseek');out.web_search_backend='deepseek';}
+      if(b.web_search_backend!==undefined)out.web_search_backend=b.web_search_backend;
       for(const key of poolKeys)if(b[key]!==undefined){await tx.platform().setSetting(key,String(b[key]));out[key]=b[key];out.applies='next_session';}
       if(resources){await tx.platform().setSetting('runtime_resource_policy',JSON.stringify(resources));out.runtime_resource_policy=resources;}
       for(const {key} of contextKeys)if(b[key]!==undefined){

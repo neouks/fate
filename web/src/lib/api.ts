@@ -903,8 +903,8 @@ export const api = {
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // Run a real "test" search with the given (or saved) config to verify it works.
   webSearchSettings: () => get<WebSearchSettings>("/settings/web-search"),
-  saveWebSearchSettings: (patch: { web_search_enabled: boolean; api_key?: string; clear_key?: boolean; agent_roles?: string[] }) => put<WebSearchSettings>("/settings/web-search", patch),
-  testWebSearch: (patch: { query: string; api_key?: string }) => post<WebSearchTest>("/settings/web-search/test", patch),
+  saveWebSearchSettings: (patch: { web_search_enabled: boolean; api_key?: string; clear_key?: boolean; agent_roles?: string[]; sources?: WebSearchSettings["sources"]; default_source?: WebSearchSettings["default_source"] }) => put<WebSearchSettings>("/settings/web-search", patch),
+  testWebSearch: (patch: { query: string; api_key?: string; source?: WebSearchSettings["default_source"]; sources?: WebSearchSettings["sources"]; default_source?: WebSearchSettings["default_source"] }) => post<WebSearchTest>("/settings/web-search/test", patch),
   testGlobalProxy: (proxy: string) => post<GlobalProxyProbeResult>(`/settings/global-proxy/test`, { proxy }),
   chatMentions: (kind: string, query: string, signal?: AbortSignal, cursor = "") =>
     http<{ items: ChatMention[]; next_cursor?: string }>(

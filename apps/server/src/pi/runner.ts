@@ -1,3 +1,4 @@
+import {projectWebHistory} from '../search/context.js';
 import {WORKER_FACT_GUIDANCE} from '../agent/worker-fact-policy.js';
 import {toolDeclarationWindow} from './tool-declaration-window.js';
 import {humanInputUI,maskedHumanResult,type HumanInputHandler} from './human-input.js';
@@ -385,7 +386,7 @@ export class AgentRunner {
         try {
         await refreshTokenBudget();
         // Keep legacy feedback in the audit session, never in Agent coordination.
-        let messages=projectRecallHistory(opts.projectMessages?.(event.messages)??event.messages);
+        let messages=projectRecallHistory(projectWebHistory(opts.projectMessages?.(event.messages)??event.messages));
         if(opts.contextLayout)messages.push({role:'custom',customType:'host_task_context',display:false,timestamp:Date.now(),content:hostTaskContext(opts.cwd,opts.taskContext)});
         const current=await opts.boundaryContext?.();
         if(current)messages.push({role:'custom',customType:'blackboard_boundary',content:current,display:false,timestamp:Date.now()});

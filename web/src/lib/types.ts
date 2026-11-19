@@ -1614,11 +1614,16 @@ export interface FindingReportSections {description:string;impact:string[];remed
 export interface FindingStepImage {id:string;step_id?:string|null;caption:string;mime:string;position:number}
 export interface FindingReproductionDetail {reproduction:FindingReproduction|null;report_sections:FindingReportSections|null;report_revision:number;evidence_version:number;markdown:string;images:FindingStepImage[];versions:Array<{revision:number;evidence_version:number;created_at:string}>;job?:{id:number;conversation_id:number;status?:string;error?:string}}
 
+export type WebSearchSource = "deepseek" | "baidu" | "bing" | "github" | "cnblogs" | "csdn" | "wechat";
+export type WebSearchSelection = WebSearchSource | "auto";
+
 export interface WebSearchSettings {
   agent_roles: string[];
   effective_agent_roles: string[];
   web_search_enabled: boolean;
-  web_search_backend: "deepseek";
+  web_search_backend: WebSearchSelection;
+  sources: WebSearchSource[];
+  default_source: WebSearchSelection;
   deepseek_key_set: boolean;
   ready: boolean;
   credential_source: string;
@@ -1628,5 +1633,6 @@ export interface WebSearchTest {
   error?: string;
   count?: number;
   latency_ms?: number;
-  results?: Array<{ title: string; url: string; summary: string; snippet: string; date: string | null }>;
+  failures?: Array<{source: WebSearchSource; reason: string}>;
+  results?: Array<{ title: string; url: string; summary: string; snippet: string; date: string | null; engine: WebSearchSource; source: string }>;
 }

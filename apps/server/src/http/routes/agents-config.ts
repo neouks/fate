@@ -142,6 +142,7 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
         sets.push(`${col}=$${params.length}`);
       }
     }
+    if (!['planner','worker','mainagent'].includes(key) && b.web_search === true) return reply.code(400).send({ error: '此角色不使用网络搜索' });
     for (const col of ["web_search", "interactive_shell", "enabled"] as const) {
       if (typeof b[col] === "boolean") {
         params.push(b[col]);

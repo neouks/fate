@@ -10,7 +10,7 @@ const fail = (statusCode:number,message:string) => Object.assign(new Error(messa
 export function agentDTO(a:Agent) {
   // Keep camelCase fields for old clients; the settings UI uses the snake_case contract.
   return {...a,id:String(a.id),mcp_supported:roleSupportsMcp(a.key),deletable:!a.builtin&&!ACTIVE_ROLES.some(role=>role===a.key),llm_profile_id:a.llmProfileID,max_turns:a.maxTurns,run_seconds:a.runSeconds,
-    web_search:a.webSearch,interactive_shell:a.interactiveShell,trigger_run_mode:a.triggerRunMode,
+    web_search:a.key!=='reporter' && a.webSearch,interactive_shell:a.interactiveShell,trigger_run_mode:a.triggerRunMode,
     trigger_merge_mode:a.triggerMergeMode,trigger_max_parallel:a.triggerMaxParallel};
 }
 async function requireAgent(db:Database,key:string) {

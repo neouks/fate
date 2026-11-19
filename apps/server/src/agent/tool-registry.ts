@@ -12,7 +12,7 @@ export const TOOL_ALIASES: Record<string,string> = {
 export const RETIRED_TOOLS = new Set(['get_finding_retest_context','record_finding_retest_result','checkpoint_intent','complete_intent']);
 export const DOMAIN_TOOL_NAMES = [
   'ask_user',
-  'traffic_search','search_finding_traffic','bind_finding_traffic','web_search','context_search','context_get','graph_overview','asset_search','asset_get','insert_assets',
+  'traffic_search','search_finding_traffic','bind_finding_traffic','web_search','web_read','context_search','context_get','graph_overview','asset_search','asset_get','insert_assets',
   'record_fact','report_finding','list_findings','http_request','add_intent','dispatch_intents',
   'prove_goal','kill_work','steer_work','add_task_scope','todo_write','set_goals','set_constraints','register_user_target',
   'list_tasks','get_task','list_llm_profiles','spawn_task','pause_task','resume_task','add_task_hint',

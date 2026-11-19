@@ -1,5 +1,6 @@
 import type { Database } from '../db/index.js';
 import { profileFetch } from '../pi/providerFromProfile.js';
+import { readPreferences } from './sources.js';
 import { WEB_SEARCH_ROLES } from './policy.js';
 
 export interface SearchResult { title: string; url: string; summary: string; snippet: string; date: string | null }
@@ -28,18 +29,20 @@ export async function searchCredentials(db: Database, enteredKey = '') {
 }
 
 export async function webSearchSettings(db: Database) {
+  const prefs = await readPreferences(db);
   const credentials = await searchCredentials(db);
+  const ready = prefs.default_source === 'auto' ? prefs.sources.some(s => s !== 'deepseek' || !!credentials) : prefs.default_source !== 'deepseek' || !!credentials;
   const agents = await Promise.all(WEB_SEARCH_ROLES.map(async role => ({role, agent: await db.platform().getAgentByKey(role)})));
   const binding = (await db.query('SELECT enabled,agents FROM tools WHERE key=$1', ['web_search'])).rows[0];
   const selected = agents.filter(({agent}) => agent?.webSearch === true);
   const enabled = await db.platform().getBool('web_search_enabled', false);
   return {
     web_search_enabled: enabled,
-    web_search_backend: 'deepseek' as const,
+    web_search_backend: prefs.default_source, ...prefs,
     deepseek_key_set: !!await db.platform().getSetting('deepseek_search_api_key'),
-    ready: !!credentials, credential_source: credentials?.source ?? '',
+    ready, credential_source: credentials?.source ?? '',
     agent_roles: selected.map(({role}) => role),
-    effective_agent_roles: enabled && credentials ? selected.filter(({role, agent}) => agent?.enabled !== false && binding?.enabled !== false && (!binding || Array.isArray(binding.agents) && binding.agents.includes(role))).map(({role}) => role) : [],
+    effective_agent_roles: enabled ? selected.filter(({role, agent}) => ready && agent?.enabled !== false && binding?.enabled !== false && (!binding || Array.isArray(binding.agents) && binding.agents.includes(role))).map(({role}) => role) : [],
   };
 }
 
