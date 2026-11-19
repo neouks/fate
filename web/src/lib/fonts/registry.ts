@@ -80,7 +80,10 @@ const geistMono = localFont({
   variable: "--font-geist-mono",
 });
 const jetBrainsMono = localFont({
-  src: "../../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2",
+  src: "../../assets/fonts/jetbrains-mono/JetBrainsMono-Variable.ttf",
+  weight: "100 800",
+  display: "swap",
+  adjustFontFallback: false,
   variable: "--font-jetbrains-mono",
 });
 
