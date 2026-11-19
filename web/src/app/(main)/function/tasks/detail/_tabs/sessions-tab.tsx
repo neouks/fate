@@ -1,6 +1,8 @@
 "use client";
 
 import {tokenMetrics, tokenUsageDetails} from "@/lib/token-usage";
+import {humanInputSession} from '@/lib/human-input';
+import {HumanInputsContext,HumanInputInbox,useHumanInputs} from '@/components/human-input';
 import {WorkerComposer} from "@/components/worker-composer";
 import {notifyTurnSummaries} from '@/lib/turn-summary';
 
@@ -492,6 +494,7 @@ export function SessionsTab({
   workerExecutionAllowed?: boolean;
   onOpenSettings?:()=>void;
 }) {
+  const humanInputs=useHumanInputs(taskId);
   const [completedCount, setCompletedCount] = React.useState<number | null>(null);
   const [relatedSession,setRelatedSession]=React.useState<import("@/lib/types").Conversation|null>(null);
   const [selectedSessionId, setActiveId] = React.useState(PLANNER_ID);
@@ -1032,6 +1035,8 @@ export function SessionsTab({
         let streamCursor=r.snapshotCursor;
         esRef.current = openActivityStream(
           ()=>sseUrl(`/api/exploration/activity/stream?task=${encodeURIComponent(taskId)}&since=${streamCursor}`), es=>{
+        es.addEventListener("human_inputs",event=>{if(alive){try{humanInputs.receive(JSON.parse((event as MessageEvent).data).items,'snapshot');}catch{/* snapshot reconnect repairs */}}});
+        es.addEventListener("open",()=>{if(alive)void humanInputs.refresh();});
         es.addEventListener("turn_summary",event=>{if(alive){try{notifyTurnSummaries(`task:${taskId}`,JSON.parse((event as MessageEvent).data));}catch{/* history repairs */}}});
         es.addEventListener("streams", event => {
           if(!alive)return;
@@ -2044,7 +2049,11 @@ export function SessionsTab({
   const detail = relatedSession && !focused
     ? <RelatedSessionDetail key={relatedSession.id} row={relatedSession} />
     : !isMain ? processDetail : undefined;
-  return <TooltipProvider delayDuration={300}>
+  return <HumanInputsContext.Provider value={humanInputs}><TooltipProvider delayDuration={300}>
+    <div className="flex h-full min-h-0 flex-col">
+      <HumanInputInbox onLocate={r=>{setRelatedSession(null);setActiveId(r.role==='worker'?r.intent_id!:r.role==='planner'?PLANNER_ID:mainSessionId(r.main_seg));onProcessOpenChange(false);
+            if(r.activity_id){const next=new URLSearchParams(params);next.set('session',humanInputSession(r));next.set('activity',String(r.activity_id));route.replace(`/function/tasks/detail?${next}`,{scroll:false});}else if(focused||invalidFocus)clearFocus();}}/>
+      <div className="min-h-0 flex-1">
     <SessionWorkspace open={processOpen} onOpenChange={onProcessOpenChange}
       list={agentList} primaryDetail={detail}
       sessionKey={relatedSession ? `related:${relatedSession.id}` : activeKey}
@@ -2071,6 +2080,8 @@ export function SessionsTab({
         setRelatedSession(null);
         setActiveId(mainSessionId(currentSeg));
       }} />
+      </div>
+    </div>
         <AlertDialog
           open={deleteWorkers.length > 0}
           onOpenChange={(open) => {
@@ -2170,5 +2181,5 @@ export function SessionsTab({
           </AlertDialogContent>
         </AlertDialog>
 
-  </TooltipProvider>;
+  </TooltipProvider></HumanInputsContext.Provider>;
 }

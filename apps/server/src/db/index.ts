@@ -26,6 +26,7 @@ import {activityMetadataSQL} from './activity-content.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // 以本目录为 schema 与兼容迁移的唯一数据源。
+const humanInputSQL=readFileSync(path.join(__dirname,'sql','human-input.sql'),'utf8');
 const schemaSQL = readFileSync(path.join(__dirname, "sql", "schema.sql"), "utf8");
 const retirementSQL = readFileSync(path.join(__dirname, 'sql', 'retire-approvals.sql'), 'utf8');
 const plannerRoundsSQL=readFileSync(path.join(__dirname,'sql','planner-rounds.sql'),'utf8');
@@ -221,7 +222,7 @@ export async function openDatabase(): Promise<Database> {
     try {
       await prepareToolOutputAccessMigration(client);
       // 无参数的 query 走简单查询协议，支持单次执行整份多语句 schema。
-      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+taskFileCleanupsSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL+'\n'+goalIntegritySQL+'\n'+resourceUsageSQL+'\n'+findingAmendmentsSQL;
+      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+taskFileCleanupsSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL+'\n'+goalIntegritySQL+'\n'+resourceUsageSQL+'\n'+findingAmendmentsSQL+'\n'+humanInputSQL;
       for (let attempt = 0; ; attempt++) {
         try {
           await client.query(ddl);

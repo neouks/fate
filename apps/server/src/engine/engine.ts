@@ -9,7 +9,7 @@ import {blackboardRevision,markWorkerReleased,recoverWorkerSettlements} from '..
 import {WorkerReleaseQueue} from './worker-release-queue.js';
 import {LiveStreamWriter,runnerActivityMetadata} from './live-stream.js';
 import {recoverExpiredRuntimes} from './runtime-config.js';
-import {workerStopReceipt,failureReason,type WorkerStopReason} from './worker-outcome.js';
+import {workerStopReceipt,failureReason,persistedWorkerAbortCause,type WorkerStopReason} from './worker-outcome.js';
 import {ConversationService} from './conversations.js';
 import {normalizeContract,validateResult,type IntentResult} from '../agent/intent-contract.js';
 import {correctionMessage,stoppedWorkerCriteria,validateWorkerCorrection,type WorkerCorrection} from '../agent/worker-correction.js';
@@ -763,6 +763,9 @@ export class Engine {
     handle.settled=true;
 
     try {
+    // Human input may be invalidated before the control loop reaches this handle.
+    // Preserve the durable pause/deadline cause instead of recording generic abort.
+    if(!cause&&(result?.aborted||failure))cause=await persistedWorkerAbortCause(this.db,rt.taskID);
     // 终态映射（对齐 Go runIntent 分类）。
     let terminal = "done";
     let summary = result?.lastAssistantText ?? "";

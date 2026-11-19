@@ -23,6 +23,7 @@ import {
 import {plannerRoundView,isPlannerBoundary} from '@/lib/planner-round';
 import {PlannerRoundMarker} from '@/components/planner-round-marker';
 import {PlannerReport} from '@/components/planner-report';
+import {HumanInputCard,HumanInputsContext} from '@/components/human-input';
 import {SteeringNotice} from '@/components/steering-notice';
 import {isSteering} from '@/lib/steering';
 import {useTurnSummaries} from '@/hooks/use-turn-summaries';
@@ -104,6 +105,7 @@ function useInView(rootMargin = "400px"): [React.RefObject<HTMLDivElement | null
 // a run of consecutive conversational steps (text/thinking/result) from the same
 // agent is one "message".
 type Group =
+  | { type: "human_input"; key:number; step:Activity }
   | { type: "steering"; key: number; step: Activity }
   | { type: "user"; key: number; step: Activity; intent?: boolean }
   | { type: "answer"; key: number; step: Activity }
@@ -118,6 +120,7 @@ function groupSteps(steps: Activity[]): Group[] {
   for (const s of steps) {
     const callKey = `${s.worker}:${s.intent_id ?? ""}:${s.main_seg ?? 0}:${s.tool_use_id}`;
     if (s.kind === "usage" || isLifecycle(s)) continue; // live token-usage marker — not a rendered step
+    if(s.metadata?.human_input_id){out.push({type:"human_input",key:s.seq,step:s});continue;}
     if (isSteering(s)) {out.push({type:"steering",key:s.seq,step:s});continue;}
     if (s.kind === "round") {
       out.push({ type: "round", key: s.seq, label: s.summary || "新一轮" }); // planner round boundary
@@ -393,7 +396,7 @@ function ActivitySteps({
     [fetchDetail, taskId],
   );
   const renderGroup = (g: Group) =>
-        g.type === "steering" ? (
+        g.type === "human_input" ? <HumanInputCard key={g.key} id={g.step.metadata!.human_input_id!} question={g.step.summary} readOnly={g.step.inherited} activityId={g.key} focused={g.key===focusActivity} onLocated={onLocated}/> : g.type === "steering" ? (
           <SteeringNotice key={"s"+g.key} step={g.step} getDetail={getDetail} expanded={steeringExpanded[g.key]??false} onExpandedChange={onSteeringExpanded!} focused={g.key===focusActivity} onLocated={onLocated}/>
         ) : g.type === "round" && g.key === focusActivity ? (
           <LocatedActivity
@@ -481,6 +484,7 @@ function TurnDetails({summary,label,elapsed,conversationId,taskId}:{summary?:Tur
   </Popover>;
 }
 function ExecutionTurn({turn,summary,latest,onProcessInteraction,...props}:ExecutionProps&{turn:ReturnType<typeof conversationTurns>[number];summary?:TurnSummary;latest:boolean}){
+  const inputs=React.useContext(HumanInputsContext);
   const getDetail=React.useCallback((seq:number)=>props.fetchDetail?props.fetchDetail(seq):api.activityDetail(seq,props.taskId).then(r=>r.detail??''),[props.fetchDetail,props.taskId]);
   const last=turn.steps.at(-1)!;
   const terminal=turn.steps.findLast(s=>isLifecycle(s)||s.metadata?.event_type==='outcome');
@@ -490,10 +494,11 @@ function ExecutionTurn({turn,summary,latest,onProcessInteraction,...props}:Execu
     ? summary.status : receiptStatus ?? summary?.status;
   const ended=!!terminal||!!status&&!['running','unknown','awaiting_confirmation'].includes(status);
   const streaming=turn.steps.some(s=>s.streaming);
-  const live=!ended&&(streaming||(props.live&&latest)||status==='running');
+  const waiting=!ended&&props.pendingStatus!=='stopping'&&(props.pendingStatus==='human_input'&&latest||inputs?.items.some(r=>r.status==='pending'&&turn.steps.some(s=>s.metadata?.human_input_id===r.id)));
+  const live=!ended&&(waiting||streaming||(props.live&&latest)||status==='running');
   const interrupted=status==='interrupted';
   const failed=terminal?.is_error||status==='failed'||status==='blocked';
-  const label=status==='awaiting_confirmation'?'等待宿主确认':!ended&&props.pendingStatus&&latest?'等待停止确认':
+  const label=waiting?'等待人工输入':status==='awaiting_confirmation'?'等待宿主确认':!ended&&props.pendingStatus&&latest?'等待停止确认':
     status==='paused'?'已暂停':status==='timeout'?'超时':status==='exhausted'?'预算耗尽':
     ['stopped','cancelled','canceled','aborted'].includes(status??'')?'已停止':interrupted?'执行已中断':
     failed?'失败':status==='completed'||status==='done'?'已完成':ended?'已结束':live?'运行中':'历史记录';
@@ -524,7 +529,7 @@ function ExecutionTurn({turn,summary,latest,onProcessInteraction,...props}:Execu
     {planning&&<PlannerRoundMarker round={planning} focusActivity={focus} onLocated={props.onLocated}/> }
     <Bubble variant="ghost" className="w-full max-w-full"><BubbleContent className="execution-body flex w-full min-w-0 flex-col">
       <div className="execution-status-bar"><span role="status" className={statusClass}><span className="execution-status-dot" aria-hidden="true"/>{label}</span><span aria-hidden="true" className="text-muted-foreground">/</span><span className="text-muted-foreground tabular-nums">{elapsed}</span><TurnDetails summary={summary} label={label} elapsed={elapsed} conversationId={props.conversationId} taskId={props.taskId}/></div>
-      {live&&!streaming&&<WorkingIndicator/>}
+      {live&&!streaming&&!waiting&&<WorkingIndicator/>}
       {processSteps.length>0&&<ActivitySteps {...stepProps} activity={processSteps}/>}
       {errorText&&!final&&<Collapsible className="min-w-0">
         <CollapsibleTrigger asChild><Button variant="ghost" className="execution-group-trigger justify-start px-0 text-destructive"><ChevronRight/>查看错误详情</Button></CollapsibleTrigger>

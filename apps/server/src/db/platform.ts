@@ -878,6 +878,7 @@ export async function seedBuiltinTools(db: Database): Promise<void> {
     ["add_intent", "派发探索意图（先查重）", ["planner", "mainagent"]],
     ["prove_goal", "证明目标达成并收官", P],
     ["kill_work", "终止在跑意图", ["planner", "mainagent"]],
+    ["ask_user", "请求人工协助", ["worker", "planner", "mainagent"]],
     ["steer_work", "运行中纠偏（不打断）", ["planner", "mainagent"]],
     ["add_task_scope", "扩展任务测试范围", P],
     ["todo_write", "更新攻击链待办（跨轮共享）", P],

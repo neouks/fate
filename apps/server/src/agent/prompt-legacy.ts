@@ -42,6 +42,7 @@ export const LEGACY_TOOL_DESCRIPTIONS: Record<string, string> = {
   "context_get": "按稳定引用分页读取节点详情与血缘",
   "read_tool_output": "续读完整工具 JSON 原文",
   "http_request": "执行授权 HTTP 请求并保存证据",
+  "ask_user": "请求人工协助",
   "traffic_body": "分页读取流量证据",
   "read_attachment": "分页读取当前会话附件",
   "record_finding_retest_result": "保存明确的复测结论",

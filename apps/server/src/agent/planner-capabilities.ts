@@ -2,6 +2,7 @@
  * Unclassified custom execution tools belong to Worker. Explicitly bound MCP
  * capabilities are additionally checked against live server/tool authorization. */
 const PLANNER_TOOLS = new Set([
+  'ask_user',
   'list_mcp_resources','list_mcp_resource_templates','read_mcp_resource','traffic_search', 'read', 'tool_search', 'web_search', 'context_search', 'context_get', 'graph_overview',
   'asset_search', 'asset_get', 'list_assets', 'list_untested_assets',
   'node_detail', 'search_worker_traces', 'get_worker_trace', 'expand_index',

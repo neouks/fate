@@ -1,3 +1,4 @@
+import {waitForHumanInput,interruptHumanInputs,reconcileHumanInputs} from '../db/human-input.js';
 import {acquireRuntimeResources,resourceScope,type RuntimeResourceLease} from './runtime-resources.js';
 import {prepareToolLoading} from '../agent/tool-loading.js';
 import {assertToolBinding} from '../agent/tool-registry.js';
@@ -70,8 +71,18 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
   model:configured.model,model_route:{provider:options.model.provider,id:options.model.id},streaming:options.streaming!==false,
   prompt_hash:digest(options.systemPrompt??''),tools:options.toolAllowlist??[],skills:options.allowedSkills??[],mcp:(options.mcpEntries??[]).map(e=>e.name)};
  const guard=options.guard;
+  const register = async (tx: Database) => {
+   if(taskID>0)await lockTaskWorkspace(tx,taskID);
+   await tx.query('INSERT INTO runtime_role_configs(id,task_id,conversation_id,role,configured,effective,expires_at) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,now()+interval \'20 seconds\')',[id,taskID||null,conversationID??null,role,JSON.stringify(configured),JSON.stringify(effective)]);
+  };
+  if(taskID>0)await db.transaction(register);
+  else await register(db);
+ let renewing=false;
+ const heartbeat=setInterval(()=>{if(renewing)return;renewing=true;void db.control().query("UPDATE runtime_role_configs SET expires_at=now()+interval '20 seconds' WHERE id=$1 AND finished_at IS NULL AND expires_at>clock_timestamp() RETURNING id",[id]).then(r=>{if(!r.rowCount)controller.abort('执行器已过期');}).catch(()=>{}).finally(()=>{renewing=false;});},5000);heartbeat.unref();
  let runner!:AgentRunner;
+ try{
  runner=await AgentRunner.create({...options,signal,
+  humanInput:taskID>0&&!conversationID&&['worker','planner','mainagent'].includes(role)?(prompt,signal)=>{options.resourceLease.ready();return waitForHumanInput(db,{taskID,runtimeID:id,role,turnID:options.turnID??id,intentID:options.intentID,mainSegment:options.mainSegment},prompt,signal);}:undefined,
   liveAllowedSkills:options.skillsDir?async()=>{const rows=(await db.query('SELECT v.skill_name FROM agent_skill_visibility v JOIN agents a ON a.id=v.agent_id WHERE a.key=$1 AND a.enabled AND v.enabled',[role])).rows;return (options.allowedSkills??[]).filter(name=>rows.some(row=>row.skill_name===name));}:undefined,platform:{role,taskID,conversationID,policy:configured.platform_policy},
   onRequestSize:async (size,purpose)=>{
    await options.onRequestSize?.(size,purpose);
@@ -116,19 +127,11 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
    await options.mcpGuard?.(server,method,tool);
   }});
  Object.assign(effective,{context_policy:options.contextPolicy,active_tools:runner.activeToolNames,prompt_diagnostics:runner.promptDiagnostics,prompt_source:configured.prompt_source,prompt_version:configured.prompt_version});
- try{
-  const register = async (tx: Database) => {
-   if(taskID>0)await lockTaskWorkspace(tx,taskID);
-   await tx.query('INSERT INTO runtime_role_configs(id,task_id,conversation_id,role,configured,effective,expires_at) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,now()+interval \'20 seconds\')',[id,taskID||null,conversationID??null,role,JSON.stringify(configured),JSON.stringify(effective)]);
-  };
-  if(taskID>0)await db.transaction(register);
-  else await register(db);
+  await db.query('UPDATE runtime_role_configs SET effective=$2::jsonb WHERE id=$1',[id,JSON.stringify(effective)]);
   if(options.nativeActivityRuntime)await registerNativeActivityRun(db,id,runner,options.nativeActivity!,options.flushNativeSession);
  }
- catch(error){try{await runner.dispose();}finally{await db.query('UPDATE runtime_role_configs SET finished_at=now(),expires_at=now() WHERE id=$1',[id]);}throw error;}
+ catch(error){clearInterval(heartbeat);controller.abort();try{await runner?.dispose();}finally{await interruptHumanInputs(db,id);await db.query('UPDATE runtime_role_configs SET finished_at=now(),expires_at=now() WHERE id=$1',[id]);}throw error;}
  options.resourceLease.ready();
- let renewing=false;
- const heartbeat=setInterval(()=>{if(renewing)return;renewing=true;void db.control().query("UPDATE runtime_role_configs SET expires_at=now()+interval '20 seconds' WHERE id=$1 AND finished_at IS NULL AND expires_at>clock_timestamp() RETURNING id",[id]).then(r=>{if(!r.rowCount)controller.abort('执行器已过期');}).catch(()=>{}).finally(()=>{renewing=false;});},5000);heartbeat.unref();
  const dispose=runner.dispose.bind(runner);
  const prompt=runner.prompt.bind(runner);
  runner.prompt=async(...args:Parameters<typeof runner.prompt>)=>{
@@ -138,6 +141,7 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
  };
  let disposing:Promise<void>|undefined;
  runner.dispose=()=>disposing??=(async()=>{clearInterval(heartbeat);try{await dispose();
+  await interruptHumanInputs(db,id);
   if(options.nativeActivityRuntime&&runner.nativeActivitiesAcknowledged){
    await options.flushNativeSession?.();
    await db.query('UPDATE native_activity_runs SET completed=true,last_error=NULL,updated_at=now() WHERE runtime_id=$1',[id]);
@@ -158,6 +162,7 @@ export async function recoverExpiredRuntimes(db:Database) {
    error='执行器失联或进程退出；请求已中断，用量以计量记录为准',usage=usage||jsonb_build_object('unavailable',COALESCE(usage->>'_quality','unknown') NOT IN ('complete','not_sent'))
    WHERE a.status='running' AND EXISTS(SELECT 1 FROM runtime_role_configs r WHERE r.id=a.runtime_id AND r.finished_at IS NOT NULL)
    RETURNING a.id`);
+  await reconcileHumanInputs(tx);
   return {runtimes:expired.rowCount??0,requests:attempts.rowCount??0};
  });
 }

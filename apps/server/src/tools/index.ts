@@ -1,3 +1,4 @@
+import {askUserTool} from '../pi/human-input.js';
 import {trafficSearchTool} from './traffic-search.js';
 import {webSearchTool} from './web-search.js';
 import {mergedAssetSearchTool as assetSearchTool} from './asset-search-compat.js';
@@ -29,7 +30,7 @@ function sharedReadTools(ctx: ToolRunContext, forWorker = false): ToolDefinition
 
 /** worker：一条意图的执行者（三通道写回 + 查重 + 过程复用）。 */
 export function workerTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [webSearchTool(ctx), httpRequestTool(ctx), trafficBodyTool(ctx),
+  return [askUserTool(),webSearchTool(ctx), httpRequestTool(ctx), trafficBodyTool(ctx),
     ...sharedReadTools(ctx, true),
     recordFactTool(ctx),
     insertAssetsTool(ctx),
@@ -40,7 +41,7 @@ export function workerTools(ctx: ToolRunContext): ToolDefinition[] {
 
 /** Planner：读取已有证据、派单、监督及目标证明，不执行目标请求。 */
 export function plannerTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [webSearchTool(ctx), trafficBodyTool(ctx),
+  return [askUserTool(),webSearchTool(ctx), trafficBodyTool(ctx),
     ...sharedReadTools(ctx),
     addIntentTool(ctx),
     proveGoalTool(ctx),
@@ -54,7 +55,7 @@ export function plannerTools(ctx: ToolRunContext): ToolDefinition[] {
 
 /** Main：用户驱动的执行、写回、派单和纠偏入口。 */
 export function mainTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [webSearchTool(ctx),httpRequestTool(ctx),trafficBodyTool(ctx),recordFactTool(ctx),reportFindingTool(ctx),insertAssetsTool(ctx),
+  return [askUserTool(),webSearchTool(ctx),httpRequestTool(ctx),trafficBodyTool(ctx),recordFactTool(ctx),reportFindingTool(ctx),insertAssetsTool(ctx),
     ...sharedReadTools(ctx),
     setGoalsTool(ctx),
     setConstraintsTool(ctx),

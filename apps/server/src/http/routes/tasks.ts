@@ -1,3 +1,4 @@
+import {registerHumanInputRoutes} from './human-input.js';
 import {registerGoalAcceptanceRoutes} from './goal-acceptance.js';
 import {aggregateUsage} from '../../db/usage-ledger.js';
 import {requireTaskGoal} from "../../agent/task-goal.js";
@@ -32,6 +33,7 @@ async function engineNoop(p: unknown): Promise<void> {
 
 export function registerTaskRoutes(app: FastifyInstance): void {
   registerOperationRoutes(app);
+  registerHumanInputRoutes(app);
   registerGoalAcceptanceRoutes(app);
   const tasks = () => app.db.tasks();
   const serializeTask = async (task: Task, batch?:{states:Map<number,Record<string,unknown>>;snapshot:Awaited<ReturnType<typeof executionSnapshots>>}) => {

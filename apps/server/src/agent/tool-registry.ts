@@ -11,6 +11,7 @@ export const TOOL_ALIASES: Record<string,string> = {
 };
 export const RETIRED_TOOLS = new Set(['get_finding_retest_context','record_finding_retest_result','checkpoint_intent','complete_intent']);
 export const DOMAIN_TOOL_NAMES = [
+  'ask_user',
   'traffic_search','search_finding_traffic','bind_finding_traffic','web_search','context_search','context_get','graph_overview','asset_search','asset_get','insert_assets',
   'record_fact','report_finding','list_findings','http_request','add_intent','dispatch_intents',
   'prove_goal','kill_work','steer_work','add_task_scope','todo_write','set_goals','set_constraints','register_user_target',
@@ -22,9 +23,9 @@ const supported = new Set([...NATIVE_TOOLS,...DOMAIN_TOOL_NAMES,...Object.keys(T
   'list_mcp_resources','list_mcp_resource_templates','read_mcp_resource']);
 const common = ['context_search','context_get'];
 const core:Record<string,string[]>={
-  worker:[...common,'http_request','insert_assets','record_fact','report_finding'],
-  planner:[...common,'graph_overview','asset_search','add_intent','prove_goal','todo_write','kill_work','steer_work'],
-  mainagent:[...common,'http_request','insert_assets','record_fact','report_finding','add_intent','dispatch_intents','steer_work'],
+  worker:[...common,'ask_user','http_request','insert_assets','record_fact','report_finding'],
+  planner:[...common,'ask_user','graph_overview','asset_search','add_intent','prove_goal','todo_write','kill_work','steer_work'],
+  mainagent:[...common,'ask_user','http_request','insert_assets','record_fact','report_finding','add_intent','dispatch_intents','steer_work'],
   goals:[...common,'set_goals','set_constraints','register_user_target'],
   auto:[...common,'list_tasks','get_task','spawn_task','pause_task','resume_task'],
   pentest:[...common,'http_request','record_conversation_fact','report_conversation_finding'],

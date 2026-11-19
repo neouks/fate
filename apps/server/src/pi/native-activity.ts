@@ -1,3 +1,4 @@
+import {maskedHumanResult} from './human-input.js';
 import {createHash} from 'node:crypto';
 import type {ActivitySource} from '../db/activity-projection.js';
 import type {RunnerActivity} from './runner.js';
@@ -43,5 +44,5 @@ export function nativeToolActivities(message:any,assistant:any,runtime:string,se
  if(!call)throw new Error('Native tool result has no matching original call; source retained');
  const texts=(message.content??[]).filter((b:any)=>b.type==='text').map((b:any)=>b.text);
  return [withNativeActivity({kind:'tool_start',toolCallId:call.id,toolName:call.name,args:call.arguments},runtime,sequence),
-  withNativeActivity({kind:'tool_end',toolCallId:call.id,toolName:call.name,isError:!!message.isError,text:texts.length?texts.join('\n'):undefined},runtime,sequence)];
+  withNativeActivity({kind:'tool_end',toolCallId:call.id,toolName:call.name,isError:!!message.isError,text:maskedHumanResult(message)??(texts.length?texts.join('\n'):undefined)},runtime,sequence)];
 }

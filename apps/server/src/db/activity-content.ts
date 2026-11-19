@@ -8,7 +8,7 @@ const fail=(message:string,statusCode=400)=>Object.assign(new Error(message),{st
 /** Project before crossing the DB connection. Originals and authorization always
  * use the stored columns, never this presentation projection. */
 export function activityMetadataSQL(column='metadata'){
- const keys=['turn_id','stream_id','channel','event_type','status','role','runtime_id','mode','started_at','stop_reason','final_answer','interrupted','source','phase','planner_round','steering','worker_feedback','response','llm_transition','attachments','raw_source_only','native_recovered','native_recovery_reconciled','native_event'];
+ const keys=['human_input_id','turn_id','stream_id','channel','event_type','status','role','runtime_id','mode','started_at','stop_reason','final_answer','interrupted','source','phase','planner_round','steering','worker_feedback','response','llm_transition','attachments','raw_source_only','native_recovered','native_recovery_reconciled','native_event'];
  const usage=['input','output','cacheRead','cacheWrite','totalTokens'].map(key=>{
   const value=`${column}#>'{response,usage,${key}}'`;return `'${key}',CASE WHEN jsonb_typeof(${value})='number' AND octet_length((${value})::text)<64 THEN ${value} END`;
  }).join(',');

@@ -1,3 +1,4 @@
+import type {HumanInputRequest} from './human-input';
 import type { WebSearchSettings, WebSearchTest } from "./types";
 import { entryAwareFetch } from "@/lib/http-auth";
 import { modelTokenStats } from "@/lib/model-token-stats";
@@ -911,6 +912,8 @@ export const api = {
     ),
   chat: (message: string, task?: string, attachments?: ChatAttachment[], seg?: number, request_id?:string) =>
     post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments, seg, request_id }),
+  inputRequests:(taskId:string,id?:string)=>get<{items:HumanInputRequest[]}>(`/tasks/${taskId}/input-requests${id?`?request_id=${encodeURIComponent(id)}`:''}`),
+  respondInput:(taskId:string,id:string,body:{action:'answer'|'cancel';answer?:string|boolean})=>post<HumanInputRequest>(`/tasks/${taskId}/input-requests/${id}/respond`,body),
   chatStatus: (taskId: string) => get<{ running: boolean }>(`/tasks/${taskId}/chat/status`),
   // 方式1 文件上传:落到会话/任务工作目录 uploads/，返回可供 agent Read 的相对路径。
   chatUpload: async (scope: "task" | "session" | "staging", id: string, files: File[]) => {

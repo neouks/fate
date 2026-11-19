@@ -1,3 +1,4 @@
+import {HUMAN_INPUT_RULES} from '../pi/human-input.js';
 import {retireExplorationInstructions} from './retired-exploration-policy.js';
 import {normalizeGoalProofInstructions} from './goal-proof-policy.js';
 import {FINDING_WRITE_GUIDANCE,isPreviousFindingDescription} from './finding-write-policy.js';
@@ -31,6 +32,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_worker_trace: '读取指定意图的进度与执行轨迹；需要原始过程时启用 include_output，按返回游标续读。',
   prove_goal: '用仍获授权的 confirmed 事实或漏洞证明目标；任务原文、线索及撤回记录不能作证。证据须支持该目标，量化条件核对实测值。',
   kill_work: '当前方向明确无意义、重复、越界或被取消时直接终止，保留已写回事实与 findings；以回执确认停止。已完成的正常结束，不以 kill 代替完成，不反复纠偏。',
+  ask_user:HUMAN_INPUT_RULES,
   steer_work: '仅用结构化 correction 缩减原验收项（stop_criteria），或向原验收项引用已有事实（reuse_evidence）；criterion_indices 是原 acceptance 的 0 起始索引。禁止自由文本新任务、改变目标或新增前置问题。收尾或完成后禁止纠偏；无意义或重复的直接 kill_work。',
   todo_write: '保存跨轮依赖待办；有依赖的步骤仅在前置满足后下发。',
   set_goals: '仅保存目标栏要求的最终结果，不从描述扩写、不把探索步骤当作目标。新任务 Goals 阶段须逐字提供 source_quote；Main 追加保持原有接口。成功返回即已保存。',

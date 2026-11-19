@@ -28,6 +28,21 @@ export function failureReason(message:string):WorkerStopReason {
   return /connection error|fetch failed|ECONN|ETIMEDOUT|socket|network error/i.test(message)?'model_connection_error':'model_error';
 }
 
+/** A pending human tool can observe durable control before the engine heartbeat.
+ * Classify that interruption from authoritative state so a pause remains resumable. */
+export async function persistedWorkerAbortCause(db:Database,taskID:number):Promise<'pause'|'task-timeout'|'task-completed'|'task-ended'|undefined>{
+  const task=(await db.query(`SELECT status,paused,queued,deleted_at,
+    deadline_at<=clock_timestamp() expired,
+    EXISTS(SELECT 1 FROM runtime_task_commands c WHERE c.task_id=t.id AND c.command='pause' AND c.status='pending') pause_requested
+    FROM tasks t WHERE id=$1`,[taskID])).rows[0];
+  if(!task||task.deleted_at)return 'task-ended';
+  if(task.status==='done')return 'task-completed';
+  if(task.status==='timeout')return 'task-timeout';
+  if(task.status!=='running')return 'task-ended';
+  if(task.paused||task.queued||task.pause_requested)return 'pause';
+  if(task.expired)return 'task-timeout';
+}
+
 /** A host receipt is not model evidence or an accepted execution_result. */
 export async function workerStopReceipt(db:Database,expID:number,node:Node,reason:WorkerStopReason,attemptID:string,detail='') {
   const result=node.payload.execution_result as Record<string,unknown>|undefined;

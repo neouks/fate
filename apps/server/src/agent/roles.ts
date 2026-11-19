@@ -1,3 +1,4 @@
+import {pendingHumanInputSources} from '../db/human-input.js';
 import {stoppedWorkerCriteria} from './worker-correction.js';
 import {workerMandate,plannerDispatchReminder,WORK_COORDINATION_GUIDANCE} from './worker-assignment.js';
 import {plannerConvergenceState} from './planner-convergence.js';
@@ -118,7 +119,7 @@ const GUARD_SKIP_TOOLS = new Set([
 ]);
 
 export function workerIntentToolRestriction(allowedTools: readonly string[] | undefined, g: ToolGuardContext) {
-  if (!allowedTools || allowedTools.includes(g.toolName) || GUARD_SKIP_TOOLS.has(g.toolName) ||
+  if (g.toolName==='ask_user' || !allowedTools || allowedTools.includes(g.toolName) || GUARD_SKIP_TOOLS.has(g.toolName) ||
       (g.toolName === 'read' && g.skillDocument) ||
       ['read_tool_output','read_attachment','traffic_body','expand_index','expand_digest','list_facts'].includes(g.toolName)) return;
   return {block:true,reason:'工具不在当前意图 allowed_tools 内'};
@@ -226,7 +227,7 @@ function roleExecutionGuard(ctx:ToolRunContext,extra?:ToolGuard):ToolGuard{
     const rejection=roleToolRejection(ctx.role,g.toolName);if(rejection)return {block:true,reason:rejection};
     await ctx.hooks.assertOwnership?.(ctx.db);
     const decision=await extra?.(g);if(decision?.block)return decision;
-    if(GUARD_SKIP_TOOLS.has(g.toolName)||['read','read_tool_output','read_attachment','traffic_body','shell_read','shell_list','shell_close'].includes(g.toolName))return;
+    if(g.toolName==='ask_user'||GUARD_SKIP_TOOLS.has(g.toolName)||['read','read_tool_output','read_attachment','traffic_body','shell_read','shell_list','shell_close'].includes(g.toolName))return;
     const task=await ctx.db.tasks().getTask(ctx.taskID);
     if(!task||task.paused||task.queued||['done','failed','timeout','stopped'].includes(task.status))return {block:true,reason:'任务已暂停或结束，不能执行新操作'};
 
@@ -475,7 +476,9 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
       const task=(await db.query('SELECT *,task_display_status(id) AS display_status FROM tasks WHERE id=$1 AND deleted_at IS NULL',[taskID])).rows[0];
       if(!task||Number(task.exploration_id)!==expID)throw new Error('Planner 任务已删除或归属变化');
       const state=plannerCurrentState(await buildGraphOverview(ctx,{currentOnly:true}),todos.get(expID));
-      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.display_status,paused:task.display_status==='paused',...state,grounding:plannerGroundingContext(await plannerGrounding(ctx,sessionEntries()))})+'\n【证据收敛与待确认状态】\n'+JSON.stringify(await plannerConvergenceState(db,taskID,expID))+'\n'+await contextNeedBoundary(ctx);
+      const waiting=await pendingHumanInputSources(db,taskID);
+      if(waiting.length)state.waiting_for_input=waiting;
+      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.display_status,paused:task.display_status==='paused',...state,grounding:plannerGroundingContext(await plannerGrounding(ctx,sessionEntries()))})+'\n【证据收敛与待确认状态】\n'+JSON.stringify(await plannerConvergenceState(db,taskID,expID))+'\n'+await contextNeedBoundary(ctx)+(waiting.length?'\nwaiting_for_input 中的执行正在等待用户回答；不要因等待而纠偏追加工作、重复派单或认定方向无意义。':'');
     },
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,

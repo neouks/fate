@@ -756,6 +756,7 @@ export interface Activity {
     stream_id?: string;
     channel?: "text" | "thinking";
     event_type?: string;
+    human_input_id?: string;
     response?: unknown;
     status?: string;
     attachments?: ChatAttachment[];

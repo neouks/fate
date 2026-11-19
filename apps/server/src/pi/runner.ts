@@ -1,3 +1,5 @@
+import {humanInputUI,maskedHumanResult,type HumanInputHandler} from './human-input.js';
+import {ActiveClock} from './active-clock.js';
 import {projectRecallHistory} from './recall-history.js';
 import {formatSkillsForPrompt} from '@earendil-works/pi-coding-agent';
 import {roleAllowsTool,roleToolRejection,PLANNER_CAPABILITY_PROTOCOL} from '../agent/planner-capabilities.js';
@@ -123,6 +125,7 @@ export type RunnerActivity = (
 	| { kind: 'queue_update'; steering: readonly string[]; followUp: readonly string[] }) & {native_event?:NativeActivityReference;resource_call?:ResourceCall};
 
 export interface AgentRunnerOptions {
+  humanInput?:HumanInputHandler;
   resourceOwners?:Map<string,McpOwner>;
   resourceServers?:Map<string,number>;
   nativeActivity?:NativeActivityIdentity;
@@ -247,6 +250,10 @@ export class AgentRunner {
   private compactionHealth:CompactionHealth={requests:0,completed:0,failed:0};
 	private modelError: string | undefined;
   private hostContextFailure: {error?:Error} = {};
+  private inputAbort=new AbortController();
+  private humanWaiting=false;
+  private durationClosingDue=false;
+  private activeClock?:ActiveClock;
   private domainCompletion = {done:false};
   private finalResponse = {done:false};
 	private settled!: (result: RunResult) => void;
@@ -693,7 +700,7 @@ export class AgentRunner {
     runner.wrapupContext = wrapupContext;
     runner.compactionHealth=compactionHealth;
 		try {
-			await session.bindExtensions({}); // Fires session_start: native MCP connects here.
+			await session.bindExtensions(opts.humanInput?{mode:'rpc',uiContext:humanInputUI(session.extensionRunner.getUIContext(),opts.humanInput,opts.signal?AbortSignal.any([opts.signal,runner.inputAbort.signal]):runner.inputAbort.signal,waiting=>{runner.humanWaiting=waiting;if(waiting)runner.activeClock?.pause();else runner.activeClock?.resume();},()=>{if(runner.phase!=='running'||runner.durationClosingDue)throw new Error('已进入收尾或完成，不能请求人工输入');},()=>{void runner.abort();})}:{}); // Fires session_start: native MCP connects here.
       if(opts.toolLoading||opts.platform?.role==='planner'){
         // Native recovery restores the previous declaration, which can be an old
         // or budget-closing loadout. Add today's permitted resident tools while
@@ -841,14 +848,18 @@ export class AgentRunner {
 		const finished = this.settledPromise;
 		const abort = () => { void this.abort(); };
 		this.opts.signal?.addEventListener('abort', abort, { once: true });
-		const timer = this.opts.maxDurationMs ? setTimeout(() => {
+		this.durationClosingDue=false;
+    const clock=this.activeClock=new ActiveClock();
+    if(this.humanWaiting)clock.pause();
+    if(this.opts.maxDurationMs)clock.at(this.opts.maxDurationMs,() => {
 			this.budgetExceeded = true;
       this.budgetReason = 'duration_limit';
 			void this.abort();
-		}, this.opts.maxDurationMs) : undefined;
+		});
     // Reserve time inside (never beyond) the run deadline for durable writeback.
     let active = true;
-    const closingTimer = this.opts.maxDurationMs && this.opts.settlementTools && this.opts.wrapup ? setTimeout(() => {
+    if(this.opts.maxDurationMs && this.opts.settlementTools && this.opts.wrapup)clock.at(this.opts.maxDurationMs-Math.min(30_000,this.opts.maxDurationMs*0.1),() => {
+      this.durationClosingDue=true;
       void (async()=>{
         const decision = await this.opts.wrapup?.(this.wrapupContext('duration_limit'));
         if(!active || this.opts.signal?.aborted || this.finalResponse.done || this.closing.active || !decision)return;
@@ -856,7 +867,7 @@ export class AgentRunner {
         if(this.opts.stopOnFinalResponse)this.session.clearQueue();
         await this.session.sendCustomMessage({customType:'server_duration_budget',content:'时间预算即将耗尽。'+CLOSING_RULE+'\n'+decision.prompt,display:true},{deliverAs:'steer'});
       })().catch(()=>{ /* The hard deadline remains authoritative. */ });
-    }, this.opts.maxDurationMs - Math.min(30_000, this.opts.maxDurationMs * 0.1)) : undefined;
+    });
 		try {
 			await this.assertSkillInput(text);
       await this.session.prompt(text,{images});
@@ -868,8 +879,8 @@ export class AgentRunner {
 			return result;
 		} finally {
 			active = false;
-			clearTimeout(timer);
-      clearTimeout(closingTimer);
+			clock.close();
+      this.activeClock=undefined;
 			this.opts.signal?.removeEventListener('abort', abort);
 		}
 	}
@@ -912,6 +923,7 @@ export class AgentRunner {
 
 	/** 中止当前运行并等待 idle */
 	async abort(): Promise<void> {
+    this.inputAbort.abort();
 		await this.session.abort();
 	}
 
@@ -999,6 +1011,8 @@ export class AgentRunner {
 	}
 
 	async dispose(): Promise<void> {
+    this.inputAbort.abort();
+    this.activeClock?.close();
 		try { await this.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); }
 		finally {
       this.session.dispose();
@@ -1031,6 +1045,7 @@ function assistantThinking(message: unknown): string | undefined {
 
 /** 提取工具结果里的 text content（AgentToolResult.content[].text）。 */
 function toolResultText(result: unknown): string | undefined {
+  const masked=maskedHumanResult(result);if(masked!==undefined)return masked;
 	if (typeof result !== "object" || result === null) return undefined;
 	const content = (result as { content?: unknown }).content;
 	if (!Array.isArray(content)) return undefined;
