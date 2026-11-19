@@ -1,4 +1,5 @@
 import {WORKER_FACT_GUIDANCE} from '../agent/worker-fact-policy.js';
+import {toolDeclarationWindow} from './tool-declaration-window.js';
 import {humanInputUI,maskedHumanResult,type HumanInputHandler} from './human-input.js';
 import {ActiveClock} from './active-clock.js';
 import {projectRecallHistory} from './recall-history.js';
@@ -630,7 +631,7 @@ export class AgentRunner {
 			agentDir: opts.agentDir,
 			settingsManager: settings,
 			noExtensions: true,
-			extensionFactories: [activityExtension, diagnosticsExtension, modelPolicyExtension, compactionExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory,...(opts.extensionFactories??[])].filter(
+			extensionFactories: [activityExtension, diagnosticsExtension, modelPolicyExtension, compactionExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory,toolDeclarationWindow(opts.toolLoading,()=>closing.active),...(opts.extensionFactories??[])].filter(
 				(e): e is ExtensionFactory => typeof e === 'function',
 			).map(factory=>wrapRegisteredTools(opts.toolLoading||opts.platform?.role==='planner'?restrictRegisteredTools(factory,permitted):factory,tool=>{
         const wrapped=opts.wrapExecutionTool?.(tool)??tool;

@@ -1,10 +1,42 @@
-import {createMcpExtension,createToolSearchExtension,type ExtensionAPI,type ExtensionFactory} from '@earendil-works/pi-coding-agent';
+import {createMcpExtension,createToolSearchExtension,type ExtensionAPI,type ExtensionFactory,type ToolDefinition} from '@earendil-works/pi-coding-agent';
 import {roleAllowsTool,roleToolRejection} from '../agent/planner-capabilities.js';
+import {toolIdentity} from '../agent/tool-registry.js';
+import {discoverTools,discoveryReceipt,type DiscoveryArgs} from './tool-discovery.js';
 import {createServerTransport} from './mcpTransport.js';
 import type {AgentRunnerOptions} from './runner.js';
 
 export const MCP_RESOURCE_TOOLS=['list_mcp_resources','list_mcp_resource_templates','read_mcp_resource'];
-export const TOOL_SEARCH_HINT=' 未出现在本轮工具声明中的能力，必须先用此工具按工具名或中英文关键词检索，成功加载后再调用；仅在提示词中出现不代表已激活。只有获授权的工具会被加载。';
+export const TOOL_SEARCH_HINT=' 已知完整工具名用 mode=exact 直接加载；已加载会明确返回。关键词用 mode=keyword，默认只加载 1 个，自动补充候选目录；按 next 翻页或用候选完整名称精确加载。mode=catalog 可枚举全部获授权工具，不加载 Schema。未授权、不存在和服务未就绪分别返回，不能把关键词未命中当作能力不存在。';
+export const loadedToolReceipt=(names:string[])=>'已加载：'+names.join(', ')+'。参数与约束见下一轮工具声明。';
+
+/** Catalog and execution share the same small discovery default. Search receipts
+ * carry names only; full help already arrives in the next tool declaration. */
+export function leanToolSearch(definition:ToolDefinition):ToolDefinition {
+  const parameters=structuredClone(definition.parameters) as any;
+  parameters.properties.limit={type:'integer',minimum:1,maximum:20,default:1,description:'本页最多加载的工具数，默认 1；候选目录不加载 Schema。'};
+  parameters.properties.mode={type:'string',enum:['auto','exact','keyword','catalog'],default:'auto',description:'exact 按完整名称查表加载；keyword 关键词加目录兜底；catalog 只列目录；auto 自动识别。'};
+  parameters.properties.offset={type:'integer',minimum:0,description:'候选目录分页偏移；将 next 原样传入。'};
+  parameters.properties.catalog_version={type:'string',description:'候选目录版本；翻页沿用 next，变化时按回执从首页重读。'};
+  return {...definition,parameters,description:definition.description+TOOL_SEARCH_HINT,
+    prepareArguments(input){
+      const args=definition.prepareArguments?definition.prepareArguments(input):input;
+      if(args&&typeof args==='object')for(const field of ['limit','offset'] as const){
+        const value=(args as Record<string,unknown>)[field];
+        if(value!==undefined&&(!Number.isSafeInteger(value)||Number(value)<(field==='limit'?1:0)||field==='limit'&&Number(value)>20))
+          throw new Error(`tool_search.${field} 必须为${field==='limit'?' 1–20 的':'非负'}整数；不能使用小数或字符串`);
+      }
+      return args;
+    },
+    async execute(id,input,signal,update,context){
+      const args=input as {query:string;limit?:number};
+      const result=await definition.execute(id,{...args,limit:args.limit??1},signal,update,context);
+      const loaded=(result.details as {loaded?:unknown}|undefined)?.loaded;
+      if(!result.isError&&Array.isArray(loaded)&&loaded.length&&loaded.every(name=>typeof name==='string'))
+        return {...result,content:[{type:'text',text:loadedToolReceipt(loaded)},...result.content.slice(1)]};
+      return result;
+    },
+  };
+}
 
 /** Stable per-session instructions for custom system prompts, which bypass pi's
  * default tool guidance. Names come only from the permitted registration set. */
@@ -12,14 +44,14 @@ export function toolDiscoveryInstructions(opts:Pick<AgentRunnerOptions,'toolLoad
   const mcpGuidance=opts.mcpEntries?.length?'\n<mcp_authorization>管理员已显式启用并绑定本会话的 MCP。这些 MCP 是当前角色获授权可直接调用的能力：按用户目标及角色职责发现和使用，不能仅因工具来自 MCP 就转交给其他 Agent。规划所需的资料查询、本地辅助或用户明确要求的 MCP 调用可自行完成；任务范围、工具权限与关闭/解绑检查仍然适用。Skill 中提及但未绑定的 MCP 不因此获得权限。</mcp_authorization>\n':'';
   if(!opts.toolLoading?.deferred.length&&!hasDeferredMcp(opts))return mcpGuidance;
   const names=[...opts.toolLoading?.deferred??[]].sort();
-  return '\n<tool_loading>\n以本轮工具声明为当前可调用集合；提示词、黑板或旧会话提及的工具名不代表已激活。未在声明中的能力先用 tool_search 按工具名或中英文关键词检索，成功加载后再调用，不直接试调用。禁用或撤销的能力不能恢复。'+(names.length?' 本会话获准的内部按需工具：'+names.join(', ')+'。':'')+'\n</tool_loading>'+mcpGuidance;
+  return '\n<tool_loading>\n以本轮工具声明为当前可调用集合；提示词、Skill、黑板或旧会话提到工具名不代表已激活。'+TOOL_SEARCH_HINT+' 禁用或撤销的能力不能恢复。'+(opts.toolLoading?.idleToolRequests?' 平台按需工具闲置后会退出声明；再次需要时精确检索，连续调用无需重新加载。':'')+(names.length?' 本会话获准的平台按需工具：'+names.join(', ')+'。':'')+'\n</tool_loading>'+mcpGuidance;
 }
 
 export function hasDeferredMcp(opts:Pick<AgentRunnerOptions,'mcpEntries'>) {
   return opts.mcpEntries?.some(e=>e.config.exposure==='deferred'||Object.values(e.config.toolExposure??{}).includes('deferred'))??false;
 }
 
-/** Adapt native registration/discovery; pi retains connections, ranking, loading and tool execution. */
+/** PI owns MCP registration and execution; discovery adds exact lookup and bounded fallback. */
 export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
   return async pi=>{
     const states=new Map<string,string>((opts.mcpEntries??[]).map(e=>[e.name,'connecting']));
@@ -75,37 +107,35 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
       if(owner)await opts.mcpGuard?.(owner.server,'tools/call',owner.tool);
     });
     if(!hasDeferredMcp(opts)&&!opts.toolLoading?.deferred.length)return;
-    let permitted=new Set<string>();
     await createToolSearchExtension()(new Proxy(pi,{
       get(target,key){
-        if(key==='getAllTools')return ()=>target.getAllTools().filter(t=>permitted.has(t.name));
         if(key==='registerTool')return ((definition:Parameters<ExtensionAPI['registerTool']>[0])=>{
-          const execute=definition.execute;
-          target.registerTool({...definition,description:definition.description+TOOL_SEARCH_HINT,
+          const lean=leanToolSearch(definition);
+          target.registerTool({...lean,
+            executionMode:'sequential',
             execute:async(...args)=>{
               args[2]?.throwIfAborted();
               // The native MCP tool_call readiness hook has run before execute.
               const unavailable=[...states].filter(([,state])=>state!=='ready').map(([name])=>name);
-              const query=String((args[1] as {query?:string}).query??'');
-              // An exact forbidden name is a role denial, not a discovery miss.
-              if(/^(http_request|bash|write|edit|shell_\w+|mcp__\w+)$/.test(query.trim())){
-                const rejection=roleToolRejection(opts.platform?.role,query.trim());
-                if(rejection)throw new Error(rejection);
-              }
-              const next=new Set<string>();
-              for(const t of target.getAllTools()){
-                if(!roleAllowsTool(opts.platform?.role,t.name))continue;
+              const next=new Set<string>(),denied=new Set<string>(),notReady=new Set<string>();
+              const tools=target.getAllTools();
+              for(const t of tools){
+                if(!roleAllowsTool(opts.platform?.role,t.name)){denied.add(t.name);continue;}
                 const owner=owners.get(t.name);
                 try{
-                  if(owner){if(states.get(owner.server)!=='ready')continue;await opts.mcpGuard?.(owner.server,'tools/call',owner.tool);}
+                  if(owner){await opts.mcpGuard?.(owner.server,'tools/call',owner.tool);if(states.get(owner.server)!=='ready'){notReady.add(t.name);continue;}}
                   else await opts.discoveryGuard?.(t.name);
                   next.add(t.name);
-                }catch{/* omit revoked bindings */}
+                }catch{denied.add(t.name);}
               }
-              permitted=next;
               // Loaded tools can outlive their binding in the transcript; remove current declarations too.
               target.setActiveTools(target.getActiveTools().filter(name=>next.has(name)));
-              const result=await execute(...args);
+              const found=await discoverTools(args[1] as DiscoveryArgs,{tools,active:target.getActiveTools(),denied,unavailable:notReady,
+                known:name=>toolIdentity(name).implementation_status!=='unsupported'||(opts.toolAllowlist??[]).includes(name),
+                reason:name=>roleToolRejection(opts.platform?.role,name),unavailableServers:unavailable});
+              args[2]?.throwIfAborted();
+              if(found.loaded.length)target.setActiveTools([...new Set([...target.getActiveTools(),...found.loaded])]);
+              const result=discoveryReceipt(found);
               return unavailable.length?{...result,content:[...result.content,{type:'text' as const,text:`MCP 发现未完成（服务不可用或仍连接中）：${unavailable.join(', ')}。以上匹配仅涵盖当前可用工具，不能据此认定这些 MCP 没有工具；稍后重试。`}]}:result;
             },
           });

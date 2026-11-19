@@ -22,7 +22,7 @@ import {applyToolBindings,disabledBuiltinTools} from './tool-bindings.js';
 import {toolIdentity,ACTIVE_ROLES} from './tool-registry.js';
 import {prepareToolLoading} from './tool-loading.js';
 import {platformPolicy} from '../pi/platform-policy.js';
-import {hasDeferredMcp,TOOL_SEARCH_HINT} from '../pi/platform-mcp.js';
+import {hasDeferredMcp,leanToolSearch} from '../pi/platform-mcp.js';
 import {resolveRolePrompt} from './prompts.js';
 import {PLANNER_READING_RULES} from './planner-memory.js';
 import {roleResources} from './resources.js';
@@ -30,7 +30,7 @@ import {skillDir} from '../config/index.js';
 import type {Database} from '../db/index.js';
 const previewCwd='/tmp/fate-tool-preview';
 const native=()=>[createReadToolDefinition(previewCwd),createBashToolDefinition(previewCwd),createWriteToolDefinition(previewCwd),createEditToolDefinition(previewCwd)] as ToolDefinition[];
-export function searchDefinition(){let tool!:ToolDefinition;createToolSearchExtension()({registerTool:(t:ToolDefinition)=>{tool=t;}} as ExtensionAPI);return {...tool,description:tool.description+TOOL_SEARCH_HINT};}
+export function searchDefinition(){let tool!:ToolDefinition;createToolSearchExtension()({registerTool:(t:ToolDefinition)=>{tool=t;}} as ExtensionAPI);return leanToolSearch(tool);}
 /** Constructors only: no model, MCP connection, terminal process, or domain action. */
 export function roleDefinitions(db:Database,role:string,taskBound=true):ToolDefinition[]{
  const ctx=runContext(db,taskBound?1:0,taskBound?1:0,role as never);

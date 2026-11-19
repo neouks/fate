@@ -10,6 +10,7 @@ import {runWorkerIntent,runPlannerRound,runMainChat,configureAgentEnv} from './r
 import {TodoStore} from '../tools/context.js';
 import {buildModelSource} from '../pi/providerFromProfile.js';
 import {roleResources} from './resources.js';
+import {WORKER_COMPLETION_GUIDANCE} from './worker-fact-policy.js';
 import {createTrackedRunner} from '../engine/runtime-config.js';
 import {registerConfigRoutes} from '../http/routes/config.js';
 import {registerSkillMgmtRoutes} from '../http/routes/skills-mgmt.js';
@@ -101,12 +102,32 @@ test('configured MCP and Skills are enforced inside live tracked PI role session
   const expID=await db.createExploration(prompt,prompt),taskID=Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,status,paused) VALUES($1,$1,$2,'running',false) RETURNING id",[prompt,expID])).rows[0]!.id);
   const events:RunnerActivity[]=[],before=calls.filter(s=>s==='tools/call').length;
   const source=process.env.FATE_RESOURCE_LIVE_PROFILE_FILE?await buildModelSource({...JSON.parse(await readFile(process.env.FATE_RESOURCE_LIVE_PROFILE_FILE,'utf8')),maxTokens:2048,thinkingType:'off',reasoningEffort:'off'}):{modelRuntime:runtime,model:faux.getModel()};
-  if(!process.env.FATE_RESOURCE_LIVE_PROFILE_FILE)faux.setResponses([fauxAssistantMessage([fauxToolCall('read',{path:skill})]),fauxAssistantMessage([fauxToolCall('tool_search',{query:'资源回显'})]),fauxAssistantMessage([fauxToolCall('mcp__fixture__echo',{text:'role-entry-'+role})]),fauxAssistantMessage('done')]);
+  if(!process.env.FATE_RESOURCE_LIVE_PROFILE_FILE)faux.setResponses([
+   ctx=>{
+    if(role==='worker'){
+     const declared=ctx.messages.flatMap(m=>m.role==='system'?m.toolsAdded??[]:[]).map(t=>t.name);
+     for(const name of ['insert_assets','report_finding'])assert.ok(!declared.includes(name));
+     for(const name of ['context_get','record_fact'])assert.ok(declared.includes(name));
+     assert.ok(JSON.stringify(ctx.messages.filter(m=>m.role==='system')).includes(WORKER_COMPLETION_GUIDANCE));
+    }
+    return fauxAssistantMessage([fauxToolCall('read',{path:skill})]);
+   },
+   fauxAssistantMessage([fauxToolCall('tool_search',{query:'资源回显',limit:1})]),
+   fauxAssistantMessage([fauxToolCall('mcp__fixture__echo',{text:'role-entry-'+role})]),
+   ...(role==='worker'?[
+    fauxAssistantMessage([fauxToolCall('record_fact',{summary:'本地回显已完成',evidence:'rpc-result:role-entry-worker',observation_type:'observed',confidence:'high'})]),
+   ]:[]),fauxAssistantMessage('done'),
+  ]);
   const common={db,taskID,expID,goal:prompt,model:source,dataDir:dir,hooks:{},maxTurns:12,onActivity:(a:RunnerActivity)=>{events.push(a);}};
   if(role==='worker'){
    const intentID=await db.exploration(expID).addNode('intent',{summary:prompt,contract:{allowed_tools:['mcp__fixture__echo']}},0,'running','fixture',[]);
    await db.query("UPDATE exploration_nodes SET owner='work#fixture' WHERE id=$1",[intentID]);
-   await runWorkerIntent({...common,intent:(await db.exploration(expID).getNode(intentID))!,workerName:'work#fixture',maxDurationMs:90000});
+   const completed=await runWorkerIntent({...common,intent:(await db.exploration(expID).getNode(intentID))!,workerName:'work#fixture',maxDurationMs:90000});
+   assert.equal(completed.stopReason,'completed');
+   if(!process.env.FATE_RESOURCE_LIVE_PROFILE_FILE){
+    assert.equal(events.filter(e=>e.kind==='usage').length,5,'resident writeback needs no search or extra verification round');
+    assert.ok(events.some(e=>e.kind==='tool_end'&&e.toolName==='record_fact'&&!e.isError));
+   }
   }else if(role==='planner')await runPlannerRound({...common,todos:new TodoStore(db),triggersText:prompt});
   else await runMainChat({...common,message:prompt});
   const ends=events.filter(a=>a.kind==='tool_end');

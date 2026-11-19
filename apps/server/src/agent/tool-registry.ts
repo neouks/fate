@@ -21,18 +21,21 @@ export const DOMAIN_TOOL_NAMES = [
 ];
 const supported = new Set([...NATIVE_TOOLS,...DOMAIN_TOOL_NAMES,...Object.keys(TOOL_ALIASES),'tool_search',
   'list_mcp_resources','list_mcp_resource_templates','read_mcp_resource']);
-const common = ['context_search','context_get'];
+// Keep frequent evidence read/write contracts available through corrections,
+// idle turns and resume. Loadouts still filter role permissions and bindings;
+// residency never grants a tool. Goals retains its fixed bootstrap protocol.
+const common = ['context_search','ask_user','context_get','record_fact'];
 const core:Record<string,string[]>={
-  worker:[...common,'ask_user','http_request','insert_assets','record_fact','report_finding'],
-  planner:[...common,'ask_user','graph_overview','asset_search','add_intent','prove_goal','todo_write','kill_work','steer_work'],
-  mainagent:[...common,'ask_user','http_request','insert_assets','record_fact','report_finding','add_intent','dispatch_intents','steer_work'],
-  goals:[...common,'set_goals','set_constraints','register_user_target'],
-  auto:[...common,'list_tasks','get_task','spawn_task','pause_task','resume_task'],
-  pentest:[...common,'http_request','record_conversation_fact','report_conversation_finding'],
-  reporter:[...common,'get_finding','update_finding_report','search_finding_traffic','bind_finding_traffic'],
+  worker:common,
+  planner:[...common,'graph_overview'],
+  mainagent:common,
+  goals:['context_search','context_get','set_goals','set_constraints','register_user_target'],
+  auto:common,
+  pentest:common,
+  reporter:common,
 };
 export function isCoreTool(role:string,name:string) {
-  return NATIVE_TOOLS.includes(name)||name==='tool_search'||name==='web_search'||core[role]?.includes(name)===true;
+  return NATIVE_TOOLS.includes(name)||name==='tool_search'||core[role]?.includes(name)===true;
 }
 export function toolIdentity(name:string,kind='builtin') {
   const status=kind!=='builtin'?'active':RETIRED_TOOLS.has(name)?'retired':TOOL_ALIASES[name]?'compatibility':supported.has(name)?'active':'unsupported';

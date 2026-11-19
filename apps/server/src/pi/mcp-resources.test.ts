@@ -12,7 +12,7 @@ import {createServerTransport,LegacySseTransport,validateServerTransport} from '
 import {registerMcpMgmtRoutes} from '../http/routes/mcp-mgmt.js';
 import {AgentRunner,type RunnerActivity} from './runner.js';
 
-async function fixture(fn:(url:string,calls:string[])=>Promise<void>,resourceOnly=false,toolsDelay=0){
+async function fixture(fn:(url:string,calls:string[])=>Promise<void>,resourceOnly=false,toolsDelay=0,extraTools=0){
  const streams=new Map<string,ServerResponse>(),calls:string[]=[];let seq=0;
  const server=createServer(async(req,res)=>{
   if(req.headers.authorization!=='Bearer local-fixture'){res.writeHead(401).end();return;}
@@ -26,7 +26,7 @@ async function fixture(fn:(url:string,calls:string[])=>Promise<void>,resourceOnl
   if(message.id===undefined){res.writeHead(202).end();return;}
   let result:unknown;
   if(message.method==='initialize')result={protocolVersion:message.params.protocolVersion,capabilities:resourceOnly?{resources:{}}:{tools:{}},serverInfo:{name:'local-fixture',version:'1'}};
-  else if(message.method==='tools/list'){await new Promise(r=>setTimeout(r,toolsDelay));result={tools:[{name:'fixture_echo',description:'Echo local synthetic text',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}}]};}
+  else if(message.method==='tools/list'){await new Promise(r=>setTimeout(r,toolsDelay));result={tools:Array.from({length:extraTools+1},(_,i)=>({name:i?'fixture_echo_'+i:'fixture_echo',description:'Echo local synthetic text',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}}))};}
   else if(message.method==='tools/call'){calls.push(message.params.name);result={content:[{type:'text',text:'echo:'+message.params.arguments.text}]};}
   else result={};
   const response=JSON.stringify({jsonrpc:'2.0',id:message.id,result});
@@ -112,3 +112,28 @@ for(const query of ['本地回显','local_echo'])test(`unavailable MCP does not 
  const runner=await AgentRunner.create(options as Parameters<typeof AgentRunner.create>[0]);
  try{assert.ok(!runner.activeToolNames.includes('local_echo'));await runner.prompt('local fixture');assert.ok(runner.activeToolNames.includes('local_echo'));assert.equal(calls,1);const searches=activities.filter(a=>a.kind==='tool_end'&&a.toolName==='tool_search');assert.equal(searches.length,1);for(const result of searches){assert.ok(!result.isError);assert.match(result.text??'',/local_echo/);}assert.ok(activities.some(a=>a.kind==='tool_end'&&!a.isError&&a.text?.includes('MCP 发现未完成')));}finally{await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}
 });
+
+test('native MCP search limit selects a small loadout, preserves explicit expansion and raw results',async()=>fixture(async(url,calls)=>{
+ const dir=await mkdtemp(join(tmpdir(),'fate-mcp-limit-'));
+ const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),refreshOnCreate:false});
+ const faux=fauxProvider({provider:'mcp-limit-local'});await runtime.registerNativeProvider(faux.provider);
+ const events:RunnerActivity[]=[];
+ const options={cwd:dir,agentDir:dir,resumeSessionPath:join(dir,'session.jsonl'),modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Local resource check.',toolAllowlist:['read','mcp__*'],
+  mcpEntries:[{name:'fixture',config:{transport:'http',url,headers:{Authorization:'Bearer local-fixture'},exposure:'deferred'}}],onActivity:(a:RunnerActivity)=>{events.push(a);}};
+ let runner:AgentRunner|undefined;
+ try{
+  runner=await AgentRunner.create(options);
+  faux.setResponses([fauxAssistantMessage([fauxToolCall('tool_search',{query:'fixture_echo',limit:1})]),fauxAssistantMessage('loaded')]);
+  await runner.prompt('discover one tool');assert.deepEqual(runner.activeToolNames.filter(n=>n.startsWith('mcp__')),['mcp__fixture__fixture_echo']);
+  await runner.dispose();runner=await AgentRunner.create(options);
+  // MCP reconnects lazily on restore. Let native search wait for registration;
+  // do not force declarations from a stale transcript before the server is ready.
+  faux.setResponses([fauxAssistantMessage([fauxToolCall('tool_search',{query:'fixture_echo',limit:1})]),fauxAssistantMessage([fauxToolCall('mcp__fixture__fixture_echo',{text:'original evidence'})]),fauxAssistantMessage('done')]);
+  await runner.prompt('use the loaded tool');assert.deepEqual(calls,['fixture_echo']);
+  assert.deepEqual(runner.activeToolNames.filter(n=>n.startsWith('mcp__')),['mcp__fixture__fixture_echo']);
+  assert.ok(events.some(e=>e.kind==='tool_end'&&e.toolName==='mcp__fixture__fixture_echo'&&!e.isError&&e.text==='echo:original evidence'));
+  // Native PI owns the limit, ranking and activation. Explicit broader requests remain valid.
+  faux.setResponses([fauxAssistantMessage([fauxToolCall('tool_search',{query:'local synthetic echo',limit:3})]),fauxAssistantMessage('loaded')]);
+  await runner.prompt('discover three more tools');assert.equal(runner.activeToolNames.filter(n=>n.startsWith('mcp__')).length,4);
+ }finally{await runner?.dispose();await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+},false,100,3));

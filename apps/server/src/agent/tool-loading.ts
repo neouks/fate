@@ -21,6 +21,8 @@ export function compactToolSchema(tool:ToolDefinition):ToolDefinition {
 }
 export interface ToolLoading {
  version:string;initialActive:string[];deferred:string[];compatibility:string[];referencedActive?:string[];fallback?:string;
+ /** Retire a discovered platform tool after this many unused model requests. */
+ idleToolRequests?:number;
 }
 
 /** Compatibility is a marker lookup, not another full in-memory JSONL load.
@@ -45,9 +47,11 @@ export function toolLoadout(role:string,options:Pick<AgentRunnerOptions,'customT
  const compatibility=allowed.filter(n=>TOOL_ALIASES[n]&&(settings.legacy||settings.referenced?.includes(n)||!allowed.includes(TOOL_ALIASES[n]!)));
  const names=allowed.filter(n=>!TOOL_ALIASES[n]||compatibility.includes(n));
  const customTools=(options.customTools??[]).filter(t=>names.includes(t.name)).map(compactToolSchema);
- const deferred=settings.direct?[]:names.filter(n=>!n.includes('*')&&!n.startsWith('mcp__')&&!isCoreTool(role,n)&&!compatibility.includes(n)&&!settings.referenced?.includes(n)&&!settings.custom?.includes(n));
+ // A mention in a prompt/Skill is not a request to declare its full schema.
+ // Keep native tools and legacy aliases available; PI discovers domain/custom tools.
+ const deferred=settings.direct?[]:names.filter(n=>!n.includes('*')&&!n.startsWith('mcp__')&&!isCoreTool(role,n)&&!compatibility.includes(n));
  const initialActive=names.filter(n=>!deferred.includes(n));
- const policy:ToolLoading={version:TOOL_POLICY_VERSION,initialActive,deferred,compatibility,referencedActive:names.filter(n=>settings.referenced?.includes(n)),...(settings.fallback?{fallback:settings.fallback}:{})};
+ const policy:ToolLoading={version:TOOL_POLICY_VERSION,initialActive,deferred,compatibility,referencedActive:initialActive.filter(n=>settings.referenced?.includes(n)),...(!settings.direct&&deferred.length?{idleToolRequests:2}:{}),...(settings.fallback?{fallback:settings.fallback}:{})};
  return {customTools:customTools.map(t=>({...t,...(deferred.includes(t.name)?{exposure:'deferred' as const}: {})})),toolAllowlist:names,toolLoading:policy};
 }
 type ToolLoadingOptions=Pick<AgentRunnerOptions,'customTools'|'toolAllowlist'|'legacyTools'|'systemPrompt'|'taskContext'|'resumeSessionPath'|'skillsDir'|'allowedSkills'>;
@@ -60,17 +64,15 @@ export async function prepareToolLoading(db:Database,role:string,options:ToolLoa
   if(skill.includes('/')||skill.includes('\\')||skill==='..')continue;
   try{sources.push(await readFile(skillFilePath(options.skillsDir,skill,'SKILL.md'),'utf8'));}catch{/* Invalid/missing Skill is diagnosed by the native loader; don't break all role tools. */}
  }
- // A tool explicitly required by the role, a bound Skill or this intent must be
- // executable immediately. This only changes activation within the permitted
- // registration set; it cannot introduce a capability or revive a disabled one.
- const candidates=[...new Set([...Object.keys(TOOL_ALIASES),...(options.toolAllowlist??[])])].filter(name=>/^[a-zA-Z0-9_]+$/.test(name));
+ // Only historical aliases need compatibility registration. Canonical names
+ // mentioned by role/Skill instructions remain searchable through native PI.
+ const candidates=Object.keys(TOOL_ALIASES);
  const referenced=candidates.filter(name=>sources.some(text=>new RegExp(`\\b${name}\\b`).test(text)));
  // Absent catalog rows are not permission to restore historical capabilities.
  const bindings=(await db.query("SELECT key FROM tools WHERE kind='builtin' AND enabled AND agents ? $1",[role])).rows.map(r=>String(r.key));
  const extra=(await applyToolBindings(db,role,options.legacyTools??[])).filter(t=>
   bindings.includes(t.name)&&(legacy||referenced.includes(t.name))&&!(options.toolAllowlist??[]).includes(t.name));
  options={...options,customTools:[...options.customTools??[],...extra],toolAllowlist:[...options.toolAllowlist??[],...extra.map(t=>t.name)]};
- const custom=(await db.query("SELECT key FROM tools WHERE kind<>'builtin' AND enabled AND agents ? $1",[role])).rows.map(r=>String(r.key));
  const allowed=await applyToolBindings(db,role,(options.toolAllowlist??[]).map(name=>({name})));
- return toolLoadout(role,{...options,toolAllowlist:allowed.map(t=>t.name)},{direct,legacy,referenced,custom,fallback:legacy?'旧会话保留兼容工具名称':fallback});
+ return toolLoadout(role,{...options,toolAllowlist:allowed.map(t=>t.name)},{direct,legacy,referenced,fallback:legacy?'旧会话保留兼容工具名称':fallback});
 }
