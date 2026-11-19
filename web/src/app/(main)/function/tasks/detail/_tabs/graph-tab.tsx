@@ -45,7 +45,7 @@ export function GraphTab({taskId,active=true}:{taskId:string;active?:boolean}){
    {error&&<Alert variant="destructive"><AlertDescription>{error}；请刷新当前视图。</AlertDescription></Alert>}
   </CardHeader>
   <CardContent className="p-0">
-   {page&&<ExplorationGraph taskId={taskId} nodes={page.nodes} edges={page.edges} paged readRevision={page.revision} onExplore={explore} className="h-[60vh]"/>}
+   {page&&<ExplorationGraph taskId={taskId} focusNodeId={focus} nodes={page.nodes} edges={page.edges} paged readRevision={page.revision} onExplore={explore} className="h-[60vh]"/>}
   </CardContent>
  </Card>;
 }

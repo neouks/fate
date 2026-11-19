@@ -427,8 +427,8 @@ export function registerTaskRoutes(app: FastifyInstance): void {
         !Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(page * limit)) {
       return reply.code(400).send({ error: "任务或分页参数无效" });
     }
-    await taskExploration(taskId);
-    return taskProfiles(app.db, taskId, page, limit);
+    const exp = await taskExploration(taskId);
+    return taskProfiles(app.db, taskId, exp, page, limit, (req.query as { revision?: string }).revision);
   });
 
   // GET /api/tasks/:id/asset-refs?asset_id= — 某资产在本任务探索图里的意图/事实/发现引用。

@@ -411,8 +411,8 @@ export const api = {
     post<TaskScopeRow>(`/tasks/${id}/scope`, { kind, value, reason }),
   // 删除本任务的一条测试范围。
   deleteTaskScope: (id: string, scopeId: number) => del<{ ok: boolean }>(`/tasks/${id}/scope/${scopeId}`),
-  taskProfiles: (id: string, page: number, limit: number, signal?: AbortSignal) =>
-    get<import("./types").TaskProfilesPage>(`/tasks/${id}/profiles?page=${page}&limit=${limit}`, { signal }),
+  taskProfiles: (id: string, page: number, limit: number, signal?: AbortSignal, revision?: string) =>
+    get<import("./types").TaskProfilesPage | {unchanged: true; revision: string}>(`/tasks/${id}/profiles?page=${page}&limit=${limit}${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`, { signal }),
   // 某资产在本任务里关联的意图 / 事实 / 发现（覆盖图节点抽屉用）。
   taskAssetRefs: (id: string, assetId: number) => get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
 

@@ -271,6 +271,15 @@ export interface ProtectionObservation {
   source_ip: string | null;
 }
 
+export interface ProfileComponent {
+  category: string;
+  name: string;
+  version: string;
+  asset_id: string | null;
+  historical: boolean;
+  sources: {kind: "activity" | "fact"; id: string; role: string; seen: string; session: string | null}[];
+}
+
 export interface TaskAssetProfile {
   ip: string;
   port: number;
@@ -281,15 +290,19 @@ export interface TaskAssetProfile {
     bound_domains: string[];
     technologies: string[];
     title: string | null;
-    fingerprint: string | null;
+    url: string | null;
+    method: string | null;
+    status_code: number | null;
     seen: string;
     waf: ProtectionObservation | null;
     source_ip_block: ProtectionObservation | null;
   }[];
-  checks: { intent_id: string; state: string; summary: string | null; activity: string | null }[];
 }
 
 export interface TaskProfilesPage {
+  revision: string;
+  components: ProfileComponent[];
+  standalone_asset_ids: string[];
   items: TaskAssetProfile[];
   page: number;
   total: number;

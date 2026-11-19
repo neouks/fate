@@ -4,157 +4,210 @@ import { useEffect, useState } from "react";
 
 import Link from "next/link";
 
-import {
-  ArrowUpRightIcon,
-  BanIcon,
-  CheckIcon,
-  ChevronRightIcon,
-  CircleDotIcon,
-  ClockIcon,
-  FingerprintIcon,
-  GlobeIcon,
-  LayersIcon,
-  ListChecksIcon,
-  RefreshCwIcon,
-  ServerIcon,
-  ShieldIcon,
-} from "lucide-react";
+import { FingerprintIcon, RefreshCwIcon, ServerIcon } from "lucide-react";
 
 import { TablePagination } from "@/components/table-pagination";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
-import { statusMeta } from "@/lib/status";
 import { taskViewURL } from "@/lib/task-navigation";
-import type { ProtectionObservation, TaskAssetProfile, TaskProfilesPage } from "@/lib/types";
+import type { ProfileComponent, TaskAssetProfile, TaskProfilesPage } from "@/lib/types";
 
 const observedTime = new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" });
 const formatTime = (time: string) => observedTime.format(new Date(time));
 
-function protectionLabel(values: (ProtectionObservation | null)[]) {
-  const known = new Set(values.flatMap((v) => (v ? [v.detected] : [])));
-  if (known.size === 0) return "未知";
-  if (known.size > 1) return "记录不一";
-  return known.has(true) ? "有检出记录" : "有未检出记录";
+type Observation = TaskAssetProfile["observations"][number];
+
+function CategoryCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="flex min-w-0 flex-col gap-2 break-words">{children}</CardContent>
+    </Card>
+  );
 }
 
-const progressIcons: Record<string, typeof ClockIcon> = { done: CheckIcon, running: CircleDotIcon };
-
-function ProfileRow({ profile, taskId }: { profile: TaskAssetProfile; taskId: string }) {
-  const { ip, port, observations, checks } = profile;
-  const address = ip.includes(":") ? `[${ip}]:${port}` : `${ip}:${port}`;
-  const services = [...new Set(observations.map((o) => o.service?.toUpperCase()).filter(Boolean))];
-  const stack = [...new Set(observations.flatMap((o) => o.technologies))];
-  const seen = observations[0].seen;
-  return (
-    <details className="group border-b last:border-b-0">
-      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-4 gap-y-2 rounded-sm px-3 py-3 text-sm hover:bg-muted/50 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-        <span className="flex min-w-0 flex-1 items-center gap-2">
-          <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground group-open:rotate-90" />
-          <ServerIcon className="size-4 shrink-0" />
-          <strong className="break-all font-medium font-mono">{address}</strong>
-        </span>
-        <span className="hidden max-w-64 truncate text-muted-foreground text-xs sm:block">
-          {[...services, ...stack].join(" · ")}
-        </span>
-        <span className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 pl-6 text-xs sm:w-auto sm:pl-0">
-          <span className="inline-flex items-center gap-1">
-            <ShieldIcon className="size-3.5" />
-            WAF {protectionLabel(observations.map((o) => o.waf))}
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <BanIcon className="size-3.5" />
-            来源 IP 封禁 {protectionLabel(observations.map((o) => o.source_ip_block))}
-          </span>
-        </span>
-        <time className="hidden text-muted-foreground text-xs xl:inline" dateTime={seen}>
-          {formatTime(seen)}
-        </time>
-      </summary>
-      <div className="flex flex-col gap-4 bg-muted/20 px-4 py-4 text-sm sm:pl-10">
-        <div className="flex flex-col gap-2">
-          {observations.map((o) => (
-            <div key={`${o.asset_id}/${o.service}`} className="flex flex-col gap-1 break-words border-l-2 pl-3">
-              <div className="flex flex-wrap items-center gap-x-2">
-                <GlobeIcon className="size-3.5" />
-                <span className="break-all font-medium">{o.domain || ip}</span>
-                {o.service && <span>{o.service}</span>}
-                <span className="text-muted-foreground text-xs">
-                  资产 #{o.asset_id} · {formatTime(o.seen)}
-                </span>
-              </div>
-              {o.title && <span>{o.title}</span>}
-              {o.bound_domains.length > 0 && <span>IP 关联域名 · {o.bound_domains.join("、")}</span>}
-              {o.technologies.length > 0 && (
-                <span className="flex items-center gap-2">
-                  <LayersIcon className="size-3.5 shrink-0" />
-                  技术栈 · {o.technologies.join("、")}
-                </span>
-              )}
-              {o.fingerprint && (
-                <span className="flex items-center gap-2">
-                  <FingerprintIcon className="size-3.5 shrink-0" />
-                  favicon MMH3 · {o.fingerprint}
-                </span>
-              )}
-              {o.waf && (
-                <span>
-                  WAF · {o.waf.detected ? "已检出" : "未检出"} · {formatTime(o.waf.observed_at)}
-                </span>
-              )}
-              {o.source_ip_block && (
-                <span>
-                  来源 IP {o.source_ip_block.source_ip} · {o.source_ip_block.detected ? "已封禁" : "未观察到封禁"} ·{" "}
-                  {formatTime(o.source_ip_block.observed_at)}
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-        <div>
-          <h3 className="mb-2 flex items-center gap-2 font-medium">
-            <ListChecksIcon className="size-4" />
-            核查进度
-          </h3>
-          {checks.length === 0 ? (
-            <p className="text-muted-foreground text-xs">暂无关联核查记录</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {checks.map((check) => {
-                const Icon = progressIcons[check.state] ?? ClockIcon;
-                return (
-                  <li key={check.intent_id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <span className="inline-flex items-center gap-1 text-xs">
-                      <Icon className="size-3.5" />
-                      {statusMeta("intent", check.state).label}
-                    </span>
-                    <span className="min-w-0 break-all">{check.summary || `核查事项 #${check.intent_id}`}</span>
-                    {check.activity && (
-                      <Link
-                        prefetch={false}
-                        className="inline-flex items-center gap-1 text-xs underline underline-offset-2"
-                        href={taskViewURL("", {
-                          id: taskId,
-                          tab: "sessions",
-                          section: "chat",
-                          session: `intent:${check.intent_id}`,
-                          activity: check.activity,
-                        })}
-                      >
-                        Worker 最近记录
-                        <ArrowUpRightIcon className="size-3" />
-                      </Link>
-                    )}
+function ComponentCards({ items, taskId }: { items: ProfileComponent[]; taskId: string }) {
+  const categories = Map.groupBy(items, (item) => item.category);
+  return Array.from(categories, ([category, components]) => (
+    <CategoryCard key={category} title={category}>
+      {Array.from(
+        Map.groupBy(components, (c) => JSON.stringify([c.name.toLowerCase(), c.version.toLowerCase(), c.historical])),
+        ([key, entries]) => (
+          <details key={key}>
+            <summary className="cursor-pointer">
+              <strong>
+                {entries[0].name} {entries[0].version}
+              </strong>
+              {entries[0].historical && "（历史记录）"}
+            </summary>
+            <ul className="flex flex-col gap-1 pt-1 text-xs">
+              {entries.flatMap((c) =>
+                c.sources.map((source) => (
+                  <li key={JSON.stringify([c.asset_id, source.kind, source.id])}>
+                    <Link
+                      prefetch={false}
+                      className="underline underline-offset-2"
+                      href={taskViewURL(
+                        "",
+                        source.kind === "fact"
+                          ? { id: taskId, tab: "graph", node: source.id }
+                          : { id: taskId, tab: "sessions", session: source.session, activity: source.id },
+                      )}
+                    >
+                      {c.asset_id && `资产 #${c.asset_id} · `}
+                      {source.role} · {source.kind === "fact" ? "事实" : "消息"} #{source.id} ·{" "}
+                      {formatTime(source.seen)}
+                    </Link>
                   </li>
-                );
-              })}
+                )),
+              )}
             </ul>
+          </details>
+        ),
+      )}
+    </CategoryCard>
+  ));
+}
+
+function endpointLabel(o: Observation) {
+  if (!o.url) return "";
+  try {
+    const url = new URL(o.url);
+    return [o.method, url.pathname + url.search].filter(Boolean).join(" ");
+  } catch {
+    return [o.method, o.url].filter(Boolean).join(" ");
+  }
+}
+
+function HostCards({
+  host,
+  ip,
+  rows,
+  components,
+  taskId,
+}: {
+  host: string;
+  ip: string;
+  rows: Observation[];
+  components: ProfileComponent[];
+  taskId: string;
+}) {
+  const domains = new Set(rows.flatMap((o) => o.bound_domains).filter((d) => ![ip, host].includes(d.toLowerCase())));
+  const ids = new Set(rows.map((o) => o.asset_id));
+  const items = components.filter((c) => c.asset_id && ids.has(c.asset_id));
+  const named = new Set(
+    items
+      .filter((c) => !c.historical)
+      .flatMap((c) => [c.name, [c.name, c.version].filter(Boolean).join(" ")])
+      .map((s) => s.toLowerCase()),
+  );
+  const technologies = [...new Set(rows.flatMap((o) => o.technologies))].filter((s) => !named.has(s.toLowerCase()));
+  const responses = Map.groupBy(
+    rows.filter((o) => o.status_code != null || o.title || o.url),
+    (o) => JSON.stringify([o.url ? o.url.split("://")[0] : "", endpointLabel(o)]),
+  );
+  const protection = new Set(
+    rows.flatMap((o) =>
+      [
+        o.waf && `WAF · ${o.waf.detected ? "已检出" : "未检出"} · ${formatTime(o.waf.observed_at)}`,
+        o.source_ip_block &&
+          `来源 IP ${o.source_ip_block.source_ip} · ${o.source_ip_block.detected ? "已封禁" : "未观察到封禁"} · ${formatTime(o.source_ip_block.observed_at)}`,
+      ].filter(Boolean),
+    ),
+  );
+  return (
+    <section className="flex min-w-0 flex-col gap-2">
+      {host !== ip && <h4 className="break-all font-medium font-mono">{host}</h4>}
+      <div className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <CategoryCard title="资产信息">
+          {domains.size > 0 && <p>关联域名 · {[...domains].join("、")}</p>}
+          {Array.from(responses, ([key, group]) => {
+            const o = group[0];
+            const codes = [...new Set(group.flatMap((row) => (row.status_code == null ? [] : [row.status_code])))];
+            const titles = [...new Set(group.flatMap((row) => (row.title ? [row.title] : [])))];
+            return (
+              <div key={key} className="flex flex-wrap items-center gap-2">
+                {o.url && <span className="break-all font-mono text-xs">{endpointLabel(o)}</span>}
+                {codes.length ? (
+                  codes.map((code) => (
+                    <Badge key={code} variant="secondary">
+                      HTTP {code}
+                    </Badge>
+                  ))
+                ) : (
+                  <span className="text-muted-foreground">状态码未记录</span>
+                )}
+                {titles.map((title) => (
+                  <span key={title}>{title}</span>
+                ))}
+              </div>
+            );
+          })}
+          {!responses.size && <span className="text-muted-foreground">状态码未记录</span>}
+          <details className="text-muted-foreground text-xs">
+            <summary className="cursor-pointer">来源资产（{ids.size}）</summary>
+            {Array.from(new Map(rows.map((o) => [o.asset_id, o])).values(), (o) => (
+              <div key={o.asset_id} className="break-all pt-1">
+                #{o.asset_id} · {[o.method, o.url || host].filter(Boolean).join(" ")}
+                {o.status_code != null && ` · HTTP ${o.status_code}`} · {formatTime(o.seen)}
+              </div>
+            ))}
+          </details>
+        </CategoryCard>
+        {technologies.length > 0 && <CategoryCard title="登记技术栈">{technologies.join("、")}</CategoryCard>}
+        <ComponentCards items={items} taskId={taskId} />
+        <CategoryCard title="防护记录">
+          {protection.size ? (
+            Array.from(protection, (label) => <span key={label}>{label}</span>)
+          ) : (
+            <span className="text-muted-foreground">WAF 与来源 IP 封禁状态未知</span>
           )}
-        </div>
+        </CategoryCard>
       </div>
-    </details>
+    </section>
+  );
+}
+
+function ProfileRow({
+  profile,
+  taskId,
+  components,
+}: {
+  profile: TaskAssetProfile;
+  taskId: string;
+  components: ProfileComponent[];
+}) {
+  const { ip, port, observations } = profile;
+  const hosts = Map.groupBy(observations, (o) => o.domain?.replace(/^\[|\]$/g, "").toLowerCase() || ip);
+  const services = [...new Set(observations.flatMap((o) => (o.service ? [o.service.toUpperCase()] : [])))];
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex flex-wrap items-center gap-2">
+          <ServerIcon className="size-4" />
+          <span className="break-all font-mono">
+            {ip.includes(":") ? `[${ip}]` : ip}:{port}
+          </span>
+          {services.map((s) => (
+            <Badge key={s} variant="outline">
+              {s}
+            </Badge>
+          ))}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {Array.from(hosts, ([host, rows]) => (
+          <HostCards key={host} host={host} ip={ip} rows={rows} components={components} taskId={taskId} />
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -162,23 +215,42 @@ export function ProfilesTab({ taskId }: { taskId: string }) {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(25);
   const [reload, setReload] = useState(0);
-  const [data, setData] = useState<TaskProfilesPage | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; data: TaskProfilesPage } | null>(null);
+  const key = [taskId, page, limit].join("/");
+  const data = loaded?.key === key ? loaded.data : null;
   const [error, setError] = useState("");
   // biome-ignore lint/correctness/useExhaustiveDependencies: the refresh button reloads the current page.
   useEffect(() => {
     const controller = new AbortController();
-    setError("");
-    setData(null);
-    api
-      .taskProfiles(taskId, page, limit, controller.signal)
-      .then((result) => {
-        if (!controller.signal.aborted) setData(result);
-      })
-      .catch((err: Error) => {
-        if (!controller.signal.aborted) setError(err.message || "画像加载失败");
-      });
-    return () => controller.abort();
-  }, [taskId, page, limit, reload]);
+    let revision: string | undefined;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      try {
+        const result = await api.taskProfiles(taskId, page, limit, controller.signal, revision);
+        if (controller.signal.aborted) return;
+        revision = result.revision;
+        if (!("unchanged" in result))
+          setLoaded({
+            key,
+            data: {
+              ...result,
+              components: result.components ?? [],
+              standalone_asset_ids: result.standalone_asset_ids ?? [],
+            },
+          });
+        setError("");
+      } catch (err) {
+        if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "画像加载失败");
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(refresh, 5000);
+      }
+    }
+    void refresh();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [taskId, page, limit, key, reload]);
   return (
     <div className="flex flex-col gap-3">
       <header className="flex items-center justify-between gap-2">
@@ -199,22 +271,47 @@ export function ProfilesTab({ taskId }: { taskId: string }) {
       {!data && !error && <Spinner aria-label="正在加载画像" />}
       {data && (
         <>
+          {data.components.some((c) => !c.asset_id) && (
+            <section className="flex flex-col gap-2 rounded-lg border p-3">
+              <h3 className="font-medium text-sm">待关联资产</h3>
+              <div className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <ComponentCards items={data.components.filter((c) => !c.asset_id)} taskId={taskId} />
+              </div>
+            </section>
+          )}
+          {data.standalone_asset_ids.map((id) => (
+            <section key={id} className="flex flex-col gap-2 rounded-lg border p-3">
+              <h3 className="font-medium text-sm">资产 #{id}</h3>
+              <div className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <ComponentCards items={data.components.filter((c) => c.asset_id === id)} taskId={taskId} />
+              </div>
+            </section>
+          ))}
           {data.items.length ? (
-            <div className="overflow-hidden rounded-lg border bg-card">
+            <div className="flex flex-col gap-3">
               {data.items.map((p) => (
-                <ProfileRow key={`${p.ip}/${p.port}`} profile={p} taskId={taskId} />
+                <ProfileRow
+                  key={`${p.ip}/${p.port}`}
+                  profile={p}
+                  taskId={taskId}
+                  components={data.components.filter(
+                    (c) => c.asset_id && !data.standalone_asset_ids.includes(c.asset_id),
+                  )}
+                />
               ))}
             </div>
           ) : (
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <ServerIcon />
-                </EmptyMedia>
-                <EmptyTitle>暂无资产画像</EmptyTitle>
-                <EmptyDescription>任务中有明确 IP 和端口的资产会出现在这里。</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            !data.components.length && (
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <ServerIcon />
+                  </EmptyMedia>
+                  <EmptyTitle>暂无资产画像</EmptyTitle>
+                  <EmptyDescription>任务中有明确 IP 和端口的资产会出现在这里。</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            )
           )}
           {(data.total > limit || page > 1 || limit !== 25) && (
             <TablePagination

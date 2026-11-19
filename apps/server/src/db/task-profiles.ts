@@ -1,15 +1,21 @@
+import { createHash } from "node:crypto";
 import { isIP } from "node:net";
+import { graphProjectionRevision } from "./graph-projection.js";
+import { profileSources, readProfileComponents } from "./profile-sources.js";
 import { assetContextCTE } from "./asset-query.js";
 import type { Database } from "./index.js";
 
 interface Observation {
+  type: string;
   asset_id: string;
   domain: string | null;
   service: string | null;
   bound_domains: string[];
   technologies: string[];
   title: string | null;
-  fingerprint: string | null;
+  url: string | null;
+  method: string | null;
+  status_code: number | null;
   seen: string;
   waf: unknown;
   source_ip_block: unknown;
@@ -28,8 +34,8 @@ function protection(raw: unknown, requiresSourceIP: boolean) {
   return { detected: value.detected, observed_at: value.observed_at, source_ip: source };
 }
 
-export async function taskProfiles(db: Database, taskId: number, page: number, limit: number) {
-  // paginate distinct sockets before joining observations or activities. Host names and
+async function socketProfiles(db: Database, taskId: number, page: number, limit: number, bound: string[]) {
+  // paginate distinct sockets before joining asset observations. Host names and
   // ports on service/endpoint rows were parsed from their URLs by the asset writer.
   const result = await db.query(`
     WITH ${assetContextCTE}, scoped AS (
@@ -51,40 +57,48 @@ export async function taskProfiles(db: Database, taskId: number, page: number, l
       SELECT addr,port FROM keys
       ORDER BY addr,port LIMIT $2 OFFSET $3
     ), members AS MATERIALIZED (
-      SELECT s.*,a.type,a.domain,a.bound_domains,a.technologies,a.page_title,a.favicon_mmh3,a.last_seen,
+      SELECT s.*,a.type,a.domain,a.bound_domains,a.technologies,a.page_title,a.url,a.method,a.status_code,a.last_seen,
         CASE WHEN a.type<>'ip' THEN a.extra->'waf' END waf,
         CASE WHEN a.type<>'ip' THEN a.extra->'source_ip_block' END source_ip_block
       FROM page_keys k JOIN sockets s USING(addr,port) JOIN assets a ON a.id=s.id
-    ), observations AS (
-      SELECT DISTINCT ON (addr,port,domain,service,bound_domains,technologies,page_title,favicon_mmh3,waf,source_ip_block)
-        * FROM members
-      ORDER BY addr,port,domain,service,bound_domains,technologies,page_title,favicon_mmh3,waf,source_ip_block,last_seen DESC,id DESC
-    ), checks AS (
-      SELECT DISTINCT m.addr,m.port,n.id,n.state,left(COALESCE(NULLIF(n.payload->>'summary',''),n.payload->>'text'),240) AS summary
-      FROM members m JOIN exploration_anchors x ON x.asset_id=m.id
-      JOIN exploration_nodes n ON n.id=x.node_id AND n.kind='intent'
-      JOIN context_tasks t ON t.task_id=$1 AND t.exploration_id=n.exploration_id
-      WHERE m.type<>'ip' AND exploration_node_readable(t.exploration_id,n.id)
     )
     SELECT host(k.addr) ip,k.port,tally.total,
-      (SELECT jsonb_agg(jsonb_build_object('asset_id',o.id::text,'domain',o.domain,'service',o.service,
+      ARRAY(SELECT b.id::text FROM unnest($4::bigint[]) b(id) WHERE NOT EXISTS (
+        SELECT 1 FROM sockets s JOIN scoped a ON s.id=a.id WHERE s.id=b.id AND a.type<>'ip')) standalone,
+      (SELECT jsonb_agg(jsonb_build_object('asset_id',o.id::text,'type',o.type,'domain',o.domain,'service',o.service,
         'bound_domains',o.bound_domains,'technologies',o.technologies,'title',o.page_title,
-        'fingerprint',o.favicon_mmh3,'seen',o.last_seen,'waf',o.waf,'source_ip_block',o.source_ip_block)
-        ORDER BY o.last_seen DESC,o.id DESC) FROM observations o WHERE (o.addr,o.port)=(k.addr,k.port)) observations,
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('intent_id',c.id::text,'state',c.state,'summary',c.summary,
-        'activity', (SELECT a.id::text FROM activity a JOIN context_tasks t ON t.exploration_id=a.exploration_id AND t.task_id=$1
-         WHERE a.node_id=c.id AND a.kind<>'round' AND exploration_activity_readable(a.exploration_id,a.node_id,a.metadata)
-         ORDER BY a.id DESC LIMIT 1)) ORDER BY c.id DESC)
-        FROM checks c WHERE (c.addr,c.port)=(k.addr,k.port)), '[]') checks
-    FROM (SELECT count(*)::int total FROM keys) tally LEFT JOIN page_keys k ON true ORDER BY k.addr,k.port`, [taskId, limit, (page - 1) * limit]);
+        'url',o.url,'method',o.method,'status_code',o.status_code,'seen',o.last_seen,'waf',o.waf,'source_ip_block',o.source_ip_block)
+        ORDER BY o.last_seen DESC,o.id DESC) FROM members o WHERE (o.addr,o.port)=(k.addr,k.port)) observations
+    FROM (SELECT count(*)::int total FROM keys) tally LEFT JOIN page_keys k ON true ORDER BY k.addr,k.port`, [taskId, limit, (page - 1) * limit, bound]);
   return {
     page,
+    standalone: (result.rows[0]?.standalone ?? []) as string[],
     total: Number(result.rows[0]?.total ?? 0),
     items: result.rows.filter(row => row.ip != null).map(row => ({
-      ip: row.ip, port: row.port, checks: row.checks,
+      ip: row.ip, port: row.port,
       observations: (row.observations as Observation[]).map(o => ({
         ...o, waf: protection(o.waf, false), source_ip_block: protection(o.source_ip_block, true),
       })),
     })),
   };
+}
+
+export async function taskProfiles(db: Database, taskId: number, exp: number, page: number, limit: number, previous?: string) {
+  return db.transaction(async tx => {
+    if (!db.transactionClient) await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const graph = await graphProjectionRevision(tx, taskId, exp);
+    const sources = await profileSources(tx, exp);
+    const revision = createHash('sha256').update(JSON.stringify([taskId, page, limit, graph, sources])).digest('hex');
+    if (previous === revision) return { revision, unchanged: true };
+    const components = await readProfileComponents(tx, taskId, exp, sources, !db.transactionClient);
+    const bound = [...new Set(components.flatMap(c => c.asset_id ? [c.asset_id] : []))];
+    const { standalone, ...sockets } = await socketProfiles(tx, taskId, page, limit, bound);
+    const pageAssets = new Set(sockets.items.flatMap(p => p.observations.filter(o => o.type !== 'ip').map(o => o.asset_id)));
+    return {
+      ...sockets,
+      revision,
+      components: components.filter(c => !c.asset_id || standalone.includes(c.asset_id) || pageAssets.has(c.asset_id)),
+      standalone_asset_ids: standalone,
+    };
+  });
 }

@@ -1953,23 +1953,19 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
         (asset.type === "service" || asset.type === "endpoint") && asset.port ? [{ port: asset.port, service: asset.service_name }] : [];
       for (const { port, service } of ports) {
         const key = asset.ip + "/" + port;
-        const profile = profiles.get(key) ?? { ip: asset.ip, port, observations: [], checks: [] } as TaskAssetProfile;
+        const profile = profiles.get(key) ?? { ip: asset.ip, port, observations: [] } as TaskAssetProfile;
         profile.observations.push({ asset_id: String(asset.id), domain: asset.domain ?? null, service: service ?? null,
           bound_domains: asset.bound_domains ?? [], technologies: asset.technologies ?? [], title: asset.page_title ?? null,
-          fingerprint: asset.favicon_mmh3 ?? null, seen: asset.last_seen, waf: null, source_ip_block: null });
-        // Explicit demo anchor for the existing read-only Worker feedback fixture.
-        if (seg[1] === "t-acme-web" && asset.id === 10) {
-          const check = mockIntents.find(item => item.id === "101");
-          if (check) profile.checks.push({ intent_id: check.id, state: check.state,
-            summary: "接口权限核验", activity: String(mockActivity.find(a => a.intent_id === check.id && a.seq === 408)?.seq ?? "") || null });
-        }
+          url: asset.url ?? null, method: asset.method ?? null, status_code: asset.status_code ?? null, seen: asset.last_seen, waf: null, source_ip_block: null });
         profiles.set(key, profile);
       }
     }
     const page = Number(q.get("page") ?? 1), limit = Number(q.get("limit") ?? 25);
     const items = [...profiles.values()].sort((a,b) => a.ip.localeCompare(b.ip) || a.port - b.port);
     for (const p of items) p.observations.sort((a,b) => b.seen.localeCompare(a.seen));
-    return { items: items.slice((page - 1) * limit, page * limit), total: items.length, page };
+    const revision = String([...JSON.stringify([page, limit, items])].reduce((hash, ch) => Math.imul(hash, 31) + ch.charCodeAt(0) | 0, 0));
+    if (q.get("revision") === revision) return { unchanged: true, revision };
+    return { items: items.slice((page - 1) * limit, page * limit), total: items.length, page, revision, components: [], standalone_asset_ids: [] };
   }
 
   // ── assets ──
