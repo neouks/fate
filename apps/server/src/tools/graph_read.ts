@@ -4,8 +4,8 @@ import { authorizedNodes, graphSources, resolveGraphNode } from '../db/graph_vie
 
 export function graphIndexTool(ctx: ToolRunContext, name = 'expand_index', kind = 'digest') {
   return domainTool<{after_id?:number;task_id?:number;kind?:string}>({ name,
-    description: '分页发现本任务或直接来源任务的探索节点。返回 next_cursor，使用 node_detail 或 expand_digest 展开原文；来源任务只读。',
-    readOnly: true, parameters:{type:'object',properties:{after_id:{type:'integer',minimum:0},task_id:{type:'integer'},kind:{type:'string',enum:['digest','fact','finding','goal','hint','intent']}}},
+    description: '分页发现本任务或直接来源任务的探索节点。返回 next_cursor，将其填入 after_id 续页，或直接使用 next；使用 node_detail 或 expand_digest 展开原文，来源任务只读。',
+    readOnly: true, parameters:{type:'object',properties:{after_id:{type:'integer',minimum:0},task_id:{type:'integer'},kind:{type:'string',...(name==='list_facts'?{const:'fact'}:{enum:['digest','fact','finding','goal','hint','intent']})}}},
     async run(args,c) {
       const source = args.task_id && args.task_id !== c.taskID ? (await graphSources(c.db,c.taskID)).find(t => t.taskID === args.task_id) : {taskID:c.taskID,expID:c.expID};
       if (!source) throw new Error('不是直接来源任务');
@@ -17,7 +17,8 @@ export function graphIndexTool(ctx: ToolRunContext, name = 'expand_index', kind 
       const allowed = await authorizedNodes(c.db,source.taskID,source.expID,nodes);
       return { source_task_id:source.taskID,inherited:source.taskID!==c.taskID,
         nodes:allowed.map(n=>({id:n.id,kind:n.kind,state:n.state,summary:String(n.payload.summary ?? n.payload.text ?? '').slice(0,300)})),
-        next_cursor:raw.rows.length>20 ? Number(page.at(-1)!.id) : null };
+        next_cursor:raw.rows.length>20 ? Number(page.at(-1)!.id) : null,
+        ...(raw.rows.length>20?{next:{...args,after_id:Number(page.at(-1)!.id)}}:{}) };
     }
   },ctx);
 }

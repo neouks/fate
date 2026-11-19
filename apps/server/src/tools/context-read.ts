@@ -1,6 +1,6 @@
 import {contextEvidence} from './context-evidence.js';
 import {unicodeLength,unicodeSlice} from '../unicode.js';
-import {ReadSelectionRequired,fieldReadOptions,type ReadCoordinate} from './read-coordinate.js';
+import {ReadSelectionRequired,ReadVersionChanged,fieldReadOptions,type ReadCoordinate} from './read-coordinate.js';
 import {contextNeeds} from '../agent/context-needs.js';
 import {readOperations} from '../db/operation-journal.js';
 import {boundedContextPage,contextNode,contextNodeString,contextRelations} from './context-pages.js';
@@ -174,9 +174,15 @@ function pointer(value:unknown,field?:string):unknown{
   }
   return value;
 }
+function checkReadVersion(item:RecallItem,version:number|undefined,view:string){
+  if(item.version===undefined||item.version===version)return;
+  if(version===undefined){const {version:ignored,...retry}=item;throw new ReadSelectionRequired('此引用不使用图节点 version；移除此参数后读取。',[retry]);}
+  // A new version is a new coordinate space. Never carry its old offset/cursor.
+  throw new ReadVersionChanged(item.version,version,{ref:item.ref,view,version,field:item.field??'',offset:0,...(item.max_chars!==undefined?{max_chars:item.max_chars}:{})});
+}
 export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({name:'context_get',readOnly:true,
   description:'批量读取 node:ID、activity:ID、operation:ID、output:UUID、attachment:URL编码路径、traffic:UUID:request|response；证据引用按返回 offset_unit/next_item 续读；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
-  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^((node|activity|operation):[1-9][0-9]*|session:[a-zA-Z0-9_-]+|(output|attachment|traffic):.+)$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string',description:'JSON Pointer，例如 /payload/evidence、历史会话 /content。长正文分段须明确字段；空字符串明确选择整个视图 JSON，其偏移不能用于内嵌证据字段。'},offset:{type:'integer',minimum:0},max_chars:{type:'integer',minimum:1,maximum:24000,description:'本条 node/activity/operation/session 的 Unicode 字符上限，同时受顶层总上限约束。其他证据引用使用其原生分页。'},version:{type:'integer',minimum:0,description:'图节点版本；session: 原文引用不使用此参数。'},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref'],allOf:[{not:{required:['ref','max_chars'],properties:{ref:{pattern:'^(output|attachment|traffic):'}}}}]}},max_chars:{type:'integer',minimum:256,maximum:24000,description:'本次批量读取的总字符上限；items 内可另设每条上限。'}},required:['items']},
+  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^((node|activity|operation):[1-9][0-9]*|session:[a-zA-Z0-9_-]+|(output|attachment|traffic):.+)$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string',description:'JSON Pointer，例如 /payload/evidence、历史会话 /content。首次省略时读取整个视图 JSON 的第一页；续读使用 next_item 的明确字段和偏移。空字符串选择整个视图 JSON，其偏移不能用于内嵌证据字段。'},offset:{type:'integer',minimum:0},max_chars:{type:'integer',minimum:1,maximum:24000,description:'本条 node/activity/operation/session 的 Unicode 字符上限，同时受顶层总上限约束。其他证据引用使用其原生分页。'},version:{type:'integer',minimum:0,description:'图节点版本；session: 原文引用不使用此参数。'},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref'],allOf:[{not:{required:['ref','max_chars'],properties:{ref:{pattern:'^(output|attachment|traffic):'}}}}]}},max_chars:{type:'integer',minimum:256,maximum:24000,description:'本次批量读取的总字符上限；items 内可另设每条上限。'}},required:['items']},
   async run(args,ctx){
     if(!args.items&&args.ref){const result=await legacyContextGetTool(ctx).execute(ctx.toolCallID??'legacy-read',args as never,ctx.signal,undefined,{} as never);if(result.isError)throw new Error((result.content[0] as {text:string}).text);return JSON.parse((result.content[0] as {text:string}).text);}
     if(!args.items?.length||args.items.length>5)throw new Error('items 需要 1–5 个引用');
@@ -233,7 +239,7 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
           else{
             const meta=await contextNode(ctx,id);
             sourceTask=meta.taskID;version=meta.version;
-            if(item.version!==undefined&&item.version!==version)throw new Error('节点版本已变化，请重新检索');
+            checkReadVersion(item,version,view);
             if(view==='summary'){
               data={ref:item.ref,kind:meta.kind,state:meta.state,summary:meta.summary,version};
             }else if(view==='parents'||view==='members'){
@@ -260,10 +266,17 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
             }
           }
         }
-        if(item.version!==undefined&&item.version!==version)throw new Error('节点版本已变化，请重新检索');
-        const value=sliced?undefined:pointer(data,item.field),text=sliced?'':typeof value==='string'?value:JSON.stringify(value??null);
+        checkReadVersion(item,version,view);
+        let value:unknown;
+        if(!sliced){
+          try{value=pointer(data,item.field);}catch(error){
+            if(error instanceof Error&&error.message==='field 不存在')throw new ReadSelectionRequired('field 不存在；请使用 read_options 中实际存在的字段，从 offset=0 读取。',fieldReadOptions(data,{ref:item.ref,view,version}));
+            throw error;
+          }
+        }
+        const text=sliced?'':typeof value==='string'?value:JSON.stringify(value??null);
         const total=sliced?.total??unicodeLength(text);
-        if(item.field===undefined&&!['parents','members'].includes(view)&&!dispatchPage&&(offset>0||total>take)){
+        if(item.field===undefined&&!['parents','members'].includes(view)&&!dispatchPage&&offset>0){
           const options=fieldReadOptions(data,{ref:item.ref,view,version});
           throw new ReadSelectionRequired('未返回正文：请明确 field 后分段读取。整个视图 JSON 与其证据字段使用不同字符坐标；不要把一个偏移用于另一字段。确需原始视图 JSON 时显式传 field=""。',options);
         }
@@ -276,8 +289,8 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
         const readReceipt={version:1,coordinate,source_hash:sliced?.source_hash??createHash('sha256').update(text).digest('hex'),start:Math.min(offset,total),end:Math.min(offset,total)+returnedChars,total};
         const historySegment=match[1]==='session'?{segment:{start:offset,end:offset+returnedChars,total,complete:offset===0&&nextOffset===null},
           ...(offset>0||nextOffset!==null?{note:'仅当前分段；未返回区间不能视为已读或无证据。'}:{})}:{};
-        items.push({ref:item.ref,view,field:coordinate.field,version,source_task_id:sourceTask,inherited:sourceTask!==ctx.taskID,content,total_chars:total,offset_unit:coordinate.unit,next_offset:nextOffset,read_receipt:readReceipt,...(evidenceScope?{evidence_scope:evidenceScope}:{}),...historySegment,...(nextItem?{next_item:nextItem}:{}),...(view==='parents'||view==='members'||dispatchPage?{page_cursor:pageCursor,next_cursor:nextOffset!==null?null:nextCursor}:{} )});
-      }catch(error){items.push({ref:item.ref,error:error instanceof Error?error.message:String(error),...(error instanceof ReadSelectionRequired?{error_code:error.code,read_options:error.read_options}: {})});}
+        items.push({ref:item.ref,view,field:coordinate.field,version,source_task_id:sourceTask,inherited:sourceTask!==ctx.taskID,content,total_chars:total,offset_unit:coordinate.unit,next_offset:nextOffset,read_receipt:readReceipt,...(evidenceScope?{evidence_scope:evidenceScope}:{}),...historySegment,...(nextItem?{next_item:nextItem}:{}),...(coordinate.field===''&&nextOffset!==null&&!['parents','members'].includes(view)&&!dispatchPage?{note:'当前仅返回整个视图 JSON 的一页；按 next_item 续读。若改读证据字段，使用 read_options 从该字段 offset=0 开始，不能复用 JSON 偏移。',read_options:fieldReadOptions(data,{ref:item.ref,view,version})}:{}),...(view==='parents'||view==='members'||dispatchPage?{page_cursor:pageCursor,next_cursor:nextOffset!==null?null:nextCursor}:{} )});
+      }catch(error){items.push({ref:item.ref,error:error instanceof Error?error.message:String(error),...(error instanceof ReadSelectionRequired?{error_code:error.code,read_options:error.read_options}: {}),...(error instanceof ReadVersionChanged?{current_version:error.current_version}:{})});}
     }
     const failed=items.filter(item=>'error' in item).length;
     if(failed)throw new ToolResultError(`${failed}/${items.length} 个引用读取失败；成功项已保留，请核对失败项及 read_options。`,{items});

@@ -1,3 +1,4 @@
+import {ToolResultError} from './errors.js';
 import {reporterTrafficTools} from './reporter-traffic.js';
 import {webSearchTool} from './web-search.js';
 import {archiveReport,prepareReproduction,attachStepTraffic,assembleReport,reproductionSchema,expandTrafficPackets} from '../evidence/reproduction.js';
@@ -32,16 +33,24 @@ export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'a
    }
    if(['reporter','auto'].includes(role)){
      const reporter=role==='reporter';
-     tools.push(domainTool<{finding_id:number;offset?:number}>({name:'get_finding',description:'读取漏洞、证据版本及绑定；报告正文使用 offset 续读。',readOnly:true,parameters:{type:'object',properties:{finding_id:{type:'integer'},offset:{type:'integer',minimum:0}},required:['finding_id']},async run(a,c){
-     const f=(await c.db.query('SELECT * FROM findings WHERE id=$1 AND ($2::bigint=0 OR task_id=$2) AND finding_readable(id)',[a.finding_id,taskID])).rows[0];if(!f)throw new Error('漏洞不存在或未获当前任务授权');if(role==='reporter'&&(!f.report||f.report_evidence_version==null||Number(f.report_evidence_version)!==Number(f.evidence_version)))pendingReports.add(Number(f.id));
+     tools.push(domainTool<{finding_id:number;offset?:number;evidence_version?:number;report_revision?:number}>({name:'get_finding',description:'读取漏洞、证据版本及绑定；报告正文使用 offset 续读。',readOnly:true,parameters:{type:'object',properties:{finding_id:{type:'integer',minimum:1},offset:{type:'integer',minimum:0,description:'Unicode 字符偏移；将返回的 next 原样续读以保留版本'},evidence_version:{type:'integer',minimum:0,description:'续读使用返回的证据版本'},report_revision:{type:'integer',minimum:0,description:'续读使用返回的报告版本'}},required:['finding_id'],dependencies:{evidence_version:['report_revision'],report_revision:['evidence_version']}},async run(a,c){return c.db.transaction(async db=>{c={...c,db};
+     const f=(await c.db.query('SELECT * FROM findings WHERE id=$1 AND ($2::bigint=0 OR task_id=$2) AND finding_readable(id) FOR SHARE',[a.finding_id,taskID])).rows[0];if(!f)throw new Error('漏洞不存在或未获当前任务授权');if(role==='reporter'&&(!f.report||f.report_evidence_version==null||Number(f.report_evidence_version)!==Number(f.evidence_version)))pendingReports.add(Number(f.id));
+     const prior=reads.get(Number(f.id));
+     if((a.evidence_version!==undefined&&a.evidence_version!==Number(f.evidence_version))||
+       (a.report_revision!==undefined&&a.report_revision!==Number(f.report_revision))||
+       ((a.offset??0)>0&&prior&&(prior.evidence!==Number(f.evidence_version)||prior.revision!==Number(f.report_revision)))){
+       reads.delete(Number(f.id));
+       throw new ToolResultError('证据或报告版本已变化；按 read_options 从第一页重新读取，不沿用旧偏移。',{
+         code:'FINDING_READ_VERSION_CHANGED',read_options:[{finding_id:Number(f.id),offset:0,evidence_version:Number(f.evidence_version),report_revision:Number(f.report_revision)}],
+       });
+     }
      const evidence=await findingEvidence(c.db,a.finding_id);
      const pageSize=reporter?REPORTER_PAGE_CHARACTERS:1500;
      const body=Array.from(reporter?reporterFindingInput(f,evidence):JSON.stringify(f)),off=Math.max(0,a.offset??0),end=Math.min(body.length,off+pageSize);
-     const prior=reads.get(Number(f.id));
      const read=prior&&prior.evidence===Number(f.evidence_version)&&prior.revision===Number(f.report_revision)&&prior.total===body.length?prior:{evidence:Number(f.evidence_version),revision:Number(f.report_revision),ranges:[] as Array<[number,number]>,total:body.length,complete:false};
      read.ranges.push([Math.min(off,body.length),end]);read.ranges.sort((x,y)=>x[0]-y[0]);let covered=0;for(const [start,stop] of read.ranges){if(start>covered)break;covered=Math.max(covered,stop);}read.complete=covered>=body.length;reads.set(Number(f.id),read);
-     return {finding_id:Number(f.id),evidence_version:Number(f.evidence_version),report_revision:Number(f.report_revision),read_complete:read.complete,content:body.slice(off,end).join(''),next_offset:end<body.length?end:null,...(reporter?{content_format:'finding_with_traffic_evidence',offset_unit:'unicode'}:{evidence})};
-    }},ctx) as never,domainTool<{finding_id:number;evidence_version:number;report?:string;report_revision?:number;report_sections?:unknown;reproduction?:unknown}>({name:'update_finding_report',transactional:false,description:'先读完漏洞证据，再带版本保存精简自然语言报告。复现 HTTP 请求和响应引用完整协议报文，优先用真实 traffic_id 展开 Header 和 Body；缺失说明，不补造。',parameters:{
+     return {finding_id:Number(f.id),evidence_version:Number(f.evidence_version),report_revision:Number(f.report_revision),read_complete:read.complete,content:body.slice(off,end).join(''),next_offset:end<body.length?end:null,offset_unit:'unicode',...(end<body.length?{next:{finding_id:Number(f.id),offset:end,evidence_version:Number(f.evidence_version),report_revision:Number(f.report_revision)}}:{}),...(reporter?{content_format:'finding_with_traffic_evidence'}:{evidence})};
+    });}},ctx) as never,domainTool<{finding_id:number;evidence_version:number;report?:string;report_revision?:number;report_sections?:unknown;reproduction?:unknown}>({name:'update_finding_report',transactional:false,description:'先读完漏洞证据，再带版本保存精简自然语言报告。复现 HTTP 请求和响应引用完整协议报文，优先用真实 traffic_id 展开 Header 和 Body；缺失说明，不补造。',parameters:{
       type:'object',
       properties:{
         finding_id:{type:'integer',minimum:1},

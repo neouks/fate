@@ -230,6 +230,7 @@ export function assetGetTool(ctx: ToolRunContext) {
 					},
 					fields: {
 						type: "array",
+						minItems: 1, maxItems: 6, uniqueItems: true,
 						items: {
 							type: "string",
 							enum: [
@@ -242,10 +243,10 @@ export function assetGetTool(ctx: ToolRunContext) {
 							],
 						},
 					},
-					field: string,
-					index: { type: "integer", minimum: 0 },
+					field: {type:"string",pattern:"^(/|$)",description:"JSON Pointer；例如 /auth/0 需同时选择 fields:[auth]。空字符串读取已选分组索引。"},
+					index: { type: "integer", minimum: 0, description:"对象或数组成员偏移；改读子字段时重置为 0，优先使用返回的 read/next" },
 					offset: { type: "integer", minimum: 0 },
-					max_chars: { type: "integer", minimum: 1, maximum: 24000 },
+					max_chars: { type: "integer", minimum: 1, maximum: 24000, description:"整批正文字符上限，同时受序列化输出预算约束；按返回的 next 续读" },
 				},
 			},
 			readOnly: true,
@@ -275,7 +276,8 @@ export function assetGetTool(ctx: ToolRunContext) {
 				if (a.field && !a.field.startsWith("/"))
 					throw new Error("field 必须为 JSON Pointer");
 				const budget = Math.min(24000, a.max_chars ?? 8000),
-					share = Math.floor(budget / ids.length);
+					// Reserve output room for coordinates and partial-failure receipts.
+					share = Math.min(Math.floor(budget / ids.length),Math.floor(18000 / ids.length / 6));
 				if (
 					budget < 1 ||
 					[a.index, a.offset].some(
@@ -294,8 +296,7 @@ export function assetGetTool(ctx: ToolRunContext) {
 						[ids],
 					)
 				).rows;
-				return {
-					assets: ids.map((id) => {
+				const assets = ids.map((id) => {
 						const canonical = Number(
 							aliases.find((r) => Number(r.old_id) === id)?.asset_id ?? id,
 						);
@@ -320,7 +321,9 @@ export function assetGetTool(ctx: ToolRunContext) {
 							inherited: row.inherited,
 						};
 						if (value === undefined) {
-							out.details = { error: "字段不存在或未选择所属 fields" };
+							out.error = "字段不存在或未选择所属 fields";
+							out.details = {error:out.error};
+							out.read_options = Object.keys(groups(row,["identity","fingerprint","dns","params","auth","extra"])).map(group=>({ids:[id],fields:[group],field:"/"+group,index:0,offset:0,max_chars:budget}));
 							return out;
 						}
 						const next = {
@@ -361,6 +364,7 @@ export function assetGetTool(ctx: ToolRunContext) {
 												field,
 												deferred: true,
 												type: Array.isArray(v) ? "array" : typeof v,
+												read: {...next,field,index:0,offset:0},
 											};
 								}),
 							};
@@ -370,8 +374,10 @@ export function assetGetTool(ctx: ToolRunContext) {
 							}
 						} else out.details = { value };
 						return out;
-					}),
-				};
+					});
+				const failed=assets.filter(item=>item.error).length;
+				if(failed)throw new ToolResultError(`${failed}/${assets.length} 个资产读取失败；成功项已保留，只重试失败项。`,{assets});
+				return {assets};
 			},
 		},
 		ctx,
@@ -427,28 +433,16 @@ export function listAssetsTool(ctx: ToolRunContext) {
 	);
 }
 export function listUntestedAssetsTool(ctx: ToolRunContext) {
-	return domainTool<{ type?: string; limit?: number; offset?: number }>(
-		{
-			name: "list_untested_assets",
-			description:
-				"历史未测查询兼容入口，新会话使用 asset_search(untested=true)。",
-			parameters: { type: "object", properties: searchProperties },
-			readOnly: true,
-			async run(a, c) {
-				const r = await c.db
-					.taskScope()
-					.listUntestedAssets(
-						c.taskID,
-						c.expID,
-						a.type ?? "",
-						a.limit ?? 10,
-						a.offset ?? 0,
-					);
-				return { assets: r.page, total: r.total };
-			},
-		},
-		ctx,
-	);
+ return domainTool<{type?:string;dsl?:string;untested?:boolean;limit?:number;offset?:number}>({
+  name:'list_untested_assets',readOnly:true,
+  description:'未测资产查询兼容入口；dsl/type 与未测条件取交集，按 next_offset 续页。新会话使用 asset_search(untested=true)。',
+  parameters:{type:'object',properties:{...searchProperties,untested:{type:'boolean',const:true,description:'本入口固定查询未测资产，省略或 true'}}},
+  async run(a,c){
+   if(a.untested===false)throw new Error('本入口只查询未测资产；普通检索使用 asset_search');
+   return queryAssets(c.db,{taskID:c.taskID,type:a.type,dsl:a.dsl,untested:true,limit:a.limit??10,offset:a.offset??0,summary:true},
+    ()=>assertToolBinding(c.db,c.role,'list_untested_assets'));
+  },
+ },ctx);
 }
 
 interface AddTaskScopeArgs {

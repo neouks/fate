@@ -4,7 +4,7 @@ import type {PoolClient} from 'pg';
 
 export function outputPage(id:string,body:string,offset=0){
  const start=Math.min(body.length,Math.max(0,Math.floor(Number.isFinite(offset)?offset:0))),end=Math.min(body.length,start+2000);
- return {ref:`output:${id}`,read:{items:[{ref:`output:${id}`,offset:start}]},output_ref:id,format:'json',content:body.slice(start,end),offset:start,total:body.length,next_offset:end<body.length?end:null,
+ return {ref:`output:${id}`,read:{items:[{ref:`output:${id}`,offset:start}]},output_ref:id,format:'json',offset_unit:'utf16',content:body.slice(start,end),offset:start,total:body.length,next_offset:end<body.length?end:null,
   hint:'content 是完整工具 JSON 的一段；用 context_get(items=[{ref:"output:"+output_ref,offset:next_offset}]) 续读（UTF-16 偏移），不会省略数组成员。'};
 }
 async function authorizationFingerprint(db:Database,taskID:number){

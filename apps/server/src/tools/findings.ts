@@ -32,18 +32,23 @@ export function reportFindingTool(ctx: ToolRunContext) {
           finding_id:{type:'integer',minimum:1,description:'补正已有漏洞时填正式 finding_id（不是 node_id）；省略表示创建'},
           evidence_version:{type:'integer',minimum:0,description:'补正必填，从 context_get 的 finding_detail 读取最新证据版本'},
           distinct_from:{type:'array',minItems:1,maxItems:50,uniqueItems:true,items:{type:'integer',minimum:1},description:'疑似重复但确认独立机理时，列已核对的本任务漏洞 ID'},
-          distinct_reason:{type:'string',minLength:1,maxLength:1000,description:'与 distinct_from 不同的具体机理或影响；补资产和证据不属于独立问题'},
+          distinct_reason:{type:'string',minLength:1,maxLength:1000,pattern:'\\S',description:'与 distinct_from 成对填写：说明不同的具体机理或影响；补资产和证据不属于独立问题'},
           reproduction:{...reproductionSchema,description:worker ? '仅在补正已有记录时可用，steps 只能放在 reproduction 内。' : '对象，结构为 {steps:[{action,request,response,proves,...}],...}；不是数组，steps 只能放在 reproduction 内。请求或响应可按步骤 Schema 使用来源引用。'},
           traffic_refs:{type:"array",items:{type:"object",properties:{traffic_id:{type:"string"},role:{type:"string",enum:["baseline","proof","verification","supporting"]},note:{type:"string"}},required:["traffic_id"]}},
-          vulnclass: { type: "string", description: "漏洞类别，如 SQL注入/XSS/SSRF/未授权访问" },
+          vulnclass: { type: "string", pattern:'\\S', description: "漏洞类别，如 SQL注入/XSS/SSRF/未授权访问" },
           name: { type: "string", description: "漏洞标题（可读）" },
           severity: { type: "string", enum: SEVERITIES },
-          summary: { type: "string", description: "影响与成因概述" },
-          evidence: { type: "string", description: worker ? "直接支持结论的一小段原始证据。已归档报文可附 traffic_refs。" : "复现证据（请求/响应/命令输出原文）" },
+          summary: { type: "string", pattern:'\\S', description: "影响与成因概述；补正不修改原标题、类别、严重性或概述" },
+          evidence: { type: "string", pattern:'\\S', description: worker ? "直接支持结论的一小段原始证据。已归档报文可附 traffic_refs。" : "复现证据（请求/响应/命令输出原文）" },
           asset_ids: { type: "array", items: { type: "integer",minimum:1 }, description: "本漏洞实际受影响的资产 ID；补正时追加并去重，不删除旧关联。缺省不继承意图资产" },
           scope:writebackScopeSchema,
         },
-        anyOf:[{required:['finding_id','evidence_version']},{required:['vulnclass','severity','summary','evidence'],...(worker ? {not:{required:['reproduction']}} : {})}],
+        oneOf:[
+          {required:['finding_id','evidence_version'],not:{anyOf:[{required:['distinct_from']},{required:['distinct_reason']}]},
+            anyOf:['asset_ids','evidence','scope','reproduction','traffic_refs'].map(key=>({required:[key]}))},
+          {required:['vulnclass','severity','summary','evidence'],not:{anyOf:[{required:['finding_id']},{required:['evidence_version']},...(worker?[{required:['reproduction']}]:[])]}},
+        ],
+        dependencies:{distinct_from:['distinct_reason'],distinct_reason:['distinct_from']},
       },
       // This operation owns its DB transaction and publishes only after commit.
       transactional: false,
@@ -160,8 +165,8 @@ export function listFindingsTool(ctx: ToolRunContext) {
       parameters: {
         type: "object",
         properties: {
-          limit: { type: "integer", description: "默认 20，上限 50" },
-          offset: { type: "integer" },
+          limit: { type: "integer", minimum:1, maximum:50, description: "默认 20，上限 50" },
+          offset: { type: "integer", minimum:0 },
           include_inherited: { type: "boolean", description: "是否含只读继承的来源任务漏洞，默认 false" },
         },
       },
@@ -180,12 +185,12 @@ export function listFindingsTool(ctx: ToolRunContext) {
         }
         const res = await c.db.query(
           `SELECT f.id, f.task_id, f.node_id, f.vulnclass, f.name, f.severity, f.summary, f.status, f.asset_ids, f.evidence_version, f.created_at
-           FROM findings f WHERE ${where} ORDER BY f.created_at DESC LIMIT ${limit} OFFSET ${args.offset ?? 0}`,
+           FROM findings f WHERE ${where} ORDER BY f.created_at DESC,f.id DESC LIMIT ${limit+1} OFFSET ${args.offset ?? 0}`,
           params,
         );
         const sources=await graphSources(c.db,c.taskID),sourceByTask=new Map(sources.map(source=>[source.taskID,source]));
         const visible=[] as typeof res.rows;
-        for(const row of res.rows){
+        for(const row of res.rows.slice(0,limit)){
           const ownerTask=Number(row.task_id),owner=ownerTask===c.taskID?{taskID:c.taskID,expID:c.expID}:sourceByTask.get(ownerTask);
           if(!owner)continue;
           try{
@@ -196,6 +201,9 @@ export function listFindingsTool(ctx: ToolRunContext) {
           }catch{/* Unauthorized evidence is omitted from the role's projection. */}
         }
         return {
+          has_more:res.rows.length>limit,
+          next_offset:res.rows.length>limit?(args.offset??0)+limit:null,
+          ...(res.rows.length>limit?{next:{...args,offset:(args.offset??0)+limit}}:{}),
           findings: visible.map((r: Record<string, unknown>) => ({
             id: Number(r["id"]),
             node_id: r["node_id"] === null ? null : Number(r["node_id"]),

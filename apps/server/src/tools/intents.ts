@@ -222,7 +222,7 @@ export function killWorkTool(ctx: ToolRunContext) {
       parameters: {
         type: "object",
         properties: {
-          intent_id: { type: "integer" },
+          intent_id: { type: "integer", minimum: 1 },
           reason: { type: "string", description: "终止原因（审计留痕）" },
         },
         required: ["intent_id", "reason"],
@@ -255,12 +255,15 @@ export function steerWorkTool(ctx: ToolRunContext) {
         type: "object",
         additionalProperties: false,
         properties: {
-          intent_id: { type: "integer" },
+          intent_id: { type: "integer", minimum: 1 },
           correction: {type:'object',additionalProperties:false,properties:{
             kind:{type:'string',enum:['stop_criteria','reuse_evidence']},
             criterion_indices:{type:'array',minItems:1,maxItems:10,items:{type:'integer',minimum:0},description:'原意图 acceptance 的从 0 开始索引；stop_criteria 停止这些项，reuse_evidence 仅向这些项引用证据'},
             fact_ids:{type:'array',minItems:1,maxItems:20,items:{type:'integer',minimum:1},description:'仅 reuse_evidence 使用：当前任务已有有效 fact/finding 节点 ID'},
-          },required:['kind','criterion_indices']},
+          },required:['kind','criterion_indices'],oneOf:[
+            {properties:{kind:{const:'stop_criteria'}},not:{required:['fact_ids']}},
+            {properties:{kind:{const:'reuse_evidence'}},required:['fact_ids']},
+          ]},
         },
         required: ["intent_id", "correction"],
       },

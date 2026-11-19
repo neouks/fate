@@ -179,8 +179,8 @@ export function searchWorkerTracesTool(ctx: ToolRunContext) {
         type: "object",
         properties: {
           query: { type: "string", description: "关键字（不区分大小写）" },
-          before_id:{type:"integer",minimum:0},
-          limit: { type: "integer", description: "默认 10，上限 20" },
+          before_id:{type:"integer",minimum:0,description:"将返回的 next_cursor 填入此参数续页，其他筛选不变"},
+          limit: { type: "integer", minimum:1, maximum:20, description: "默认 10，上限 20" },
         },
         required: ["query"],
       },
@@ -190,13 +190,13 @@ export function searchWorkerTracesTool(ctx: ToolRunContext) {
         const q = `%${args.query.replace(/[%_\\]/g, (m) => "\\" + m)}%`;
         const res = await c.db.query(
           `SELECT id, node_id, worker, kind, tool, summary,
-                  substring(COALESCE(detail, summary) FROM greatest(1, strpos(lower(COALESCE(detail, summary)), lower($2)) - 60) FOR 240) AS context
+                  substring(COALESCE(detail, summary) FROM greatest(1, strpos(lower(COALESCE(detail, summary)), lower($6)) - 60) FOR 240) AS context
            FROM activity
            WHERE exploration_id=$1 AND node_id IS NOT NULL AND node_id IS DISTINCT FROM $3
-             AND kind NOT IN ('usage','round')
+             AND kind NOT IN ('usage','round','thinking')
              AND (summary ILIKE $2 OR detail ILIKE $2) AND ($5::bigint=0 OR id<$5)
            ORDER BY id DESC LIMIT $4`,
-          [c.expID, q, c.intentID ?? -1, limit+1,args.before_id??0],
+          [c.expID, q, c.intentID ?? -1, limit+1,args.before_id??0,args.query],
         );
         const visible=[];
         for(const row of res.rows.slice(0,limit)){
@@ -204,6 +204,7 @@ export function searchWorkerTracesTool(ctx: ToolRunContext) {
         }
         return {
           next_cursor:res.rows.length>limit?Number(res.rows[limit-1]!.id):null,
+          ...(res.rows.length>limit?{next:{...args,before_id:Number(res.rows[limit-1]!.id)}}:{}),
           matches: visible.map((r: Record<string, unknown>) => ({
             step_id: Number(r["id"]),
             intent_id: r["node_id"] === null ? null : Number(r["node_id"]),
@@ -244,8 +245,8 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
             maxItems: 5,
             description: "要取完整内容的步骤 id 列表（省略则只列摘要）",
           },
-          offset: { type: "integer", minimum: 0, description: "步骤正文字符偏移，使用 next_offset 继续读取" },
-          after_id: { type: "integer", minimum: 0, description: "步骤列表游标" },
+          offset: { type: "integer", minimum: 0, description: "步骤正文 UTF-16 偏移；使用该步骤返回的 next 续读" },
+          after_id: { type: "integer", minimum: 0, description: "步骤列表游标，对应 next_cursor，优先使用返回的 next" },
           include_output: { type: "boolean", description: "是否附最终总结，默认 false" },
         },
         required: ["intent_id"],
@@ -257,9 +258,9 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
         const intent=resolved.node;
         if(intent.kind!=='intent')throw new Error('节点不是意图');
 
-        const listRows = await c.db.query(
+        const listRows = args.step_ids?.length || (args.include_output&&(args.offset??0)>0) ? {rows:[]} : await c.db.query(
           `SELECT id, kind, tool, is_error, summary, created_at FROM activity
-           WHERE exploration_id=$1 AND node_id=$2 AND kind NOT IN ('usage','round') AND id>$3
+           WHERE exploration_id=$1 AND node_id=$2 AND kind NOT IN ('usage','round','thinking') AND id>$3
            ORDER BY id LIMIT 11`,
           [resolved.expID, args.intent_id, args.after_id ?? 0],
         );
@@ -275,7 +276,7 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
         if (args.step_ids && args.step_ids.length > 0) {
           const rows = await c.db.query(
             `SELECT id, kind, tool, summary, detail FROM activity
-             WHERE exploration_id=$1 AND node_id=$2 AND id=ANY($3::bigint[]) ORDER BY id`,
+             WHERE exploration_id=$1 AND node_id=$2 AND id=ANY($3::bigint[]) AND kind NOT IN ('usage','round','thinking') ORDER BY id`,
             [resolved.expID, args.intent_id, args.step_ids.slice(0,5)],
           );
           for (const r of rows.rows) {
@@ -287,6 +288,8 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
               body: body.slice(Math.max(0,args.offset ?? 0), Math.max(0,args.offset ?? 0)+350),
               total_chars: body.length,
               next_offset: (args.offset ?? 0)+350<body.length ? (args.offset ?? 0)+350 : null,
+              offset_unit:"utf16",
+              ...((args.offset??0)+350<body.length?{next:{intent_id:args.intent_id,step_ids:[Number(r.id)],offset:(args.offset??0)+350}}:{}),
             });
           }
         }
@@ -294,7 +297,8 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
         let output: string | undefined;
         if (args.include_output) {
           const row = await c.db.query(
-            `SELECT summary FROM activity WHERE exploration_id=$1 AND node_id=$2 AND kind='result' ORDER BY id DESC LIMIT 1`,
+            `SELECT COALESCE(NULLIF(detail,''),summary) summary FROM activity WHERE exploration_id=$1 AND node_id=$2 AND kind='result'
+              AND (metadata->>'event_type'='outcome' OR metadata->>'event_type' IS NULL) ORDER BY id DESC LIMIT 1`,
             [resolved.expID, args.intent_id],
           );
           output = (row.rows[0]?.["summary"] as string | undefined) ?? undefined;
@@ -304,9 +308,11 @@ export function getWorkerTraceTool(ctx: ToolRunContext) {
           intent: { id: intent.id, state: intent.state, summary: intent.payload["summary"] },
           steps,
           next_cursor: listRows.rows.length>10 ? Number(listRows.rows[9]!.id) : null,
+          ...(listRows.rows.length>10?{next:{intent_id:args.intent_id,after_id:Number(listRows.rows[9]!.id)}}:{}),
           detail,
           final_output: output?.slice(Math.max(0,args.offset??0),Math.max(0,args.offset??0)+1000),
           output_next_offset:output&&(args.offset??0)+1000<output.length?(args.offset??0)+1000:null,
+          ...(output&&(args.offset??0)+1000<output.length?{output_next:{intent_id:args.intent_id,include_output:true,offset:(args.offset??0)+1000}}:{}),
         };
       },
     },

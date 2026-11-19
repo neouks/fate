@@ -43,11 +43,11 @@ export function describeToolContract(name: string, description: string): string 
   if (name === 'dispatch_intents') return description + ' 提交非空 intent_ids；仅用户明确要求批量下发时传 all_open: true。';
   if (name === 'record_fact') return description.replace('缺项仍保存但不计覆盖','缺少资产或 scope 时仍保存但不计覆盖')
     + ' Worker 每条事实必填非空 evidence；不得提交历史压缩占位符或猜测的保存编号。批量逐项核对结果，整批失败返回工具错误。';
-  if (name === 'steer_work') return description + ' 仅同一目标内调整方法、复用证据或缩减剩余工作，不能替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。';
+  if (name === 'steer_work') return description + ' stop_criteria 不传 fact_ids；reuse_evidence 必须传 fact_ids。仅支持这两种结构化纠偏，不能追加自由文本方法或替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。';
   if (name === 'kill_work') return description + ' 支持等待中或运行中意图；核对返回 state，停止失败不得下发替代意图，不能绕过用户暂停或取消。';
   if (name === 'insert_assets') return description + ' 整批失败返回工具错误，部分成功只重试失败项。';
   if (name === 'register_user_target') return description + ' evidence 引用完整原句或独立目标地址行。精确域名用 subdomain；root_domain 仅用于原文明确的通配根域。';
-  if (name === 'context_get') return description + ' 任一项失败则调用标为失败，成功项仍保留；长正文需选择 field，按 read_options 选择读取。';
+  if (name === 'context_get') return description + ' 首次省略 field 返回整个视图 JSON 的有界分页；将返回的 next_item 原样放入 items 续读，不只复制 offset。切换字段或版本时按 read_options 从 offset=0 重读，不混用坐标。version 可选，只使用返回的实际版本，不猜测。任一项失败则调用标为失败，成功项仍保留，只重试失败项。';
   if (name === 'context_search') return description + ' source=operations/needs 不支持图谱筛选 q/types/state/asset_id。';
   return description;
 }

@@ -21,7 +21,7 @@ export function trafficBodyTool(ctx:ToolRunContext){return domainTool<{traffic_i
  }
 },ctx);}
 export function readAttachmentTool(ctx:ToolRunContext){return domainTool<{path:string;offset?:number}>({
- name:'read_attachment',description:'按字符分页读取本任务附件正文。只允许平台登记的附件引用，不能访问任意本地路径。',readOnly:true,
+ name:'read_attachment',description:'按 UTF-16 偏移分页读取本任务附件正文，offset 使用返回的 next_offset。只允许平台登记的附件引用，不能访问任意本地路径。',readOnly:true,
  parameters:{type:'object',properties:{path:{type:'string'},offset:{type:'integer',minimum:0}},required:['path']},
- async run(args,c){const r=await c.db.query(`SELECT a.sha256 FROM chat_artifacts a WHERE a.path=$1 AND ${c.conversationID?'a.conversation_id':'a.task_id'}=$2`,[args.path,c.conversationID??c.taskID]);if(!r.rowCount)throw new Error('附件不存在或不属于本任务');const bytes=await readBlob(c.db,String(r.rows[0]!.sha256));if(bytes.includes(0))throw new Error('二进制附件需要由相应解析器处理');const text=bytes.toString('utf8'),offset=Math.max(0,args.offset??0);return {content:text.slice(offset,offset+2000),total:text.length,next_offset:offset+2000<text.length?offset+2000:null};}
+ async run(args,c){const r=await c.db.query(`SELECT a.sha256 FROM chat_artifacts a WHERE a.path=$1 AND ${c.conversationID?'a.conversation_id':'a.task_id'}=$2`,[args.path,c.conversationID??c.taskID]);if(!r.rowCount)throw new Error('附件不存在或不属于本任务');const bytes=await readBlob(c.db,String(r.rows[0]!.sha256));if(bytes.includes(0))throw new Error('二进制附件需要由相应解析器处理');const text=bytes.toString('utf8'),offset=Math.max(0,args.offset??0);return {content:text.slice(offset,offset+2000),total:text.length,offset_unit:'utf16',next_offset:offset+2000<text.length?offset+2000:null};}
 },ctx);}

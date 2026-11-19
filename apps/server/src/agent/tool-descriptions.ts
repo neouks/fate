@@ -14,6 +14,8 @@ const PLANNER_RECALL_PREVIOUS:Record<string,string> = {"context_search": "按新
 
 export const DIRECTION_PREVIOUS_TOOL_DESCRIPTIONS:Record<string,string> = {"add_intent": "创建探索意图。先检索已有工作；提供 summary、asset_ids、parent_ids、priority；执行约定可选，宿主记录引用版本，只派前置已满足的工作。Main 提交会请求宿主下发；以返回的准入状态为准。", "record_fact": "执行中边发现边写回新结论，提交成功立即入图。summary 概括，detail 合并同一结论的观察，evidence 保存真实证据；已保存的不重复提交，无新增事实不必写。", "report_finding": "提交本次亲自验证且可复现的漏洞与真实证据，成功后立即入图。先 context_search 按 finding 类型 查重；疑似问题用 record_fact 记录并注明不确定性。", "asset_search": "检索本任务及直接来源资产摘要。普通检索提供 DSL，untested=true 查范围内未测资产。用 next_offset 续页，详情使用 asset_get。"};
 
+export const PREVIOUS_CONTEXT_GET_DESCRIPTION = '按 items 读取引用；summary 索引、detail 详情、output 结果，field 选择字段。续读优先将返回的 next_item 原样放入 items；缺省 offset 会重读首页。正文只需 offset=next_offset；仅 parents/members 还需 cursor=page_cursor，读完本页再按 next_cursor 翻页。沿用 version，冲突重新检索。 Planner 可读本任务 session: 条目，field=/content 续读历史原文。';
+
 /** Only behavioral hints belong here; parameter shapes and limits live in the schema. */
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
   add_intent: '创建工作意图。summary 说明要做什么和目的，asset_ids 引用相关资产，parent_ids/contract.basis 引用已有事实。根据目标、依赖和证据决定工作粒度，可明确接口、参数、步骤及验收要求；contract 按需填写。实际调用并核对逐项成功回执才算派单；已有相同工作不重复提交，局部交叉先核对已有产出。',
@@ -24,7 +26,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   insert_assets: '边发现边用 assets 数组登记资产。按 Schema 填写各类型字段：record_value 必须为数组，endpoint 使用 url/method/params，HTTP service 使用 url 和指纹，app 使用 app_name。results/errors 逐项返回，成功即入图，探索结论用 record_fact。',
   report_finding: '仅提交亲自验证且可复现的漏洞，疑似结论用 record_fact。asset_ids 只列实际受影响资产，scope 说明已测范围及限制；reproduction/traffic_refs 保存真实步骤和报文。'+FINDING_WRITE_GUIDANCE,
   context_search: '按新到旧检索节点及冷图原文，默认 fact/finding/intent；types 显式包含 activity 才查询 Worker 活动。q 是字面短语，不是语义搜索。按 asset_id 核对历史方向，has_more 时用 next_cursor 续页；命中的 read 可直接交给 context_get。来源任务只读。 Planner 可用 source=planner_session 检索本任务历史规划原文；历史不能代替实时图查询。',
-  context_get: '按 items 读取引用；summary 索引、detail 详情、output 结果，field 选择字段。续读优先将返回的 next_item 原样放入 items；缺省 offset 会重读首页。正文只需 offset=next_offset；仅 parents/members 还需 cursor=page_cursor，读完本页再按 next_cursor 翻页。沿用 version，冲突重新检索。 Planner 可读本任务 session: 条目，field=/content 续读历史原文。',
+  context_get: '按 items 批量读取授权引用；summary 索引、detail 详情、output 结果、parents 上游、members 摘要成员。field 使用 JSON Pointer，offset 使用 Unicode 字符坐标。来源任务只读。 Planner 可读本任务 session: 条目，field=/content 续读历史原文。',
   read_tool_output: '按返回引用与游标续读完整工具 JSON；未读取的内容不能当作已确认信息。',
   graph_overview: '默认只读目标与授权计数；view=recent 获取近期态势摘要。用 context_search 按类型、状态、资产、意图检索，再用 context_get 读取所需字段，避免展开整图。',
   node_detail: '读取指定授权节点的详情、来源和关联；按返回游标续读。',
@@ -45,6 +47,19 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   record_conversation_fact: '向当前绑定任务保存有来源的新事实及真实证据，未绑定任务不能写入。',
   report_conversation_finding: '向当前绑定任务提交已复现漏洞或补正；未绑定任务不能写入。'+FINDING_WRITE_GUIDANCE.replaceAll('report_finding','report_conversation_finding'),
 };
+const PREVIOUS_READ_CONTRACT_DESCRIPTIONS:Record<string,string> = {
+  ...Object.fromEntries(['asset_get','read_tool_output','search_worker_traces','get_worker_trace','node_detail','get_finding'].map(name=>[name,TOOL_DESCRIPTIONS[name]!])),
+  traffic_search:'按 URL 关键词检索当前任务已保存的 HTTP 流量；返回证据引用，正文用 context_get 读取。不发起网络请求。',
+  search_finding_traffic:'报告前按漏洞所属任务查找已有 HTTP 流量；query 为 URL 关键词。核对内容后才可绑定，不发起网络请求。',
+};
+Object.assign(TOOL_DESCRIPTIONS,{
+  asset_get:'按 ids 和字段组读取资产；identity/fingerprint 默认返回，dns/params/auth/extra 按需选择。field 必须位于选中的 fields 中。deferred 字段按其 read 原样读取，分页按 next 原样续读；切换字段不能沿用父级 index/offset。任一项失败则调用标为失败，成功项保留，只重试失败项。',
+  read_tool_output:'按 output_ref 和 UTF-16 offset 读取工具 JSON 原文；next_offset 为下一页偏移，未读取的内容不能当作已确认信息。',
+  search_worker_traces:'按 query 检索 Worker 活动（不含思考），返回命中片段；next_cursor 填入 before_id，或直接使用 next 续页。完整正文用 get_worker_trace 按 step_id 读取。',
+  get_worker_trace:'省略 step_ids 时列步骤摘要；带 step_ids 时仅取选中步骤正文，不含思考。列表用 next 续页，各步骤正文用各自 next 续读。include_output=true 返回最终输出原文，按 output_next 续读；正文偏移使用 UTF-16。',
+  get_finding:'读取漏洞、证据版本和报告版本。按返回的 next 原样续读 Unicode 正文；版本变化按 read_options 从第一页重读，read_complete=true 才表示已读完当前版本。',
+  node_detail:'读取授权节点的详情、来源和关联；payload_json 按 next_offset→offset（UTF-16）续读，边按 next_edge→after_edge，资产按 next_anchor_offset→anchor_offset 续页。',
+});
 export const PRE_CONVERGENCE_TOOL_DESCRIPTIONS:Record<string,string>={add_intent:TOOL_DESCRIPTIONS.add_intent!,prove_goal:TOOL_DESCRIPTIONS.prove_goal!};
 // Exact active legacy text reviewed before this migration; arbitrary custom text stays untouched.
 export const REVIEWED_CONVERGENCE_PROVE_GOAL='当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。';
@@ -58,6 +73,9 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
   if(stored===PRE_CONVERGENCE_TOOL_DESCRIPTIONS[name] || name==='prove_goal'&&stored===REVIEWED_CONVERGENCE_PROVE_GOAL)stored=undefined;
   if(name==='report_finding'&&isPreviousFindingDescription(stored))stored=undefined;
   if(name==='report_conversation_finding'&&stored==='绑定任务的 Pentest 原子提交有证据的漏洞')stored=undefined;
+  if(name==='context_get'&&[PREVIOUS_CONTEXT_GET_DESCRIPTION,PREVIOUS_CONTEXT_GET_DESCRIPTION+' 任一项失败则调用标为失败，成功项仍保留；长正文需选择 field，按 read_options 选择读取。'].includes(String(stored)))stored=undefined;
+  if(name==='steer_work'&&stored===TOOL_DESCRIPTIONS.steer_work+' 仅同一目标内调整方法、复用证据或缩减剩余工作，不能替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。')stored=undefined;
+  if(Object.hasOwn(PREVIOUS_READ_CONTRACT_DESCRIPTIONS,name)&&stored===PREVIOUS_READ_CONTRACT_DESCRIPTIONS[name])stored=undefined;
   stored=recognizedHistoricalDescription(name,stored);
   if(name==='set_constraints'&&stored==='保存用户明确的允许或禁止约束，写明具体目标。')return {description:CONSTRAINT_TOOL_DESCRIPTION,source:'builtin'};
   const priorPagedDefault = '按 items 批量读取引用。summary 只读索引，detail 读详情，output 读结果；field 选 JSON Pointer 字段。parents/members 每页最多 20 条；有 next_offset 时用 page_cursor 和 offset 读完本页，再用 next_cursor 翻页并重置 offset。沿用 version，冲突重新检索。';

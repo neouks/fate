@@ -72,7 +72,7 @@ export function setConstraintsTool(ctx: ToolRunContext) {
       parameters: {
         type: "object",
         properties: {
-          replace: { type: "boolean", description: "默认追加。仅当用户明确要求整体替换现有约束时设为 true。" },
+          replace: { type: "boolean", ...(ctx.role==='goals'?{const:false}:{}), description: ctx.role==='goals'?'Goals 仅追加，省略或 false。':'默认追加。仅当用户明确要求整体替换现有约束时设为 true。' },
           constraints: {
             type: "array",
             maxItems: 20,
@@ -88,6 +88,7 @@ export function setConstraintsTool(ctx: ToolRunContext) {
           },
         },
         required: ["constraints"],
+        allOf:[{if:{required:['replace'],properties:{replace:{const:true}}},then:{properties:{constraints:{minItems:1}}}}],
       },
       transactional: false,
       async run(args, c) {
