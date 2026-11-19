@@ -55,12 +55,16 @@ export function registerMcpMgmtRoutes(app: FastifyInstance): void {
     return res.rows[0] ?? null;
   }
 
-  const cachedTools = async (id: number): Promise<{ name: string; description: string; calls:number }[]> => {
+  const cachedTools = async (id: number) => {
     const res = await db().query(
-      `SELECT c.tool_name, COALESCE(c.description,'') AS description, COALESCE(u.calls,0)::int AS calls FROM mcp_tools_cache c LEFT JOIN (SELECT operation,count(*) AS calls FROM (${resourceUsageRows}) r WHERE kind='mcp' AND server_id=$1 GROUP BY operation) u ON u.operation=c.tool_name WHERE c.server_id=$1 ORDER BY c.tool_name`,
+      `SELECT COALESCE(c.tool_name,u.operation) AS tool_name, COALESCE(c.description,'') AS description,
+       COALESCE(u.calls,0)::int AS calls, c.tool_name IS NOT NULL AS cached, c.discovered_at
+       FROM (SELECT * FROM mcp_tools_cache WHERE server_id=$1) c
+       FULL JOIN (SELECT operation,count(*) AS calls FROM (${resourceUsageRows}) r WHERE kind='mcp' AND server_id=$1 GROUP BY operation) u
+       ON u.operation=c.tool_name ORDER BY COALESCE(c.tool_name,u.operation)`,
       [id],
     );
-    return res.rows.map((r) => ({ name: String(r["tool_name"]), description: String(r["description"]),calls:Number(r["calls"]) }));
+    return res.rows.map((r) => ({ name: String(r["tool_name"]), description: String(r["description"]),calls:Number(r["calls"]),cached:r.cached,discovered_at:r.discovered_at }));
   };
 
   /** 拉一次 tools/list 并整表替换缓存（事务）。 */
@@ -85,7 +89,7 @@ export function registerMcpMgmtRoutes(app: FastifyInstance): void {
     }
   }
 
-  // GET /api/mcp/:id/tools — 缓存行（表空/未发现 → {tools:[]}）。
+  // Cached discovery plus recorded operations; neither implies live visibility.
   app.get("/api/mcp/:id/tools", async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!(await mcpRow(id))) return reply.code(404).send({ error: "MCP 服务器不存在" });

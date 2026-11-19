@@ -59,10 +59,6 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
     });
     await native(new Proxy(pi,{
       get(target,key){
-        if(key==='on')return (event:string,handler:(...a:any[])=>unknown)=>{
-          if(event==='tool_call')return target.on(event,((...a:any[])=>a[0].toolName==='tool_search'&&opts.toolLoading?.deferred.length?undefined:handler(...a)) as never);
-          return target.on(event as never,handler as never);
-        };
         if(key==='registerTool')return ((definition:Parameters<ExtensionAPI['registerTool']>[0])=>{
           const server=definition.namespace?.aliases?.[0];
           if(server&&definition.name.startsWith('mcp__')&&definition.label.startsWith(server+'/')){

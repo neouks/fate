@@ -67,6 +67,8 @@ export default function MCPPage() {
   const [saving, setSaving] = React.useState(false);
   const [tools, setTools] = React.useState<MCPTool[]>([]);
   const [toolsLoading, setToolsLoading] = React.useState(false);
+  const [toolsError, setToolsError] = React.useState<string | null>(null);
+  const toolsRequest = React.useRef(0);
   const [refreshing, setRefreshing] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [testResult, setTestResult] = React.useState<MCPTestResult | null>(null);
@@ -191,13 +193,16 @@ export default function MCPPage() {
     void loadUsage(s.id);
   }
   async function loadTools(id: number) {
+    const request = ++toolsRequest.current;
     setToolsLoading(true);
+    setToolsError(null);
     try {
-      setTools(await api.mcpTools(id));
-    } catch {
-      setTools([]);
+      const result = await api.mcpTools(id);
+      if (request === toolsRequest.current) setTools(result);
+    } catch (error) {
+      if (request === toolsRequest.current) setToolsError((error as Error).message);
     } finally {
-      setToolsLoading(false);
+      if (request === toolsRequest.current) setToolsLoading(false);
     }
   }
   async function loadUsage(id: number) {
@@ -250,17 +255,21 @@ export default function MCPPage() {
   }
   async function refreshTools() {
     if (!editing) return;
+    const request = ++toolsRequest.current;
     setRefreshing(true);
     try {
       const next = await api.refreshMcpServer(editing.id);
+      if (request !== toolsRequest.current) return;
       setTools(next);
-      toast.success(`发现 ${next.length} 个工具`);
+      setToolsError(null);
+      toast.success(`已刷新工具缓存：${next.filter(t => t.cached).length} 个工具`);
       load();
       void loadUsage(editing.id);
     } catch (error) {
       toast.error(`刷新失败：${(error as Error).message}`);
     } finally {
       setRefreshing(false);
+      if (request === toolsRequest.current) setToolsLoading(false);
     }
   }
   async function removeServer(s: MCPServer) {
@@ -442,13 +451,15 @@ export default function MCPPage() {
                   <label key={agent.key} htmlFor={`mcp-agent-${editing.id}-${agent.id}`} className="flex items-center gap-2 text-sm">
                     <Checkbox
                       id={`mcp-agent-${editing.id}-${agent.id}`}
+                      disabled={agent.mcp_supported === false}
                       checked={(visibility[editing.id] ?? []).includes(agent.key)}
                       onCheckedChange={() => toggleVisibility(editing.id, agent.key, agent.name)}
                     />
-                    {agent.name}
+                    {agent.name}{agent.mcp_supported === false && "（不支持 MCP）"}
                   </label>
                 ))}
               </div>
+              <FieldDescription>新增授权和服务配置在新会话生效；撤销会阻止后续调用。</FieldDescription>
             </Field>
           </>
         )}
@@ -458,8 +469,9 @@ export default function MCPPage() {
   function renderTools() {
     let body: React.ReactNode;
     if (toolsLoading) body = <p className="text-muted-foreground text-sm">加载中…</p>;
+    else if (toolsError) body = <p role="alert" className="text-destructive text-sm">工具列表读取失败：{toolsError}</p>;
     else if (tools.length === 0)
-      body = <p className="text-muted-foreground text-sm">尚未发现工具，点击刷新重新获取。</p>;
+      body = <p className="text-muted-foreground text-sm">暂无缓存或调用记录；不代表运行时没有工具。可点击刷新获取工具列表。</p>;
     else
       body = (
         <div className="flex flex-col divide-y">
@@ -469,6 +481,7 @@ export default function MCPPage() {
                 <code className="font-mono text-sm">{tool.name}</code>
                 <Badge variant="secondary">已记录 {tool.calls ?? "未知"} 次</Badge>
               </div>
+              <p className="text-muted-foreground mt-1 text-xs">{tool.cached ? `发现缓存${tool.discovered_at ? ` · ${new Date(tool.discovered_at).toLocaleString()}` : ""}` : "仅有历史调用记录，当前发现缓存未包含此工具"}</p>
               {tool.description && (
                 <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">{tool.description}</p>
               )}
@@ -479,11 +492,12 @@ export default function MCPPage() {
     return (
       <div className="flex flex-col gap-3 py-4">
         <div className="flex items-center justify-between">
-          <span className="text-muted-foreground text-sm">{tools.length} 个工具</span>
+          <span className="text-muted-foreground text-sm">缓存 {tools.filter(t => t.cached).length} 个 · 另有历史记录 {tools.filter(t => !t.cached).length} 个</span>
           <Button size="sm" variant="outline" disabled={refreshing} onClick={refreshTools}>
             {refreshing ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}刷新
           </Button>
         </div>
+        <p className="text-muted-foreground text-xs">此列表合并发现缓存与历史调用，不代表某个 Worker 当前可见的工具；实际可见性取决于会话授权及连接状态。</p>
         {body}
       </div>
     );
@@ -614,7 +628,7 @@ export default function MCPPage() {
                     </Badge>
                   </div>
                   <p className="text-muted-foreground text-xs">
-                    {server.transport === "stdio" ? "本地进程" : "远程工具服务"} · {server.tools?.length ?? 0} 个工具 ·{" "}
+                    {server.transport === "stdio" ? "本地进程" : "远程工具服务"} ·{" "}
                     {server.enabled ? "已启用" : "已停用"}
                   </p>
                   <p className="text-muted-foreground truncate text-xs">

@@ -1,4 +1,5 @@
 import {ACTIVE_ROLES} from '../../agent/tool-registry.js';
+import {roleSupportsMcp} from '../../agent/resource-policy.js';
 import type {FastifyInstance} from 'fastify';
 import type {Agent} from '../../db/platform.js';
 import type {Database} from '../../db/index.js';
@@ -8,7 +9,7 @@ import {resolveRolePrompt, PROMPT_VERSION, hostProtocol, MAIN_WRAPUP, PLANNER_WR
 const fail = (statusCode:number,message:string) => Object.assign(new Error(message),{statusCode});
 export function agentDTO(a:Agent) {
   // Keep camelCase fields for old clients; the settings UI uses the snake_case contract.
-  return {...a,id:String(a.id),deletable:!a.builtin&&!ACTIVE_ROLES.some(role=>role===a.key),llm_profile_id:a.llmProfileID,max_turns:a.maxTurns,run_seconds:a.runSeconds,
+  return {...a,id:String(a.id),mcp_supported:roleSupportsMcp(a.key),deletable:!a.builtin&&!ACTIVE_ROLES.some(role=>role===a.key),llm_profile_id:a.llmProfileID,max_turns:a.maxTurns,run_seconds:a.runSeconds,
     web_search:a.webSearch,interactive_shell:a.interactiveShell,trigger_run_mode:a.triggerRunMode,
     trigger_merge_mode:a.triggerMergeMode,trigger_max_parallel:a.triggerMaxParallel};
 }
@@ -21,10 +22,10 @@ async function requireAgent(db:Database,key:string) {
 async function versions(db:Database,id:number) {
   return (await db.query('SELECT version,created_at AS ts,COALESCE(note,\'\') AS note,template_text FROM agent_prompts WHERE agent_id=$1 ORDER BY version DESC',[id])).rows;
 }
-async function bindings(db:Database,id:number) {
+async function bindings(db:Database,id:number,key:string) {
   const mcp=await db.query("SELECT resource_id FROM agent_visibility WHERE agent_id=$1 AND resource_kind='mcp' AND mcp_tool_name='' AND enabled",[id]);
   const skill=await db.query('SELECT skill_name FROM agent_skill_visibility WHERE agent_id=$1 AND enabled',[id]);
-  return {mcp:mcp.rows.map(r=>Number(r.resource_id)),skill:skill.rows.map(r=>String(r.skill_name))};
+  return {mcp:roleSupportsMcp(key)?mcp.rows.map(r=>Number(r.resource_id)):[],skill:skill.rows.map(r=>String(r.skill_name))};
 }
 export function registerAgentManagementRoutes(app:FastifyInstance) {
   app.get('/api/agents',async()=>{
@@ -33,7 +34,7 @@ export function registerAgentManagementRoutes(app:FastifyInstance) {
       (SELECT count(*) FROM agent_visibility v WHERE v.agent_id=a.id AND v.resource_kind='mcp' AND v.mcp_tool_name='' AND v.enabled) AS mcp_count,
       (SELECT count(*) FROM agent_skill_visibility v WHERE v.agent_id=a.id AND v.enabled) AS skill_count,
       (SELECT count(*) FROM tools t WHERE t.agents ? a.key AND t.enabled) AS tool_count FROM agents a`)).rows;
-    return {agents:agents.map(a=>{const c=counts.find(r=>r.key===a.key);return {...agentDTO(a),mcp_count:Number(c?.mcp_count??0),skill_count:Number(c?.skill_count??0),tool_count:Number(c?.tool_count??0)};})};
+    return {agents:agents.map(a=>{const c=counts.find(r=>r.key===a.key);return {...agentDTO(a),mcp_count:roleSupportsMcp(a.key)?Number(c?.mcp_count??0):0,skill_count:Number(c?.skill_count??0),tool_count:Number(c?.tool_count??0)};})};
   });
   app.post('/api/agents',async(req,reply)=>{
     const b=(req.body??{}) as Record<string,unknown>;
@@ -56,7 +57,7 @@ export function registerAgentManagementRoutes(app:FastifyInstance) {
     const key=(req.params as {key:string}).key,a=await requireAgent(app.db,key);
     const effective=await resolveRolePrompt(app.db,key),agent=agentDTO(a);
     return {...agent,agent,prompt:effective.template,variables:await app.db.platform().promptVars(a.id),versions:await versions(app.db,a.id),
-      visibility:await bindings(app.db,a.id),llm_profiles:(await app.db.platform().listProfiles()).map(p=>({id:p.id,name:p.name,model:p.model,is_default:p.isDefault})),
+      visibility:await bindings(app.db,a.id,a.key),llm_profiles:(await app.db.platform().listProfiles()).map(p=>({id:p.id,name:p.name,model:p.model,is_default:p.isDefault})),
       prompt_source:effective.source,effective_prompt:effective.template,builtin_version:PROMPT_VERSION,prompt_candidate:effective.candidate,host_protocol:hostProtocol(key),
       wrapup_prompt:a.wrapupPrompt,wrapup_max_turns:a.wrapupMaxTurns,wrapup_max_turns_default:3,
       wrapup_default:key==='planner'?PLANNER_WRAPUP:key==='worker'?WORKER_WRAPUP:key==='mainagent'?MAIN_WRAPUP:'',

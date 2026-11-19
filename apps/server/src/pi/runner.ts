@@ -4,7 +4,7 @@ import {ActiveClock} from './active-clock.js';
 import {projectRecallHistory} from './recall-history.js';
 import {formatSkillsForPrompt} from '@earendil-works/pi-coding-agent';
 import {roleAllowsTool,roleToolRejection,PLANNER_CAPABILITY_PROTOCOL} from '../agent/planner-capabilities.js';
-import {classifyResourceCall,type ResourceCall,type McpOwner} from './resource-usage.js';
+import {classifyResourceCall,NATIVE_RESOURCE_CALL,type ResourceCall,type McpOwner} from './resource-usage.js';
 import {loadBoundSkills} from '../agent/skill-files.js';
 import {ActivityDelivery} from './activity-delivery.js';
 import type {WorkerTokenBudget} from '../db/worker-token-budget.js';
@@ -731,7 +731,16 @@ export class AgentRunner {
     if(activity.kind==='tool_start')activity={...activity,resource_call:classifyResourceCall(activity.toolName,activity.args,this.opts,this.opts.resourceOwners??new Map(),this.opts.resourceServers??new Map())};
     this.nativeActivityRevision++;
     const delivered=this.nativeActivity(activity);
-    this.activityDelivery.emit(() => this.opts.onActivity?.(delivered));
+    this.activityDelivery.emit(() => {
+      // PI custom entries are host metadata, excluded from model context. Keep
+      // the exact registration identity before delivery, so recovery does not
+      // guess server names or consult bindings/files that may have changed.
+      if(delivered.kind==='tool_start'&&delivered.resource_call&&delivered.native_event){
+        this.appendSessionEntry(NATIVE_RESOURCE_CALL,{runtime_id:delivered.native_event.runtime_id,
+          call_key:delivered.native_event.call_key,tool_call_id:delivered.toolCallId,resource_call:delivered.resource_call});
+      }
+      return this.opts.onActivity?.(delivered);
+    });
   }
 
   private nativeActivitySequence=0;

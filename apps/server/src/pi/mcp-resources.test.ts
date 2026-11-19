@@ -12,7 +12,7 @@ import {createServerTransport,LegacySseTransport,validateServerTransport} from '
 import {registerMcpMgmtRoutes} from '../http/routes/mcp-mgmt.js';
 import {AgentRunner,type RunnerActivity} from './runner.js';
 
-async function fixture(fn:(url:string,calls:string[])=>Promise<void>,resourceOnly=false){
+async function fixture(fn:(url:string,calls:string[])=>Promise<void>,resourceOnly=false,toolsDelay=0){
  const streams=new Map<string,ServerResponse>(),calls:string[]=[];let seq=0;
  const server=createServer(async(req,res)=>{
   if(req.headers.authorization!=='Bearer local-fixture'){res.writeHead(401).end();return;}
@@ -26,7 +26,7 @@ async function fixture(fn:(url:string,calls:string[])=>Promise<void>,resourceOnl
   if(message.id===undefined){res.writeHead(202).end();return;}
   let result:unknown;
   if(message.method==='initialize')result={protocolVersion:message.params.protocolVersion,capabilities:resourceOnly?{resources:{}}:{tools:{}},serverInfo:{name:'local-fixture',version:'1'}};
-  else if(message.method==='tools/list')result={tools:[{name:'fixture_echo',description:'Echo local synthetic text',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}}]};
+  else if(message.method==='tools/list'){await new Promise(r=>setTimeout(r,toolsDelay));result={tools:[{name:'fixture_echo',description:'Echo local synthetic text',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}}]};}
   else if(message.method==='tools/call'){calls.push(message.params.name);result={content:[{type:'text',text:'echo:'+message.params.arguments.text}]};}
   else result={};
   const response=JSON.stringify({jsonrpc:'2.0',id:message.id,result});
@@ -83,6 +83,25 @@ test('native pi deferred MCP discovery, call, restore and live revocation',async
   try{await runner.prompt('恢复后检查撤销');assert.deepEqual(calls,['fixture_echo']);assert.ok(activities.some(a=>a.kind==='tool_end'&&a.isError));}finally{await runner.dispose();}
  }finally{await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}
 }));
+
+test('mixed platform and MCP discovery waits for native registration before searching',async()=>fixture(async(url,calls)=>{
+ const dir=await mkdtemp(join(tmpdir(),'fate-mcp-slow-'));
+ const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),refreshOnCreate:false});
+ const faux=fauxProvider({provider:'slow-mcp'});runtime.registerNativeProvider(faux.provider);const activities:RunnerActivity[]=[];
+ faux.setResponses([fauxAssistantMessage([fauxToolCall('tool_search',{query:'fixture echo'})]),
+  fauxAssistantMessage([fauxToolCall('mcp__fixture__fixture_echo',{text:'ready'})]),fauxAssistantMessage('done')]);
+ const runner=await AgentRunner.create({cwd:dir,agentDir:dir,inMemory:true,modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Local fixture.',
+  toolAllowlist:['mcp__*','local_echo'],toolLoading:{version:'lean-tools-v1',initialActive:['mcp__*'],deferred:['local_echo'],compatibility:[]},
+  mcpEntries:[{name:'fixture',config:{transport:'http',url,headers:{Authorization:'Bearer local-fixture'},exposure:'deferred'}}],
+  customTools:[{name:'local_echo',label:'Local',description:'Local echo',exposure:'deferred',parameters:{type:'object',properties:{}},execute:async()=>({content:[{type:'text',text:'local'}]})}],
+  onActivity:a=>{activities.push(a);}});
+ try{
+  await runner.prompt('local fixture');assert.deepEqual(calls,['fixture_echo']);
+  const search=activities.find(a=>a.kind==='tool_end'&&a.toolName==='tool_search');
+  assert.ok(search?.kind==='tool_end'&&!search.isError);assert.match(search.text??'',/mcp__fixture__fixture_echo/);
+  assert.doesNotMatch(search.text??'',/MCP 发现未完成/);
+ }finally{await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}
+},false,250));
 
 for(const query of ['本地回显','local_echo'])test(`unavailable MCP does not block native internal discovery: ${query}`,async()=>{
  const dir=await mkdtemp(join(tmpdir(),'fate-mcp-offline-'));

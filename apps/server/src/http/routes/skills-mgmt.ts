@@ -1,3 +1,4 @@
+import {roleSupportsMcp} from '../../agent/resource-policy.js';
 import {resourceUsageDetail} from '../../db/resource-usage.js';
 // 批次 C2：skills 管理面（文件树读写/上传解包/目录/用量/缺口）+ 可见性（MCP 资源 + Skill）。
 // 对齐前端 web/src/lib/api.ts 的 skills 方法族：skillFiles/readSkillFile/writeSkillFile/
@@ -375,7 +376,7 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
       ),
     ]);
     return {
-      mcp: mcp.rows.map((r) => Number(r.resource_id)),
+      mcp: roleSupportsMcp(key)?mcp.rows.map((r) => Number(r.resource_id)):[],
       skill: skill.rows.map((r) => r.skill_name),
     };
   });
@@ -386,6 +387,7 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
     const agent = await db().platform().getAgentByKey(key);
     if (!agent) return reply.code(404).send({ error: `agent ${key} 不存在` });
     const mcp = Array.isArray(b["mcp"]) ? [...new Set(b["mcp"].map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0))] : [];
+    if(mcp.length&&!roleSupportsMcp(key))return reply.code(400).send({error:`角色 ${key} 不支持 MCP；可清空旧绑定，不能新增授权`});
     const skill = Array.isArray(b["skill"])
       ? [...new Set(b["skill"].map((v) => String(v)).filter((s) => s !== ""))]
       : [];
@@ -430,7 +432,7 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
        WHERE v.resource_kind='mcp' AND v.resource_id=$1 AND v.mcp_tool_name='' AND v.enabled ORDER BY a.key`,
       [Number(p["id"])],
     );
-    return { agents: res.rows.map((r) => r.key) };
+    return { agents: res.rows.map((r) => r.key).filter(roleSupportsMcp) };
   });
 
   app.post("/api/visibility/toggle", async (req, reply) => {
@@ -444,6 +446,7 @@ export function registerSkillMgmtRoutes(app: FastifyInstance): void {
     }
     const agent = await db().platform().getAgentByKey(agentID);
     if (!agent) return reply.code(404).send({ error: `agent ${agentID} 不存在` });
+    if(visible&&!roleSupportsMcp(agent.key))return reply.code(400).send({error:`角色 ${agent.key} 不支持 MCP；可取消旧绑定，不能新增授权`});
     await db().query(
       `INSERT INTO agent_visibility(agent_id, resource_kind, resource_id, mcp_tool_name, enabled)
        VALUES ($1,'mcp',$2,'',$3)

@@ -6,7 +6,7 @@ import {randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
-import {classifyResourceCall} from './resource-usage.js';
+import {classifyResourceCall,NATIVE_RESOURCE_CALL} from './resource-usage.js';
 import {withNativeActivity,nativeToolActivities,type NativeActivityIdentity} from './native-activity.js';
 import {AgentRunner,type RunnerActivity} from './runner.js';
 import {ModelRuntime} from '@earendil-works/pi-coding-agent';
@@ -49,7 +49,7 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
  const exp=await db.createExploration('synthetic resource metering','local fixture'),task=Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,paused,status) VALUES('synthetic','local',$1,true,'paused') RETURNING id",[exp])).rows[0]!.id);
  const serverID=Number((await db.query("INSERT INTO mcp_servers(name,transport,command) VALUES('usage_fixture','stdio','node') RETURNING id")).rows[0]!.id);
  const captured:Activity[]=[];let executions=0, nextIntent=100;
- async function run(role:string,opts:{conversation?:boolean;bound?:boolean;mcp?:boolean;dropEnd?:boolean;resume?:string;denySkill?:boolean}={}){
+ async function run(role:string,opts:{conversation?:boolean;bound?:boolean;mcp?:boolean;dropEnd?:boolean;dropStart?:boolean;resume?:string;denySkill?:boolean}={}){
   const id=randomUUID(),turnID=randomUUID(),sessionFile=opts.resume??path.join(dir,id+'.jsonl');
   const taskID=opts.conversation&&!opts.bound?null:task; const intentID=role==='worker'?++nextIntent:undefined;
   let identity:NativeActivityIdentity={source:{scope:'task',scopeID:exp,taskID:task},worker:role,turn_id:turnID};
@@ -63,7 +63,10 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
   const runtime=await ModelRuntime.create({authPath:path.join(dir,id+'-auth.json'),modelsPath:path.join(dir,id+'-models.json'),refreshOnCreate:false});
   const faux=fauxProvider({provider:'local-'+id});runtime.registerNativeProvider(faux.provider);
   const responses=opts.mcp?[fauxAssistantMessage([fauxToolCall('tool_search',{query:'usage_fixture echo'})]),fauxAssistantMessage([fauxToolCall('mcp__usage_fixture__echo',{})]),fauxAssistantMessage([fauxToolCall('mcp__usage_fixture__echo',{fail:true})]),fauxAssistantMessage('done')]:[fauxAssistantMessage([fauxToolCall('read',{path:skill})]),fauxAssistantMessage('done')];
-  faux.setResponses(responses);
+  faux.setResponses([...responses.slice(0,-1),ctx=>{
+   assert.ok(!JSON.stringify(ctx.messages).includes(NATIVE_RESOURCE_CALL),'metering metadata must not enter model context');
+   return fauxAssistantMessage('done');
+  }]);
   const activities:Activity[]=[];
   const runner=await AgentRunner.create({cwd:dir,agentDir:dir,resumeSessionPath:sessionFile,modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Read local fixtures only.',toolAllowlist:opts.mcp?['mcp__*']:['read'],skillsDir:skills,allowedSkills:['fixture'],nativeActivityRuntime:id,
    resourceServers:new Map([['usage_fixture',serverID]]),...(opts.mcp?{mcpEntries:[{name:'usage_fixture',config:{transport:'stdio',command:process.execPath,args:[serverFile],exposure:'deferred'}}]}:{}),
@@ -74,6 +77,7 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
     const detail=event.kind==='tool_start'?JSON.stringify(event.args):event.text??'';
     const activity:Activity={worker:identity.worker,kind:event.kind==='tool_start'?'tool_use':'tool_result',tool:event.toolName,tool_use_id:event.toolCallId,is_error:event.kind==='tool_end'&&event.isError,detail,summary:detail.slice(0,80),metadata:{turn_id:turnID,...runnerActivityMetadata(event)}};
     activities.push(activity);captured.push(activity);
+    if(event.kind==='tool_start'&&opts.dropStart)return;
     if(event.kind==='tool_end'){executions++;if(opts.dropEnd)return;}
     await db.transaction(tx=>projectActivity(tx,identity.source,activity,true));
    }});
@@ -83,6 +87,12 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
   // Replay through an independent native-file recovery object (new executor).
   const recovery=new NativeActivityRecovery(db,dir);
   await recovery.recover(id);await recovery.recover(id);await recovery.close();
+  // Verify native recovery alone, before replaying the captured host events.
+  if(opts.dropStart){
+   const usage=(await db.query('SELECT outcome FROM resource_usage WHERE runtime_id=$1 ORDER BY outcome',[id])).rows;
+   assert.deepEqual(usage.map(r=>r.outcome),opts.mcp?['failed','succeeded']:['succeeded']);
+   const source=await readFile(sessionFile,'utf8');assert.ok(source.includes(NATIVE_RESOURCE_CALL));
+  }
   await Promise.all([1,2].map(()=>db.transaction(async tx=>{for(const a of activities)await projectActivity(tx,identity.source,a,true);}))); // duplicates across consumers
   return {id,sessionFile,conversation,activities,identity};
  }
@@ -124,7 +134,11 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
  await db.transaction(tx=>projectResourceUsage(tx,end,end.metadata!.native_event as any));
  const detail=await resourceUsageDetail(db,'mcp',serverID,1);assert.equal(detail.calls.length,1);assert.equal(detail.stats[0]!.calls,2);
  const app=Fastify();app.decorate('db',db);app.decorate('skillsRoot',skills);app.addHook('preHandler',requireJWT('fixture-key'));registerMcpMgmtRoutes(app);registerSkillMgmtRoutes(app);
- try{const h={authorization:`Bearer ${signJWT('fixture-key')}`};assert.equal((await app.inject({url:`/api/mcp/${serverID}/tools`,headers:h})).json().tools[0].calls,2);assert.equal((await app.inject(`/api/mcp/${serverID}/usage`)).statusCode,401);const headers={authorization:`Bearer ${signJWT('fixture-key')}`};for(const url of [`/api/mcp/${serverID}/usage`,'/api/skills/fixture/usage']){const r=await app.inject({url,headers});assert.equal(r.statusCode,200,r.body);assert.equal(r.json().metering.version,'native-v1');}}
+ try{const h={authorization:`Bearer ${signJWT('fixture-key')}`};let toolList=(await app.inject({url:`/api/mcp/${serverID}/tools`,headers:h})).json().tools;
+ assert.equal(toolList[0].calls,2);assert.equal(toolList[0].cached,true);
+ await db.query('DELETE FROM mcp_tools_cache WHERE server_id=$1',[serverID]);
+ toolList=(await app.inject({url:`/api/mcp/${serverID}/tools`,headers:h})).json().tools;
+ assert.deepEqual(toolList,[{name:'echo',description:'',calls:2,cached:false,discovered_at:null}]);assert.equal((await app.inject(`/api/mcp/${serverID}/usage`)).statusCode,401);const headers={authorization:`Bearer ${signJWT('fixture-key')}`};for(const url of [`/api/mcp/${serverID}/usage`,'/api/skills/fixture/usage']){const r=await app.inject({url,headers});assert.equal(r.statusCode,200,r.body);assert.equal(r.json().metering.version,'native-v1');}}
  finally{await app.close();}
  // Removing domain/config/history records cannot erase already metered usage.
  await db.query('DELETE FROM conversations WHERE id=ANY($1::bigint[])',[runs.flatMap(r=>r.conversation?[r.conversation]:[])]);
@@ -150,6 +164,13 @@ test('native Skill/MCP accounting: seven roles, parallel Workers, conversations,
  const bound=await db.query('SELECT task_id,conversation_id,count(*)::int calls FROM resource_usage WHERE runtime_id=$1 GROUP BY task_id,conversation_id',[independent.id]);
  assert.deepEqual(bound.rows,[{task_id:String(task),conversation_id:String(independent.conversation),calls:2}]);
  assert.equal((await resourceUsageList(db,'mcp')).get(String(serverID))!.calls,4);
+ // Both start and result delivery can be lost; native recovery must retain the
+ // original Skill and exact registered MCP owner, without rerunning either.
+ const executionsBefore=executions;
+ await Promise.all([run('worker',{dropStart:true,dropEnd:true}),run('worker',{mcp:true,dropStart:true,dropEnd:true})]);
+ assert.equal(executions-executionsBefore,4,'one read, one search and two MCP calls; recovery never executes');
+ assert.equal((await resourceUsageList(db,'skill')).get('fixture')!.calls,12);
+ assert.equal((await resourceUsageList(db,'mcp')).get(String(serverID))!.calls,6);
 
 
 });

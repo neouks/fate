@@ -7,7 +7,8 @@ import {projectActivity} from '../db/activity-projection.js';
 import {plannerHistoryLines,readPlannerBytes} from '../db/planner-history.js';
 import {acquireNativeWriter} from '../agent/native-run-session.js';
 import {recoverPlannerActiveSession} from '../agent/planner-active-session.js';
-import {NATIVE_ACTIVITY_MARKER,nativeMessageActivities,nativeToolActivities,type NativeActivityIdentity} from '../pi/native-activity.js';
+import {NATIVE_ACTIVITY_MARKER,nativeMessageActivities,nativeToolActivities,withNativeActivity,type NativeActivityIdentity} from '../pi/native-activity.js';
+import {NATIVE_RESOURCE_CALL} from '../pi/resource-usage.js';
 import type {AgentRunner,RunnerActivity} from '../pi/runner.js';
 import {runnerActivityMetadata} from './live-stream.js';
 import {streamChanges} from './stream-changes.js';
@@ -87,6 +88,16 @@ export class NativeActivityRecovery {
       state={bound:true,sequence:0};
      }
      let activities:RunnerActivity[]=[];
+     if(state.bound&&entry?.type==='custom'&&entry.customType===NATIVE_RESOURCE_CALL){
+      if(entry.data?.runtime_id!==id||!state.assistant)throw new Error('Resource call lacks its original runtime/assistant');
+      const raw=await readPlannerBytes(handle,state.assistant.offset,state.assistant.length);
+      if(hash(raw)!==state.assistant.hash)throw new Error('Native call source changed');
+      const call=JSON.parse(raw.toString()).message.content?.find((b:any)=>b.type==='toolCall'&&b.id===entry.data.tool_call_id);
+      if(!call)throw new Error('Resource call lacks an original native tool call');
+      const activity=withNativeActivity({kind:'tool_start',toolCallId:call.id,toolName:call.name,args:call.arguments,resource_call:entry.data.resource_call},id,state.sequence);
+      if(activity.native_event?.call_key!==entry.data.call_key)throw new Error('Resource call identity changed');
+      activities=[activity];
+     }
      if(state.bound&&entry?.type==='message'){
       if(entry.message.role==='assistant'){
        state={...state,sequence:state.sequence+1,assistant:{offset:line.offset,length:line.raw.length,hash:hash(line.raw)}};

@@ -5,6 +5,7 @@ import type { AgentRunnerOptions } from "../pi/runner.js";
 import {realpath, stat} from 'node:fs/promises';
 import path from 'node:path';
 import {skillFilePath} from './skill-files.js';
+import {roleSupportsMcp} from './resource-policy.js';
 
 export async function skillReadAccess(db: Database, agentID: string | undefined, options: Pick<AgentRunnerOptions, 'cwd' | 'skillsDir' | 'allowedSkills'>, requested: string) {
   if (!options.skillsDir) return;
@@ -42,7 +43,7 @@ export async function roleResources(db: Database, role: string, skillsDir?: stri
   const skills = await db.query<{ skill_name: string }>(
     `SELECT v.skill_name FROM agent_skill_visibility v JOIN agents a ON a.id=v.agent_id WHERE a.key=$1 AND v.enabled ORDER BY v.skill_name`, [role]);
   // Only explicitly bound resources are registered; execution guards remain live.
-  if (!["worker", "planner", "mainagent", "pentest", "auto"].includes(role)) return { skillsDir, allowedSkills: skills.rows.map((r) => r.skill_name) };
+  if (!roleSupportsMcp(role)) return { skillsDir, allowedSkills: skills.rows.map((r) => r.skill_name) };
   const visibility = await db.query<{ resource_id: string; mcp_tool_name: string; enabled: boolean }>(
     `SELECT v.resource_id,v.mcp_tool_name,v.enabled FROM agent_visibility v JOIN agents a ON a.id=v.agent_id
      WHERE a.key=$1 AND v.resource_kind='mcp' ORDER BY v.resource_id,v.mcp_tool_name`, [role]);

@@ -949,6 +949,7 @@ export default function SkillsPage() {
 
                   <div className="space-y-2">
                     <Label className="text-xs text-muted-foreground">可见性（按 Agent 授权）</Label>
+                    <p className="text-xs text-muted-foreground">新增授权在新会话生效；撤销会阻止后续读取。</p>
                     <div className="space-y-2">
                       {agents.map((a) => (
                         <label key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">

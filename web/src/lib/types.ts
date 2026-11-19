@@ -1226,6 +1226,7 @@ export interface Agent {
   trigger_max_parallel?: number; // 仅 parallel：每 agent 并发上限；0=不限
   // 绑定数量(仅列表接口返回)：可见 MCP / 可见 Skill / 绑定工具
   mcp_count?: number;
+  mcp_supported?: boolean;
   skill_count?: number;
   tool_count?: number;
 }
@@ -1286,6 +1287,8 @@ export interface MCPTool {
   name: string;
   description: string;
   calls?: number;
+  cached?: boolean;
+  discovered_at?: string | null;
 }
 
 export interface ResourceUsageCounts {
