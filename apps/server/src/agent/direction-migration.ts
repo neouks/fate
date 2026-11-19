@@ -15,7 +15,7 @@ export async function migrateDirectionWriteback(db:Database){
       const row=(await tx.query(`SELECT a.id,p.template_text FROM agents a LEFT JOIN agent_prompts p ON p.id=a.current_prompt_id WHERE a.key=$1 FOR UPDATE OF a`,[role])).rows[0];
       if(!row||promptHash(String(row.template_text))!==hash)continue;
       const saved=(await tx.query(`INSERT INTO agent_prompts(agent_id,version,template_text,note,updated_by)
-        SELECT $1,COALESCE(max(version),0)+1,$2,'方向级派单、结论级写回；保留原文','migration'
+        SELECT $1,COALESCE(max(version),0)+1,$2,'更新派单与结论写回说明；保留原文','migration'
         FROM agent_prompts WHERE agent_id=$1 RETURNING id`,[row.id,template])).rows[0]!;
       await tx.query('UPDATE agents SET current_prompt_id=$2 WHERE id=$1',[row.id,saved.id]);
     }

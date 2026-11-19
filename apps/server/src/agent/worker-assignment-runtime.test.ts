@@ -7,7 +7,7 @@ import http from 'node:http';
 import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai';
 import {AgentRunner,type RunnerActivity} from '../pi/runner.js';
-import {workerMandate,plannerDispatchReminder,DIRECTION_AUTONOMY_POLICY} from './direction-autonomy.js';
+import {workerMandate,plannerDispatchReminder} from './worker-assignment.js';
 import {normalizeContract} from './intent-contract.js';
 import {CONTEXT_LAYOUT_VERSION} from './prompt-context.js';
 import {openDatabase} from '../db/index.js';
@@ -18,10 +18,10 @@ for(const legacy of [false,true])test(`mandate survives native compaction, retry
  const dir=await mkdtemp(path.join(tmpdir(),'autonomy-context-'));
  const runtime=await ModelRuntime.create({authPath:dir+'/auth.json',modelsPath:dir+'/models.json',refreshOnCreate:false});const faux=fauxProvider({provider:'mandate'});await runtime.registerNativeProvider(faux.provider);
  const contract=normalizeContract({objective:'比较目录字段',out_of_scope:['禁止财务模块'],acceptance:['遵守用户明确指定顺序'],allowed_tools:['read']},'目录');
- const taskContext=workerMandate(4,{summary:'目录',...(!legacy?{autonomy_policy:DIRECTION_AUTONOMY_POLICY}:{})},contract,'[]');
+ const taskContext=workerMandate(4,{summary:'目录',...(!legacy?{autonomy_policy:'direction-autonomy-v2'}:{})},contract,'[]');
  const options={cwd:dir,agentDir:dir,resumeSessionPath:dir+'/session.jsonl',modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Local fixture',toolAllowlist:[],contextLayout:CONTEXT_LAYOUT_VERSION,taskContext,platform:{role:'worker',taskID:1,policy:{version:'domain-v1' as const,compaction:'native' as const,mcpLoading:'direct' as const}},compactionSettings:{keepRecentTokens:128,reserveTokens:512}};
  let runner:AgentRunner|undefined;
- const inspect=(ctx:any)=>{const text=JSON.stringify(ctx.messages);for(const part of ['禁止财务模块','遵守用户明确指定顺序',legacy?'历史策略':'【探索目标】'])assert.ok(text.includes(part));return fauxAssistantMessage('context preserved');};
+ const inspect=(ctx:any)=>{const text=JSON.stringify(ctx.messages);assert.doesNotMatch(text,/direction-autonomy-v2|自主探索策略|方向级派单/);for(const part of ['禁止财务模块','遵守用户明确指定顺序','执行要求'])assert.ok(text.includes(part));return fauxAssistantMessage('context preserved');};
  try{
   runner=await AgentRunner.create(options);faux.setResponses([fauxAssistantMessage('record one '.repeat(1200)),fauxAssistantMessage('record two '.repeat(1200)),fauxAssistantMessage('compacted'),fauxAssistantMessage('prefix')]);await runner.prompt('one');await runner.prompt('two');const ids=runner.sessionEntries.filter(e=>e.type==='message').map(e=>e.id);
   await runner.compact();assert.equal(runner.compactionDiagnostics.completed,1);faux.setResponses([inspect]);await runner.prompt('check after compaction');await runner.dispose();
@@ -55,7 +55,7 @@ test('full Worker entry enforces authority and lifecycle for v2 intents',{skip:!
   await db.query("UPDATE tools SET enabled=true,agents='[\"worker\",\"planner\"]' WHERE key='http_request'");
   const expID=await db.createExploration('guard fixture','read fixture'),taskID=Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,status,paused) VALUES('guard','guard',$1,'running',false) RETURNING id",[expID])).rows[0]!.id);
   const basis=await db.exploration(expID).addNode('fact',{summary:'origin fixture',evidence:'synthetic verified origin'},0,'confirmed','fixture',[]);
-  const intentID=await db.exploration(expID).addNode('intent',{summary:'Read fixture',autonomy_policy:DIRECTION_AUTONOMY_POLICY,contract:{objective:'Read fixture',basis:[{node_id:basis,version:0}],...(change==='allowed-tools'?{allowed_tools:['read']}:{})}},0,'running','fixture',[]);
+  const intentID=await db.exploration(expID).addNode('intent',{summary:'Read fixture',autonomy_policy:'direction-autonomy-v2',contract:{objective:'Read fixture',basis:[{node_id:basis,version:0}],...(change==='allowed-tools'?{allowed_tools:['read']}:{})}},0,'running','fixture',[]);
   await db.query("UPDATE exploration_nodes SET owner='work#guard' WHERE id=$1",[intentID]);
   const controller=new AbortController(),events:RunnerActivity[]=[],before=requests;
   const foreignExp=await db.createExploration('foreign','foreign'),foreignTask=Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,status,paused) VALUES('foreign','foreign',$1,'created',false) RETURNING id",[foreignExp])).rows[0]!.id);

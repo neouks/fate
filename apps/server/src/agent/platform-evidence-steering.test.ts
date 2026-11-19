@@ -16,7 +16,7 @@ import {HISTORY_INDEX_NOTE, HISTORY_EXCERPT_NOTE, HISTORY_OMITTED_NOTE} from '..
 import {CONTEXT_LAYOUT_VERSION} from './prompt-context.js';
 import {normalizeContract} from './intent-contract.js';
 import {stoppedWorkerCriteria} from './worker-correction.js';
-import {DIRECTION_AUTONOMY_POLICY, workerMandate} from './direction-autonomy.js';
+import {workerMandate} from './worker-assignment.js';
 
 const dsn = process.env.TEST_PLATFORM_EVIDENCE_DSN;
 test('platform evidence writes, shared direction context and durable native steering', {skip: !dsn && 'isolated PostgreSQL required'}, async t => {
@@ -28,7 +28,7 @@ test('platform evidence writes, shared direction context and durable native stee
   const task = Number((await db.query("INSERT INTO tasks(description,goal,exploration_id,status) VALUES('fixture','fixture',$1,'running') RETURNING id", [exp])).rows[0]!.id);
   const graph = db.exploration(exp);
   const contract = normalizeContract({objective: '比较样本', acceptance: ['验证样本 A', '验证样本 B'], out_of_scope: ['禁止修改样本']}, 'fixture');
-  const payload = {summary: 'fixture', autonomy_policy: DIRECTION_AUTONOMY_POLICY, contract};
+  const payload = {summary: 'fixture', autonomy_policy: 'direction-autonomy-v2', contract};
   const first = await graph.addNode('intent', payload, 0, 'running', 'fixture', []);
   const second = await graph.addNode('intent', {...payload, summary: '其他方向'}, 0, 'running', 'fixture', []);
   await db.query("UPDATE exploration_nodes SET owner='fixture-worker' WHERE id=ANY($1::bigint[])", [[first, second]]);

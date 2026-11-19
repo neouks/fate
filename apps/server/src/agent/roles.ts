@@ -1,5 +1,5 @@
 import {stoppedWorkerCriteria} from './worker-correction.js';
-import {workerMandate,plannerDispatchReminder,WORK_COORDINATION_GUIDANCE} from './direction-autonomy.js';
+import {workerMandate,plannerDispatchReminder,WORK_COORDINATION_GUIDANCE} from './worker-assignment.js';
 import {plannerConvergenceState} from './planner-convergence.js';
 import {resolveShell} from '../config/execution.js';
 import {targetProxy} from '../egress/upstream.js';

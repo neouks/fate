@@ -1,6 +1,7 @@
+import historical from './fixtures/historical-assignment-prompts.json' with {type:'json'};
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {PLANNER_PROMPT,WORKER_PROMPT,PRE_AUTONOMY_PLANNER_PROMPT,PRE_AUTONOMY_WORKER_PROMPT,hostProtocol,systemRolePrompt} from './prompts.js';
+import {PLANNER_PROMPT,WORKER_PROMPT,BASE_PLANNER_PROMPT,BASE_WORKER_PROMPT,hostProtocol,systemRolePrompt} from './prompts.js';
 import {FINDING_PLANNER_GUIDANCE,FINDING_WRITE_GUIDANCE,PREVIOUS_FINDING_DESCRIPTION} from './finding-write-policy.js';
 import {effectiveToolDescription} from './tool-descriptions.js';
 import {migrateFindingWritePolicy} from './finding-prompt-migration.js';
@@ -43,8 +44,8 @@ test('exact prompt migration preserves custom, disabled binding, history and exp
 },async t=>{
   assert.match(new URL(dsn!).pathname,/^\/test_[a-z0-9_]+$/);process.env.SERIES_PG_DSN=dsn;
   const db=await openDatabase();t.after(()=>db.close());
-  const previousPlanner=PRE_AUTONOMY_PLANNER_PROMPT.replace(FINDING_PLANNER_GUIDANCE+'\n','');
-  const previousWorker=PRE_AUTONOMY_WORKER_PROMPT.replace(FINDING_WRITE_GUIDANCE+'\n','');
+  const previousPlanner=historical.planner.replace(FINDING_PLANNER_GUIDANCE+'\n','');
+  const previousWorker=historical.worker.replace(FINDING_WRITE_GUIDANCE+'\n','');
   const set=async(role:string,text:string)=>{
     const agent=(await db.query('SELECT id FROM agents WHERE key=$1',[role])).rows[0]!;
     const prompt=(await db.query(`INSERT INTO agent_prompts(agent_id,version,template_text)
@@ -56,9 +57,9 @@ test('exact prompt migration preserves custom, disabled binding, history and exp
   const workerOriginal=await set('worker',previousWorker);
   await set('planner',previousPlanner+'\n用户自定义内容');
   await db.query("UPDATE tools SET description=$1,enabled=false,agents='[\"worker\"]' WHERE key='report_finding'",[PREVIOUS_FINDING_DESCRIPTION]);
-  const templates={planner:PRE_AUTONOMY_PLANNER_PROMPT,worker:PRE_AUTONOMY_WORKER_PROMPT};
+  const templates={planner:BASE_PLANNER_PROMPT,worker:BASE_WORKER_PROMPT};
   await migrateFindingWritePolicy(db,templates);
-  assert.equal(await read('worker'),PRE_AUTONOMY_WORKER_PROMPT);
+  assert.equal(await read('worker'),BASE_WORKER_PROMPT);
   assert.equal(await read('planner'),previousPlanner+'\n用户自定义内容');
   const config=(await db.query("SELECT * FROM tools WHERE key='report_finding'")).rows[0]!;
   assert.equal(config.enabled,false);assert.deepEqual(config.agents,['worker']);assert.match(config.description,/finding_id,evidence_version/);
@@ -69,6 +70,6 @@ test('exact prompt migration preserves custom, disabled binding, history and exp
   await set('worker',previousWorker+'\n自定义');await set('planner',previousPlanner);
   await db.query("UPDATE tools SET description='自定义工具正文' WHERE key='report_finding'");
   await migrateFindingWritePolicy(db,templates);
-  assert.equal(await read('planner'),PRE_AUTONOMY_PLANNER_PROMPT);assert.equal(await read('worker'),previousWorker+'\n自定义');
+  assert.equal(await read('planner'),BASE_PLANNER_PROMPT);assert.equal(await read('worker'),previousWorker+'\n自定义');
   assert.equal((await db.query("SELECT description FROM tools WHERE key='report_finding'")).rows[0]!.description,'自定义工具正文');
 });

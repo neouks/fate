@@ -1,4 +1,3 @@
-import {DIRECTION_AUTONOMY_POLICY} from '../agent/direction-autonomy.js';
 import type {WorkerCorrection} from '../agent/worker-correction.js';
 import {CONVERGENCE_ADD_INTENT_HINT} from '../agent/planner-convergence.js';
 // 意图工具：add_intent（唯一意图生成入口，含去重与 mainagent 直投下发）、
@@ -25,13 +24,13 @@ function intentIDs(values:unknown,field:string):number[]{
 
 const intentFields = {
                 replaces_intent_id: {type:'integer',minimum:1,description:'目标变化时填写被替换的旧意图 ID。先 kill_work 并确认结束，再提交本项；宿主拒绝仍在执行、用户暂停或取消的旧意图。新意图使用独立会话，仅通过 parent_ids/contract.basis 传递必要事实，不复制旧会话。与 retry_of 互斥。'},
-                summary: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S", description: "用一两句话给出有价值的探索方向；入口发现、采集、验证和补证属于同一方向，不拆成工作阶段；具体接口、步骤和方法由 Worker 在范围内自主决定，不列逐项测试清单" },
+                summary: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S", description: "说明本项工作及目的，可明确接口、参数、步骤和验收要求" },
                 parent_ids: {type:"array",maxItems:20,items:{anyOf:[{type:"integer",minimum:1},{type:"string",pattern:"^[0-9]+$"}]},description:"仅当前任务的事实或漏洞节点；来源任务证据用 contract.basis"},
                 parent_id: { anyOf:[{type:"integer",minimum:1},{type:"string",pattern:"^[0-9]+$"}], description: "当前任务单个 fact/finding ID；与 parent_ids 二选一，省略则连任务根" },
                 asset_ids: { type: "array", items: { anyOf:[{type:"integer",minimum:1},{type:"string",pattern:"^[0-9]+$"}] }, description: "业务范围或入口资产 ID，不要求预先枚举所有待发现接口；写回时再精确关联实际资产" },
                 priority: { type: "integer", minimum: 0, maximum: 10, description: "省略或 0 按 5 处理" },
-                contract: {type:'object',description:'可选边界补充，不要求填写细化验收表。objective/acceptance 省略时沿用 summary；work 仅在已有稳定方向标识时使用。',properties:{
-                  objective:{type:'string',description:'需要回答的问题与探索价值，不固定执行路径；后续补全须说明哪项用户要求仍缺数据或哪些已读证据矛盾，充分结论不重复核验'},acceptance:{type:'array',description:'可省略；仅描述结果所需结论、证据和覆盖说明，不写逐接口步骤、不预设成败结论。补全仅覆盖实际受影响对象与缺口及停止条件，明确沿用未受影响结论；不附加顺便复核其他对象的可选项，不追加用户未要求的全集/隐藏入口证明。',minItems:1,maxItems:10,items:{type:'string'}},out_of_scope:{type:'array',maxItems:20,items:{type:'string'}},
+                contract: {type:'object',description:'可选执行要求，可补充目标、步骤、验收条件及边界。objective/acceptance 省略时沿用 summary；work 仅在已有稳定方向标识时使用。',properties:{
+                  objective:{type:'string',description:'需要完成的工作，可明确执行步骤；后续补全须说明哪项用户要求仍缺数据或哪些已读证据矛盾，充分结论不重复核验'},acceptance:{type:'array',description:'可省略；仅描述结果所需结论、证据和覆盖说明，可明确接口与步骤，不预设成败结论。补全仅覆盖实际受影响对象与缺口及停止条件，明确沿用未受影响结论；不附加顺便复核其他对象的可选项，不追加用户未要求的全集/隐藏入口证明。',minItems:1,maxItems:10,items:{type:'string'}},out_of_scope:{type:'array',maxItems:20,items:{type:'string'}},
                   basis:{type:'array',description:'直接来源任务的证据放在此处，不放 parent_ids。填写已读取 fact/finding 的顶层 version/content_version，可为 0；read_receipt.version、writeback.version 是格式版本，不能作为依据版本。goal、intent 不是事实依据。',maxItems:20,items:{type:'object',properties:{node_id:{type:'integer',minimum:1},version:{type:'integer',minimum:0,description:'节点内容版本，不是读取回执或写回格式版本'}},required:['node_id','version']}},
                   work:{type:'object',properties:{resource:{type:'string'},question_key:{type:'string'},method_class:{type:'string'},identity:{type:'string'}},required:['resource','question_key','method_class','identity']},
                   allowed_tools:{type:'array',items:{type:'string'},maxItems:50,description:'默认省略，不要复制能力目录生成白名单，也不要仅因只读要求填写；让 Worker 自选已绑定且获授权的工具。仅明确需要限制时填写精确工具名，见 graph_overview.worker_capabilities；HTTP GET 使用 http_request，不能编造 http_get 等别名。内部写回和已绑定 Skill 文档的读取不受此清单限制。'},
@@ -69,7 +68,7 @@ export function addIntentTool(ctx: ToolRunContext) {
       name: "add_intent",
       description:
         "提交 1~4 条探索意图进 frontier，worker 将按优先级领取执行。提交前逐一与 open/running 意图及" +
-        "近期已完成意图比对。每条意图是一个可独立交付结论的方向，给出大致资产范围与探索价值即可，让 Worker 自主选择步骤，不按接口/参数拆单。contract.work 可选，legacy_text 仅做文本去重；dedup.related_intent_ids 表示局部交叉，需读取已有工作协调职责，不强制拆成更小单元。parent 必须是产出了证据的 fact/finding 节点" +
+        "近期已完成意图比对。每条意图说明待执行的工作和目的，可包含明确的步骤和验收要求。contract.work 可选，legacy_text 仅做文本去重；dedup.related_intent_ids 表示局部交叉，需读取已有工作协调职责，不强制拆成更小单元。parent 必须是产出了证据的 fact/finding 节点" +
         "（发现驱动规划）。串行依赖链用 todo_write 记录，只派前置已满足的那一步。统一传 intents 数组；单条也放入数组，每项必填非空 summary。"+CONVERGENCE_ADD_INTENT_HINT,
       promptSnippet: "派发探索意图（先查重）",
       parameters: {
@@ -112,7 +111,7 @@ export function addIntentTool(ctx: ToolRunContext) {
               const ref=contract.basis.find(ref=>ref.node_id===parentID);
               if(!ref)contract.basis.push({node_id:parentID,version:parent.content_version??0});
             }
-            const payload: Record<string, unknown> = { summary: item.summary,contract,autonomy_policy:DIRECTION_AUTONOMY_POLICY,
+            const payload: Record<string, unknown> = { summary: item.summary,contract,
               ...(item.replaces_intent_id?{replaces_intent_id:item.replaces_intent_id}:{}),
               ...(item.retry_of?{retry_of:item.retry_of,retry_kind:item.retry_kind,retry_reason:item.retry_reason}:{}) };
             payload.parent_ids=parentIDs;
@@ -128,7 +127,7 @@ export function addIntentTool(ctx: ToolRunContext) {
               const previous=await s.getNode(res.id);
               const oldWork=(previous?.payload.contract as IntentContract|undefined)?.work;
               if(oldWork&&!contract.work)contract.work=oldWork;
-              await db.query("UPDATE exploration_nodes SET payload=payload||($2::jsonb-'autonomy_policy') WHERE id=$1 AND state='open' AND payload->>'needs_replanning'='true'",[res.id,JSON.stringify({...payload,needs_replanning:false})]);
+              await db.query("UPDATE exploration_nodes SET payload=payload||$2::jsonb WHERE id=$1 AND state='open' AND payload->>'needs_replanning'='true'",[res.id,JSON.stringify({...payload,needs_replanning:false})]);
             }
             submitted.push({summary:item.summary,intent_id:res.id,created:res.created,dedup:res.dedup,...(!res.created?{duplicate_of:res.id}:{})});
           }

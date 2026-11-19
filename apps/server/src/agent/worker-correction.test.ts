@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {normalizeContract} from './intent-contract.js';
-import {workerMandate,DIRECTION_AUTONOMY_POLICY} from './direction-autonomy.js';
+import {workerMandate} from './worker-assignment.js';
 import {correctionMessage,stoppedWorkerCriteria,validateWorkerCorrection} from './worker-correction.js';
 import {effectiveToolDescription} from './tool-descriptions.js';
 
@@ -34,7 +34,7 @@ test('scope restoration reads typed reductions and keeps the original objective 
   assert.match(query,/scope_version/);assert.match(query,/stop_criteria/);
   assert.doesNotMatch(query,/SELECT detail/);
   const before=JSON.stringify(contract);
-  const mandate=workerMandate(20,{summary:'本地比较',autonomy_policy:DIRECTION_AUTONOMY_POLICY},contract,'[]',stopped);
+  const mandate=workerMandate(20,{summary:'本地比较',autonomy_policy:'direction-autonomy-v2'},contract,'[]',stopped);
   assert.match(mandate,/停止原验收项 \[0\]/);
   assert.match(mandate,/比较本地样本/);assert.match(mandate,/禁止修改样本/);
   assert.equal(JSON.stringify(contract),before);
