@@ -222,12 +222,44 @@ function BroadcastRelations({taskID,nodeID}:{taskID:string;nodeID:string}) {
  </section>;
 }
 
+function IntentFacts({ taskId, intentId, count }: { taskId: string; intentId: string; count: number }) {
+  const [page, setPage] = React.useState(1);
+  const [items, setItems] = React.useState<TaskNode[] | null>(null);
+  const [error, setError] = React.useState("");
+  const [retry, setRetry] = React.useState(0);
+  const size = 10;
+  const pages = Math.max(1, Math.ceil(count / size));
+  const current = Math.min(page, pages);
+  React.useEffect(() => {
+    const controller = new AbortController();
+    setItems(null);
+    setError("");
+    api.explorationNodes(taskId, { factIntent: intentId, page: current, size, order: "asc" }, controller.signal)
+      .then(result => { if (!controller.signal.aborted) setItems(result.items); })
+      .catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "事实读取失败"); });
+    return () => controller.abort();
+  }, [taskId, intentId, current, count, retry]);
+  return <section className="flex flex-col gap-2" aria-label="原始事实">
+    <strong className="text-sm">原始事实 · {count}</strong>
+    {items?.map(fact => <Link key={fact.id} className="text-sm underline" href={`/function/tasks/detail?${new URLSearchParams({ id: taskId, tab: "graph", node: fact.id })}`}>
+      #{fact.id} {summaryOf(fact)}
+    </Link>)}
+    {error ? <div role="alert">{error} <Button variant="ghost" size="sm" onClick={() => setRetry(v => v + 1)}>重试</Button></div>
+      : !items ? <span role="status">读取中…</span> : !items.length && <span>当前页没有事实。</span>}
+    {pages > 1 && <div className="flex items-center gap-2">
+      <Button variant="outline" size="sm" disabled={current <= 1} onClick={() => setPage(current - 1)}>上一页事实</Button>
+      <span>{current} / {pages}</span>
+      <Button variant="outline" size="sm" disabled={current >= pages} onClick={() => setPage(current + 1)}>下一页事实</Button>
+    </div>}
+  </section>;
+}
+
 function BroadcastRow({ node, taskId, now, fresh }: { node: TaskNode; taskId: string; now: number; fresh: boolean }) {
   const [open, setOpen] = React.useState(false);
   const kind = viewKind(node);
   const meta = KIND_META[kind] ?? KIND_META.fact;
   const Icon = meta.icon;
-  const ts = Date.parse(node.ts);
+  const ts = Date.parse(node.broadcast_ts ?? node.ts);
   const summary = summaryOf(node);
 
 
@@ -256,6 +288,7 @@ function BroadcastRow({ node, taskId, now, fresh }: { node: TaskNode; taskId: st
       <div className="min-w-0 border-b py-3 pr-1 last:border-b-0">
         <button
           type="button"
+          aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           className="flex w-full min-w-0 items-start gap-2 text-left"
         >
@@ -266,6 +299,7 @@ function BroadcastRow({ node, taskId, now, fresh }: { node: TaskNode; taskId: st
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <KindChip kind={kind} />
               <NodeStateBadge node={node} />
+              {!!node.fact_count && <span className="text-xs text-muted-foreground">#{node.id} · {node.fact_count} 条事实</span>}
               {node.priority > 0 && (kind === "goal" || kind === "intent") && (
                 <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">P{node.priority}</span>
               )}
@@ -277,6 +311,7 @@ function BroadcastRow({ node, taskId, now, fresh }: { node: TaskNode; taskId: st
               <span className="ml-auto shrink-0 text-xs text-muted-foreground">{node.origin || "system"}</span>
             </div>
             <p className={cn("mt-1 text-sm", !open && "line-clamp-2")}>{summary || `节点 #${node.id}`}</p>
+            {node.outcome_summary && <p className={cn("mt-1 whitespace-pre-line text-sm text-muted-foreground", !open && "line-clamp-2")}>执行总结 · {node.outcome_summary}</p>}
           </div>
         </button>
 
@@ -290,6 +325,7 @@ function BroadcastRow({ node, taskId, now, fresh }: { node: TaskNode; taskId: st
               <span>来源 {node.origin || "system"}</span>
               <span>{Number.isNaN(ts) ? node.ts : new Date(ts).toLocaleString("zh-CN")}</span>
             </div>
+            {!!node.fact_count && <IntentFacts taskId={taskId} intentId={node.id} count={node.fact_count} />}
             <GraphNodeReader taskID={taskId} nodeID={node.id} kind={node.type} />
             <BroadcastRelations taskID={taskId} nodeID={node.id} />
           </div>
@@ -300,6 +336,7 @@ function BroadcastRow({ node, taskId, now, fresh }: { node: TaskNode; taskId: st
 }
 
 export function BroadcastTab({ taskId }: { taskId: string }) {
+  const [groupByIntent, setGroupByIntent] = React.useState(true);
   const [kinds, setKinds] = React.useState<ExploreKind[]>([]);
   const [queryInput, setQueryInput] = React.useState("");
   const [query, setQuery] = React.useState("");
@@ -324,6 +361,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
   // 只有「最新在前的第 1 页」才是真正的直播位；其余位置轮询只更新未读计数，
   // 不动列表，免得翻页/展开时内容在脚下变。
   const atLive = page === 1 && order === "desc";
+  const grouped = groupByIntent && !query && kinds.length === 0;
 
   React.useEffect(() => {
     setNow(Date.now());
@@ -346,7 +384,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
     let rendered = false; // 本次查询是否已经把内容渲染出来过
     // 换任务/筛选/排序 = 换了一条播报流:清掉「新」标记和未读基线。翻页不算换流,
     // 否则回到最新时就没有未读计数可算了。
-    const stream = `${taskId}|${kinds.join(",")}|${query}|${order}|${size}`;
+    const stream = `${taskId}|${kinds.join(",")}|${query}|${order}|${size}|${grouped}`;
     if (streamRef.current !== stream) {
       streamRef.current = stream;
       revisionRef.current=undefined;
@@ -356,7 +394,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
     }
     const load = (signal: AbortSignal) =>
       api
-        .explorationNodes(taskId, { page, size, kinds, q: query, order, countOnly: !atLive && rendered,revision:page>1&&!rendered?revisionRef.current:undefined }, signal)
+        .explorationNodes(taskId, { page, size, kinds, q: query, order, group: grouped ? "intent" : undefined, countOnly: !atLive && rendered,revision:page>1&&!rendered?revisionRef.current:undefined }, signal)
         .then((r) => {
           if (!alive || signal.aborted) return;
           if(!atLive&&rendered&&revisionRef.current!==r.revision){
@@ -395,7 +433,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
       alive = false;
       next.stop();
     };
-  }, [taskId, page, size, kinds, query, order, live, atLive]);
+  }, [taskId, page, size, kinds, query, order, live, atLive, grouped]);
 
   const toggleKind = (kind: ExploreKind) => {
     setKinds((cur) => (cur.includes(kind) ? cur.filter((k) => k !== kind) : [...cur, kind]));
@@ -420,7 +458,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
   // 按天分组:播报流按日期断行,长任务翻页时还能认出「这是哪天的事」。
   const groups: Array<{ day: string; rows: TaskNode[] }> = [];
   for (const node of items) {
-    const ts = Date.parse(node.ts);
+    const ts = Date.parse(node.broadcast_ts ?? node.ts);
     const day = Number.isNaN(ts) ? "未知日期" : dayFmt.format(ts);
     const last = groups[groups.length - 1];
     if (last && last.day === day) last.rows.push(node);
@@ -483,6 +521,11 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Button variant={grouped ? "secondary" : "outline"} size="sm" aria-pressed={grouped}
+            disabled={Boolean(query) || kinds.length > 0}
+            onClick={() => { setGroupByIntent(v => !v); setPage(1); }}>
+            按意图汇总
+          </Button>
           <Button
             variant="outline"
             size="sm"

@@ -335,6 +335,9 @@ export const api = {
         version,
       },
     ),
+  steerWorker: (taskId: string, intentId: string, message: string) =>
+    post<{id:string;intent_id:number;turn_id:string;status:'queued'|'handled'}>(
+      `/tasks/${taskId}/intents/${intentId}/messages`, {message}),
   controlIntent: (taskId: string, intentId: string, action: "pause" | "resume" | "cancel", reason?: string) =>
     post<{
       id: number;
@@ -734,6 +737,8 @@ export const api = {
     q.set("edges", "none");
     if(query.revision)q.set("revision",query.revision);
     if (query.countOnly) q.set("count_only", "1");
+    if (query.group) q.set("group", query.group);
+    if (query.factIntent) q.set("fact_intent", query.factIntent);
     if (query.kinds?.length) q.set("kind", query.kinds.join(","));
     if (query.states?.length) q.set("state", query.states.join(","));
     if (query.q?.trim()) q.set("q", query.q.trim());

@@ -1,5 +1,7 @@
 "use client";
 
+import {tokenBreakdown, tokenMetrics, tokenUsageDetails, TOKEN_USAGE_NOTE} from "@/lib/token-usage";
+
 import * as React from "react";
 import {ConstraintSource} from "@/components/constraint-source";
 import {Badge} from "@/components/ui/badge";
@@ -739,18 +741,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             <>
               {/* 合计总览 */}
               <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
-                <span className="tabular-nums">
-                  <span className="text-muted-foreground">{tokenTotals.knownInput ? "输入总量 " : "已记录输入 "}</span>
-                  <span className="font-semibold">{fmtTokens(tokenTotals.input)}</span>
-                </span>
-                <span className="tabular-nums">
-                  <span className="text-muted-foreground">输出 </span>
-                  <span className="font-semibold">{fmtTokens(tokenTotals.output)}</span>
-                </span>
-                <span className="tabular-nums">
-                  <span className="text-muted-foreground">缓存读 </span>
-                  <span className="font-semibold">{fmtTokens(tokenTotals.cacheRead)}</span>
-                </span>
+                {tokenMetrics({input_tokens:tokenTotals.input,output_tokens:tokenTotals.output,
+                  cache_read_tokens:tokenTotals.cacheRead,cache_write_tokens:tokenTotals.cacheWrite,
+                  uncached_input_tokens:tokenTotals.uncached,input_semantics:tokenTotals.knownInput?'inclusive_cache':'unknown',
+                  usage_complete:modelTokens.every(m=>m.usage_complete!==false)}).map(({label,value}) => <span key={label} className="tabular-nums">
+                    <span className="text-muted-foreground">{label} </span>
+                    <span className="font-semibold" title={value?.toLocaleString('zh-CN')}>{value === null ? "未知" : fmtTokens(value)}</span>
+                  </span>)}
                 <span className="tabular-nums">
                   <span className="text-muted-foreground">缓存命中率 </span>
                   <span className="font-semibold text-emerald-500">
@@ -759,7 +756,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 </span>
               </div>
               <p className="text-xs text-muted-foreground">
-                {tokenTotals.knownInput ? `输入总量包含未缓存输入 ${fmtTokens(tokenTotals.uncached)}、缓存读取及缓存写入；命中率 = 缓存读取 ÷ 输入总量。` : "历史记录未保存输入口径、实际模型或逐次调用信息，保留原始用量，不估算命中率。"}
+                {tokenTotals.knownInput ? `${TOKEN_USAGE_NOTE} 命中率 = 缓存读取 ÷ 含缓存输入。` : "历史记录未保存输入口径、实际模型或逐次调用信息，保留原始用量，不估算命中率。"}
               </p>
               {tokenTotals.historyGaps>0&&<p className="text-xs text-muted-foreground">部分历史覆盖或重叠范围未核定，未核定历史用量单列，未重复加入请求汇总。</p>}
               {tokenTotals.knownCalls && <p className="text-xs text-muted-foreground">请求包含 {tokenTotals.compactions} 次压缩、{tokenTotals.failures} 次失败或中断、{tokenTotals.pending} 次进行中。{tokenTotals.unknown > 0 ? `${tokenTotals.unknown} 次请求用量尚未返回或未知；当前为已记录用量。` : ""}</p>}
@@ -770,10 +767,11 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                     <tr className="text-muted-foreground border-b text-left text-xs">
                       <th className="py-1.5 pr-3 font-medium">模型</th>
                       <th className="py-1.5 pr-3 text-right font-medium">调用</th>
-                      <th className="py-1.5 pr-3 text-right font-medium">{tokenTotals.knownInput ? "输入总量" : "已记录输入"}</th>
+                      <th className="py-1.5 pr-3 text-right font-medium">非缓存输入</th>
                       <th className="py-1.5 pr-3 text-right font-medium">输出</th>
-                      <th className="py-1.5 pr-3 text-right font-medium">缓存读</th>
-                      <th className="py-1.5 pr-3 text-right font-medium">缓存写</th>
+                      <th className="py-1.5 pr-3 text-right font-medium">缓存读取</th>
+                      <th className="py-1.5 pr-3 text-right font-medium">缓存写入</th>
+                      <th className="py-1.5 pr-3 text-right font-medium">总量</th>
                       <th className="py-1.5 text-right font-medium">命中率</th>
                     </tr>
                   </thead>
@@ -784,10 +782,11 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                           {m.model}
                         </td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{m.calls_complete !== false ? m.calls ?? "未记录" : "未记录"}</td>
-                        <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.input_tokens)}</td>
+                        <td className="py-1.5 pr-3 text-right tabular-nums">{tokenBreakdown(m).uncached === null ? "未知" : fmtTokens(tokenBreakdown(m).uncached!)}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.output_tokens)}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.cache_read_tokens)}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{fmtTokens(m.cache_write_tokens)}</td>
+                        <td className="py-1.5 pr-3 text-right tabular-nums" title={tokenUsageDetails(m)}>{fmtTokens(m.input_tokens + m.output_tokens)}{m.usage_complete === false || m.input_semantics !== "inclusive_cache" ? "（已记录）" : ""}</td>
                         <td className="py-1.5 text-right tabular-nums text-emerald-500">
                           {cacheHitRate(m.cache_read_tokens, m.input_tokens, m.input_semantics === "inclusive_cache" && m.input_complete !== false)}
                         </td>

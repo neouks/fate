@@ -1,5 +1,7 @@
 "use client";
 
+import {TOKEN_USAGE_NOTE} from "@/lib/token-usage";
+
 import {processPreview} from '@/lib/process-preview';
 import {terminalDiagnostic,toolOutcomeText,toolWasStopped} from '@/lib/terminal-diagnostic';
 import * as React from "react";
@@ -481,8 +483,8 @@ function TurnDetails({summary,label,elapsed,conversationId,taskId}:{summary?:Tur
     ...(conversationId?([['会话',`#${conversationId}`]] as [string,React.ReactNode][]):summary?.role==='mainagent'&&summary.main_seg!=null?([['会话',`主 Agent · #${summary.main_seg+1}`]] as [string,React.ReactNode][]):[]),
     ['模型',summary?<TurnModels key={`${summary.turn_id}:${summary.data_revision??summary.updated_at}`} summary={summary} taskId={taskId} conversationId={conversationId}/>:unknown],
     ['步骤',summary?.steps??unknown],['工具调用',summary?.tool_calls??unknown],['失败调用',summary?.failed_tool_calls??unknown],
-    ['Token',usage?`${usage.total.toLocaleString()}${usage.incomplete?'（部分用量未知）':''}`:unknown],
-    ...(usage?([['输入总量 / 输出',`${usage.input} / ${usage.output}`],['未缓存输入',usage.uncached_input??unknown],['缓存读取 / 写入',`${usage.cache_read} / ${usage.cache_write}`],
+    ['总量',usage?`${usage.total.toLocaleString()}${usage.incomplete?'（部分用量未知）':''}`:unknown],
+    ...(usage?([['非缓存输入',usage.uncached_input?.toLocaleString('zh-CN')??'未知'],['缓存读取',usage.cache_read.toLocaleString('zh-CN')],['缓存写入',usage.cache_write.toLocaleString('zh-CN')],['输出',usage.output.toLocaleString('zh-CN')],
       ['压缩请求 / Token',usage.compaction_requests===null?unknown:`${usage.compaction_requests} / ${usage.compaction_tokens}`],
       ['失败或中断请求 / Token',usage.failed_requests===null?unknown:`${usage.failed_requests} / ${usage.failed_request_tokens}`]] as [string,React.ReactNode][]):[]),
     ...(summary?.queue_ms!=null?([['执行前等待',`${(summary.queue_ms/1000).toFixed(1)} 秒`]] as [string,React.ReactNode][]):[]),
@@ -493,7 +495,7 @@ function TurnDetails({summary,label,elapsed,conversationId,taskId}:{summary?:Tur
       <PopoverHeader><PopoverTitle>执行详情</PopoverTitle><PopoverDescription>{label} · 仅统计本轮执行</PopoverDescription></PopoverHeader>
       <Separator/>
       <dl className="flex min-h-0 max-h-[60vh] flex-col gap-3 overflow-y-auto">{values.map(([name,value])=><div key={name} className="flex items-start justify-between gap-6"><dt className="shrink-0 text-muted-foreground">{name}</dt><dd className="min-w-0 text-right break-words">{value}</dd></div>)}</dl>
-      <p className="text-xs text-muted-foreground">一步为一次模型响应。工具调用单独计数；压缩和失败请求的已知用量包含在总 Token 中。</p>
+      <p className="text-xs text-muted-foreground">{TOKEN_USAGE_NOTE} 一步为一次模型响应。压缩和失败请求的已知用量已包含在总量中。</p>
     </PopoverContent>
   </Popover>;
 }

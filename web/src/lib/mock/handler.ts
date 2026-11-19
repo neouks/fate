@@ -2560,7 +2560,32 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const page = Math.max(1, Number(q.get("page") ?? 1));
     const size = Math.min(200, Math.max(1, Number(q.get("size") ?? 20)));
     const rank = (id: string) => all.findIndex((n) => n.id === id);
-    const matched = all
+    let feed = all;
+    const factIntent = q.get("fact_intent");
+    if (factIntent || (q.get("group") === "intent" && !needle && !kinds.size && !states.size)) {
+      const byId = new Map(all.map(n => [n.id, n]));
+      const producers = new Map<string, string | null>();
+      for (const e of D.explorationGraph.edges) {
+        const fact = byId.get(e.dst);
+        if (e.rel === "yields" && fact?.type === "fact" && fact.state !== "origin" && byId.get(e.src)?.type === "intent") {
+          producers.set(e.dst, producers.has(e.dst) ? null : e.src);
+        }
+      }
+      if (factIntent) {
+        feed = all.filter(n => producers.get(n.id) === factIntent);
+      } else {
+        const stats = new Map<string, { fact_count: number; broadcast_ts: string }>();
+        for (const n of all) {
+          const id = producers.get(n.id);
+          if (!id) continue;
+          const prev = stats.get(id);
+          const latest = prev?.broadcast_ts ?? byId.get(id)!.ts;
+          stats.set(id, { fact_count: (prev?.fact_count ?? 0) + 1, broadcast_ts: n.ts > latest ? n.ts : latest });
+        }
+        feed = all.filter(n => !producers.get(n.id)).map(n => ({ ...n, ...stats.get(n.id) }));
+      }
+    }
+    const matched = feed
       .filter((n) => (kinds.size === 0 || kinds.has(n.type)) && (states.size === 0 || states.has(n.state)))
       .filter(
         (n) =>
@@ -2570,7 +2595,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
             : `${n.payload ?? ""} ${n.origin}`.toLowerCase().includes(needle)),
       )
       .sort((a, b) => {
-        const d = Date.parse(a.ts) - Date.parse(b.ts) || rank(a.id) - rank(b.id);
+        const d = Date.parse(a.broadcast_ts ?? a.ts) - Date.parse(b.broadcast_ts ?? b.ts) || rank(a.id) - rank(b.id);
         return asc ? d : -d;
       });
     const items =

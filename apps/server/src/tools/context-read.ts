@@ -295,7 +295,18 @@ export async function workerLaunchContext(c:ToolRunContext,intentID:number){
     try{const source=await resolveGraphNode(c.db,c.taskID,c.expID,ref.node_id);inherited.push({ref:`node:${source.node.id}`,version:source.node.content_version,summary:String(source.node.payload.summary??'').slice(0,600),source_task_id:source.taskID});}catch{/* Revoked references are never injected. */}
   }
   const drafts=await ownObservations({...c,intentID});
+  // Initial coordination hints only, not other Workers' transcripts or tool calls.
+  const peers=(await c.db.query(`SELECT n.id,n.state,n.owner,left(n.payload->>'summary',300) summary,
+    left(n.payload->'contract'->>'objective',500) objective
+    FROM exploration_nodes n WHERE n.exploration_id=$1 AND n.kind='intent' AND n.id<>$2
+      AND n.state IN ('open','running','paused') AND exploration_node_readable($1,n.id)
+      AND EXISTS(SELECT 1 FROM exploration_edges mine JOIN exploration_edges peer ON peer.src_id=mine.src_id
+        JOIN exploration_nodes basis ON basis.id=mine.src_id AND basis.state<>'origin'
+        WHERE mine.exploration_id=$1 AND peer.exploration_id=$1 AND mine.dst_id=$2 AND peer.dst_id=n.id
+          AND mine.rel='derived_from' AND peer.rel='derived_from')
+    ORDER BY n.id DESC LIMIT 6`,[c.expID,intentID])).rows;
   return {intent_id:intentID,private_observations:drafts.map(d=>({ref:`node:${d.node_id}`,kind:d.kind,summary:String((d.payload as Record<string,unknown>).summary??'').slice(0,300),staged:true,version:Number(d.draft_version)})),upstream:[...parents.map(n=>({ref:`node:${n.id}`,version:n.content_version,summary:String(n.payload.summary??'').slice(0,600)})),...inherited],more_parents:rows.rows.length>20,
+    related_directions:peers.map(p=>({ref:`node:${p.id}`,state:p.state,owner:p.owner,summary:p.summary,objective:p.objective})),
     progress:progressSummary((await c.db.query('SELECT progress FROM worker_checkpoints WHERE intent_id=$1',[intentID])).rows[0]?.progress??node?.payload.progress),previous_result:resultSummary(node?.payload.previous_result),execution_stop:stopSummary(node?.payload.execution_stop),
     own_findings:await searchContext(c,{intent_id:intentID,types:['fact','finding'],limit:10}),
     graph_access:{search:'context_search',detail:'context_get',note:'只执行当前意图；边发现边用 record_fact/report_finding 直接写回，最后简洁总结。private_observations 和 progress 是旧版历史材料，须复核后重新写回，不自动发布。'}};

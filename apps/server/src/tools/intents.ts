@@ -10,7 +10,7 @@ import { normalizeContract, type IntentContract } from '../agent/intent-contract
 import {workerCapabilities, validateWorkerToolNames} from '../agent/worker-capabilities.js';
 import {priorPlannerDispatch,savePlannerDispatch,type SubmittedIntent} from '../db/planner-dispatch.js';
 
-interface IntentItem { summary: string; parent_id?: number|string; parent_ids?: (number|string)[]; asset_ids?: (number|string)[]; priority?: number; contract?:IntentContract; retry_of?:number;retry_kind?:string;retry_reason?:string }
+interface IntentItem { summary: string; parent_id?: number|string; parent_ids?: (number|string)[]; asset_ids?: (number|string)[]; priority?: number; contract?:IntentContract; retry_of?:number;retry_kind?:string;retry_reason?:string; replaces_intent_id?:number }
 interface AddIntentArgs extends Partial<IntentItem> { intents?: IntentItem[]; }
 function intentIDs(values:unknown,field:string):number[]{
   if(!Array.isArray(values))throw new Error(`${field} 必须为 ID 数组`);
@@ -23,6 +23,7 @@ function intentIDs(values:unknown,field:string):number[]{
 
 
 const intentFields = {
+                replaces_intent_id: {type:'integer',minimum:1,description:'目标变化时填写被替换的旧意图 ID。先 kill_work 并确认结束，再提交本项；宿主拒绝仍在执行、用户暂停或取消的旧意图。新意图使用独立会话，仅通过 parent_ids/contract.basis 传递必要事实，不复制旧会话。与 retry_of 互斥。'},
                 summary: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S", description: "用一两句话给出有价值的探索方向；入口发现、采集、验证和补证属于同一方向，不拆成工作阶段；具体接口、步骤和方法由 Worker 在范围内自主决定，不列逐项测试清单" },
                 parent_ids: {type:"array",maxItems:20,items:{anyOf:[{type:"integer",minimum:1},{type:"string",pattern:"^[0-9]+$"}]},description:"仅当前任务的事实或漏洞节点；来源任务证据用 contract.basis"},
                 parent_id: { anyOf:[{type:"integer",minimum:1},{type:"string",pattern:"^[0-9]+$"}], description: "当前任务单个 fact/finding ID；与 parent_ids 二选一，省略则连任务根" },
@@ -55,6 +56,8 @@ function readIntentItems(args: AddIntentArgs): IntentItem[] {
       throw new Error('Invalid arguments for tool "add_intent": ' + path + 'basis 只能放在 contract.basis 中');
     if (item.parent_ids !== undefined && item.parent_id !== undefined)
       throw new Error('Invalid arguments for tool "add_intent": ' + path + 'parent_id 与 parent_ids 只能传一种');
+    if (item.replaces_intent_id !== undefined && (!Number.isSafeInteger(item.replaces_intent_id) || item.replaces_intent_id <= 0 || item.retry_of !== undefined))
+      throw new Error('replaces_intent_id 必须为正整数，不能与 retry_of 同时使用');
   }
   return items;
 }
@@ -109,6 +112,7 @@ export function addIntentTool(ctx: ToolRunContext) {
               if(!ref)contract.basis.push({node_id:parentID,version:parent.content_version??0});
             }
             const payload: Record<string, unknown> = { summary: item.summary,contract,autonomy_policy:DIRECTION_AUTONOMY_POLICY,
+              ...(item.replaces_intent_id?{replaces_intent_id:item.replaces_intent_id}:{}),
               ...(item.retry_of?{retry_of:item.retry_of,retry_kind:item.retry_kind,retry_reason:item.retry_reason}:{}) };
             payload.parent_ids=parentIDs;
             if(parentIDs.length)payload.parent_id=parentIDs[0];
@@ -227,7 +231,10 @@ export function killWorkTool(ctx: ToolRunContext) {
       async run(args, c) {
         if (!c.hooks.killWork) throw new Error("当前运行环境不支持 kill_work");
         await c.hooks.killWork(c.expID, args.intent_id, args.reason,c.role);
-        return { killed: args.intent_id };
+        const node = await c.db.exploration(c.expID).getNode(args.intent_id);
+        if (!node || !['stopped','done','blocked','exhausted'].includes(node.state) || nodeCancelledByUser(node))
+          throw new Error('旧意图尚未确认结束；不得下发替代意图');
+        return { killed: args.intent_id, state: node.state };
       },
     },
     ctx,
@@ -242,7 +249,7 @@ export function steerWorkTool(ctx: ToolRunContext) {
       name: "steer_work",
       description:
         "通过 pi steering 向运行意图追加纠偏，在当前工具回合完成后的模型边界交付，不阻断检查点或结果提交。" +
-        "用于运行中调整打法、补充约束、纠正方向。",
+        "仅用于同一目标内调整方法、复用证据或缩减剩余工作；不得替换业务目标。目标变化时先 kill_work，确认结束后 add_intent 并填写 replaces_intent_id。原授权和禁止事项仍有效。已有有效共享证据直接复用，不要求每个 Worker 重做。",
       promptSnippet: "运行中纠偏（不打断）",
       parameters: {
         type: "object",

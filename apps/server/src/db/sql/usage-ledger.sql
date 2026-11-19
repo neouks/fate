@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS llm_usage_ledger (
 ALTER TABLE llm_usage_ledger ADD COLUMN IF NOT EXISTS worker_name TEXT;
 CREATE INDEX IF NOT EXISTS usage_ledger_task ON llm_usage_ledger(task_id,created_at);
 CREATE INDEX IF NOT EXISTS usage_ledger_conversation ON llm_usage_ledger(conversation_id,created_at);
+CREATE INDEX IF NOT EXISTS usage_ledger_task_intent ON llm_usage_ledger(task_id,intent_id) WHERE intent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS usage_ledger_runtime ON llm_usage_ledger(runtime_id);
 CREATE INDEX IF NOT EXISTS usage_ledger_scope ON llm_usage_ledger(scope_key,source);
 CREATE INDEX IF NOT EXISTS usage_ledger_task_turn ON llm_usage_ledger(task_id,turn_id);

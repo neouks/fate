@@ -1,7 +1,7 @@
 import {normalizeGoalProofInstructions,GOAL_PROOF_PROTOCOL} from './goal-proof-policy.js';
 import {upgradeDirectionPrompt,PLANNER_AUTONOMY_GUIDANCE,DIRECTION_AUTONOMY_POLICY} from './direction-autonomy.js';
 import {upgradePlannerConvergencePrompt,PLANNER_CONVERGENCE_GUIDANCE} from './planner-convergence.js';
-import {FINDING_PLANNER_GUIDANCE,FINDING_WRITE_GUIDANCE,findingRoleProtocol} from './finding-write-policy.js';
+import {FINDING_PLANNER_GUIDANCE,FINDING_WRITE_GUIDANCE,LEGACY_WORKER_REPRO_GUIDANCE,findingRoleProtocol} from './finding-write-policy.js';
 import {migrateFindingWritePolicy} from './finding-prompt-migration.js';
 import {PLANNER_CAPABILITY_PROTOCOL} from './planner-capabilities.js';
 import {migratePlannerCapabilitiesPrompt} from './planner-prompt-migration.js';
@@ -113,7 +113,8 @@ export async function resolveRolePrompt(db: Database, role: string, fallback = b
 /** Retained template-only interface for compatibility and preview. */
 export async function rolePrompt(db: Database, role: string, builtin: string, vars: Record<string, string>): Promise<string> {
   const resolved = await resolveRolePrompt(db, role, builtin);
-  return renderPrompt(resolved.template, vars);
+  const template = role === 'worker' ? resolved.template.replace(LEGACY_WORKER_REPRO_GUIDANCE, '') : resolved.template;
+  return renderPrompt(template, vars);
 }
 export function composeRolePrompt(body: string, protocol: string): string {
   return `<role>\n${body}\n</role>` + (protocol ? `\n<host_protocol>\n${protocol}\n</host_protocol>` : '');

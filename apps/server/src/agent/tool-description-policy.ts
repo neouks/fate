@@ -1,3 +1,4 @@
+import { WORKER_FINDING_BRIEF, FINDING_WRITE_GUIDANCE } from './finding-write-policy.js';
 import { REPORTER_SAVE_GUIDANCE } from '../evidence/report-sections.js';
 
 /** Exact shipped text from ARTEX agent/tools.go:setConstraints. No fuzzy matching:
@@ -21,6 +22,7 @@ export function recognizedHistoricalDescription(name:string,stored:unknown):unkn
 /** These are built-in capability hints, not edits to the user's prompt or text. */
 export function roleToolDescription(name:string,resolved:{description:string;source:string},role:string):string {
   if (resolved.source !== 'builtin') return resolved.description;
+  if (name==='report_finding' && role==='worker') return WORKER_FINDING_BRIEF+' '+FINDING_WRITE_GUIDANCE;
   if (name==='report_finding' && role==='pentest') return resolved.description.replaceAll('report_finding','report_conversation_finding');
   if (name === 'update_finding_report') return resolved.description + (role === 'reporter'
     ? ' ' + REPORTER_SAVE_GUIDANCE : ' 提交 report_sections 或兼容的非空 report。');
@@ -36,10 +38,12 @@ export function roleToolDescription(name:string,resolved:{description:string;sou
 export function describeToolContract(name: string, description: string): string {
   if (name === 'asset_search') return description + ' DSL 可用 tested==true 或 tested==false 筛选任务覆盖状态，与 untested 共享角色权限及覆盖度开关。';
   if (name === 'prove_goal') return description + ' 每次只证明一项目标；证据校验成功后直接标记 met，明确的资产覆盖度 100% 另由宿主核对实时覆盖记录。以 met/all_goals_met 回执为准。';
-  if (name === 'add_intent') return description + ' 统一传 1–4 项 intents，单条也放入数组，每项各填非空 summary。parent_ids 仅限本任务；直接来源任务用 contract.basis 的 node_id 和实际内容版本。';
+  if (name === 'add_intent') return description + ' 目标变化先 kill_work 确认旧意图结束，再在新项填写 replaces_intent_id；不能通过 steer_work 在旧会话更换目标。统一传 1–4 项 intents，单条也放入数组，每项各填非空 summary。parent_ids 仅限本任务；直接来源任务用 contract.basis 的 node_id 和实际内容版本。';
   if (name === 'dispatch_intents') return description + ' 提交非空 intent_ids；仅用户明确要求批量下发时传 all_open: true。';
   if (name === 'record_fact') return description.replace('缺项仍保存但不计覆盖','缺少资产或 scope 时仍保存但不计覆盖')
-    + ' Worker 每条事实必填非空 evidence；批量逐项核对结果，整批失败返回工具错误。';
+    + ' Worker 每条事实必填非空 evidence；不得提交历史压缩占位符或猜测的保存编号。批量逐项核对结果，整批失败返回工具错误。';
+  if (name === 'steer_work') return description + ' 仅同一目标内调整方法、复用证据或缩减剩余工作，不能替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。';
+  if (name === 'kill_work') return description + ' 支持等待中或运行中意图；核对返回 state，停止失败不得下发替代意图，不能绕过用户暂停或取消。';
   if (name === 'insert_assets') return description + ' 整批失败返回工具错误，部分成功只重试失败项。';
   if (name === 'register_user_target') return description + ' evidence 引用完整原句或独立目标地址行。精确域名用 subdomain；root_domain 仅用于原文明确的通配根域。';
   if (name === 'context_get') return description + ' 任一项失败则调用标为失败，成功项仍保留；长正文需选择 field，按 read_options 选择读取。';

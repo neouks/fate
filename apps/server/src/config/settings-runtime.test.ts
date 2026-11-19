@@ -45,6 +45,11 @@ test('settings drive native PI execution, task egress and live revocation',{skip
  await t.test('save returns complete configuration and rejects invalid or unknown fields before writes',async()=>{
   const settings=await save({traffic_capture:false,global_proxy:proxyURL,constraints_inject_worker:true,shell_mode:'bash'});
   assert.equal(settings.global_proxy,proxyURL);assert.equal(settings.traffic_capture,false);assert.equal(settings.shell_detected.ok,true);assert.equal(settings.constraints_inject_planner,true);
+  assert.equal(settings.pi_context_policy,'native');
+  await db.platform().setSetting('pi_context_policy','domain');
+  assert.equal((await app.inject({method:'GET',url:'/api/settings'})).json().pi_context_policy,'native','legacy setting reports the effective native policy');
+  assert.equal((await app.inject({method:'PUT',url:'/api/settings',payload:{pi_context_policy:'domain'}})).statusCode,400);
+  assert.equal((await save({pi_context_policy:'native'})).pi_context_policy,'native');
   for(const body of [{traffic_capture:'false'},{global_proxy:'garbage'},{workers:0,traffic_capture:true},{unimplemented:true},{shell_mode:'not-a-shell'}])assert.equal((await app.inject({method:'PUT',url:'/api/settings',payload:body})).statusCode,400);
   assert.equal(await db.platform().getBool('traffic_capture',false),false);
  });

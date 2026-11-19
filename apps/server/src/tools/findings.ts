@@ -1,4 +1,5 @@
 import {FINDING_WRITE_GUIDANCE} from '../agent/finding-write-policy.js';
+import {assertOriginalEvidence} from '../evidence/history-placeholder.js';
 import {amendFinding,findDuplicate,findingReceipt,readFindingWriteReceipt,saveFindingWriteReceipt,type FindingWriteArgs} from './finding-amendments.js';
 import {proposeGoalAcceptance} from '../db/goal-integrity.js';
 import {prepareReproduction,attachStepTraffic,reproductionSchema} from '../evidence/reproduction.js';
@@ -19,6 +20,7 @@ const SEVERITIES = ["critical", "high", "medium", "low"];
 type ReportFindingArgs = FindingWriteArgs;
 
 export function reportFindingTool(ctx: ToolRunContext) {
+  const worker = ctx.role === 'worker';
   return domainTool<ReportFindingArgs>(
     {
       name: "report_finding",
@@ -31,17 +33,17 @@ export function reportFindingTool(ctx: ToolRunContext) {
           evidence_version:{type:'integer',minimum:0,description:'补正必填，从 context_get 的 finding_detail 读取最新证据版本'},
           distinct_from:{type:'array',minItems:1,maxItems:50,uniqueItems:true,items:{type:'integer',minimum:1},description:'疑似重复但确认独立机理时，列已核对的本任务漏洞 ID'},
           distinct_reason:{type:'string',minLength:1,maxLength:1000,description:'与 distinct_from 不同的具体机理或影响；补资产和证据不属于独立问题'},
-          reproduction:{...reproductionSchema,description:'对象，结构为 {steps:[{action,request,response,proves,...}],...}；不是数组，steps 只能放在 reproduction 内。请求或响应可按步骤 Schema 使用来源引用。'},
+          reproduction:{...reproductionSchema,description:worker ? '仅在补正已有记录时可用，steps 只能放在 reproduction 内。' : '对象，结构为 {steps:[{action,request,response,proves,...}],...}；不是数组，steps 只能放在 reproduction 内。请求或响应可按步骤 Schema 使用来源引用。'},
           traffic_refs:{type:"array",items:{type:"object",properties:{traffic_id:{type:"string"},role:{type:"string",enum:["baseline","proof","verification","supporting"]},note:{type:"string"}},required:["traffic_id"]}},
           vulnclass: { type: "string", description: "漏洞类别，如 SQL注入/XSS/SSRF/未授权访问" },
           name: { type: "string", description: "漏洞标题（可读）" },
           severity: { type: "string", enum: SEVERITIES },
           summary: { type: "string", description: "影响与成因概述" },
-          evidence: { type: "string", description: "复现证据（请求/响应/命令输出原文）" },
+          evidence: { type: "string", description: worker ? "直接支持结论的一小段原始证据。已归档报文可附 traffic_refs。" : "复现证据（请求/响应/命令输出原文）" },
           asset_ids: { type: "array", items: { type: "integer",minimum:1 }, description: "本漏洞实际受影响的资产 ID；补正时追加并去重，不删除旧关联。缺省不继承意图资产" },
           scope:writebackScopeSchema,
         },
-        anyOf:[{required:['finding_id','evidence_version']},{required:['vulnclass','severity','summary','evidence']}],
+        anyOf:[{required:['finding_id','evidence_version']},{required:['vulnclass','severity','summary','evidence'],...(worker ? {not:{required:['reproduction']}} : {})}],
       },
       // This operation owns its DB transaction and publishes only after commit.
       transactional: false,
@@ -68,6 +70,7 @@ export function reportFindingTool(ctx: ToolRunContext) {
         const origin = await writeOrigin({...c,db});
         const replay=await readFindingWriteReceipt(db,c,origin,args);
         if(replay)return replay;
+        assertOriginalEvidence(args);
         if(args.finding_id!==undefined){
           const updated=await amendFinding({...c,db},origin,args);
           await saveFindingWriteReceipt(db,c,origin,args,updated);

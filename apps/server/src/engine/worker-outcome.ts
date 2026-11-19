@@ -1,13 +1,16 @@
 import type {Database} from '../db/index.js';
 import type {Node} from '../db/exploration.js';
 
+import {TOKEN_LIMIT_REACHED, TOKEN_USAGE_UNCERTAIN} from '../db/worker-token-budget.js';
+
 export type WorkerStopReason = 'completed'|'partial'|'blocked'|'missing_result'|'invalid_result'
-  |'turn_limit'|'duration_limit'|'task_timeout'|'planner_terminated'|'main_terminated'|'user_cancelled'
+  |'token_limit'|'token_usage_unknown'|'turn_limit'|'duration_limit'|'task_timeout'|'planner_terminated'|'main_terminated'|'user_cancelled'
   |'task_paused'|'intent_paused'|'task_completed'|'task_ended'|'service_shutdown'|'executor_stopped'
   |'lease_lost'|'executor_recovered'|'model_connection_error'|'model_error'|'aborted'|'operation_uncertain'|'basis_changed'|'basis_unavailable'|'tool_retries_exhausted';
 
 const labels:Record<WorkerStopReason,string> = {
   completed:'当前意图执行结束',partial:'已提交部分结果',blocked:'已提交阻塞结果',missing_result:'会话结束但未提交可验收结果',invalid_result:'结果验收失败',
+  token_limit:TOKEN_LIMIT_REACHED,token_usage_unknown:TOKEN_USAGE_UNCERTAIN,
   turn_limit:'模型请求轮数预算耗尽',duration_limit:'Worker 执行时间预算耗尽',task_timeout:'任务时间上限已到',
   planner_terminated:'Planner 终止当前意图',main_terminated:'Main 终止当前意图',user_cancelled:'用户取消当前意图',
   task_paused:'任务已暂停',intent_paused:'当前意图已暂停',task_completed:'任务目标已达成',task_ended:'任务已结束或删除',
@@ -20,6 +23,8 @@ const labels:Record<WorkerStopReason,string> = {
 };
 
 export function failureReason(message:string):WorkerStopReason {
+  if (message.includes(TOKEN_LIMIT_REACHED)) return 'token_limit';
+  if (message.includes(TOKEN_USAGE_UNCERTAIN)) return 'token_usage_unknown';
   return /connection error|fetch failed|ECONN|ETIMEDOUT|socket|network error/i.test(message)?'model_connection_error':'model_error';
 }
 

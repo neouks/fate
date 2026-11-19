@@ -1,5 +1,7 @@
 "use client";
 
+import {tokenBreakdown, tokenChartParts, tokenMetrics, tokenUsageDetails, TOKEN_USAGE_NOTE} from "@/lib/token-usage";
+
 import {cacheHitRate} from '@/lib/model-token-stats';
 
 import * as React from "react";
@@ -45,9 +47,10 @@ import { cn } from "@/lib/utils";
 // ── chart constants ───────────────────────────────────────────────────────────
 
 const dailyTrendConfig = {
-  input: { label: "其他输入", color: "hsl(217 91% 60%)" },
+  unknownInput: {label:"输入（口径未知）",color:"var(--muted-foreground)"},
+  input: { label: "非缓存输入", color: "hsl(217 91% 60%)" },
   output: { label: "输出", color: "hsl(263 70% 60%)" },
-  cacheRead: { label: "缓存读", color: "hsl(160 60% 45%)" },
+  cacheRead: { label: "缓存读取", color: "hsl(160 60% 45%)" },
   cacheWrite:{label:"缓存写入",color:"hsl(40 70% 50%)"},
 } satisfies ChartConfig;
 
@@ -332,16 +335,18 @@ export default function DashboardPage() {
   const [tokenTab,setTokenTab]=React.useState<number|null|'all'>('all');
   const tokenByProfile=new Map((usageStats?.by_profile??[]).map(p=>[p.profile_id==null?null:Number(p.profile_id),p]));
   const selectedUsage=tokenTab==='all'?usageStats?.total:tokenByProfile.get(tokenTab);
+  const selectedBreakdown=tokenBreakdown(selectedUsage);
   const displayedTokens={input:selectedUsage?.input_tokens??0,output:selectedUsage?.output_tokens??0,cacheRead:selectedUsage?.cache_read_tokens??0,
     cacheWrite:selectedUsage?.cache_write_tokens??0,taskCount:selectedUsage?.tasks??0,
-    complete:selectedUsage?.usage_complete===true,knownInput:selectedUsage?.input_complete===true};
+    complete:selectedUsage?.usage_complete===true,knownInput:selectedBreakdown.uncached!==null};
   const dailyTokenData=React.useMemo(()=>{
-    const buckets=new Map<string,{input:number;output:number;cacheRead:number;cacheWrite:number}>();
+    const buckets=new Map<string,ReturnType<typeof tokenChartParts>>();
     for(const d of usageStats?.daily??[]){
       if(tokenTab!=='all'&&(d.profile_id==null?null:Number(d.profile_id))!==tokenTab)continue;
-      const prev=buckets.get(d.date)??{input:0,output:0,cacheRead:0,cacheWrite:0};
-      buckets.set(d.date,{input:prev.input+(d.input_complete?d.input_tokens-d.cache_read_tokens-(d.cache_write_tokens??0):d.input_tokens),output:prev.output+d.output_tokens,
-        cacheRead:prev.cacheRead+(d.input_complete?d.cache_read_tokens:0),cacheWrite:prev.cacheWrite+(d.input_complete?(d.cache_write_tokens??0):0)});
+      const prev=buckets.get(d.date)??{input:0,output:0,cacheRead:0,cacheWrite:0,unknownInput:0};
+      const parts=tokenChartParts(d);
+      buckets.set(d.date,{input:prev.input+parts.input,output:prev.output+parts.output,
+        cacheRead:prev.cacheRead+parts.cacheRead,cacheWrite:prev.cacheWrite+parts.cacheWrite,unknownInput:prev.unknownInput+parts.unknownInput});
     }
     return [...buckets].sort(([a],[b])=>a.localeCompare(b)).map(([date,value])=>({date:date.slice(5),...value}));
   },[usageStats,tokenTab]);
@@ -441,15 +446,16 @@ export default function DashboardPage() {
         <Card className="gap-1">
           <CardHeader className="pb-0">
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <ZapIcon className="size-3" /> {displayedTokens.complete?"Token 用量":"Token 用量（已记录）"}
+              <ZapIcon className="size-3" /> {displayedTokens.complete?"Token 总量":"Token 总量（已记录）"}
             </div>
             <div className="text-2xl font-semibold tabular-nums">
               {usageStats?fmtTokens(displayedTokens.input+displayedTokens.output):"—"}
             </div>
           </CardHeader>
           <CardContent className="text-[10px] text-muted-foreground">
-            入 {fmtTokens(displayedTokens.input)}{displayedTokens.knownInput?`（含缓存 ${fmtTokens(displayedTokens.cacheRead)}）`:"（历史口径未核定）"} · 出{" "}
-            {fmtTokens(displayedTokens.output)}
+            <div className="flex flex-wrap gap-x-3 gap-y-1" title={tokenUsageDetails(selectedUsage)}>
+              {tokenMetrics(selectedUsage).map(({label,value}) => <span key={label}>{label} {value === null ? (selectedUsage ? "未知" : "—") : fmtTokens(value)}</span>)}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -496,7 +502,7 @@ export default function DashboardPage() {
           <div className="flex flex-col gap-4">
             {/* Total */}
             <div>
-              <div className="text-[10px] text-muted-foreground">{displayedTokens.complete?"合计（输入＋输出）":"已记录用量（存在缺口）"}</div>
+              <div className="text-[10px] text-muted-foreground">{displayedTokens.complete?"总量":"总量（已记录）"}</div>
               <div className="mt-0.5 text-3xl font-bold tabular-nums tracking-tight">
                 {usageStats?fmtTokens(displayedTokens.input+displayedTokens.output):"—"}
               </div>
@@ -504,37 +510,37 @@ export default function DashboardPage() {
             </div>
 
             {/* Per-type bars */}
-            <div className="space-y-3">
+            <div className="flex flex-col gap-3">
               {(() => {
-                // input 已含缓存；拆成不重叠三段：未命中输入 + 缓存命中 + 输出 = 总量。
+                // API input 已含缓存；展示互不重叠的四项，未知不伪装为零。
                 const total = displayedTokens.input + displayedTokens.output;
                 return [
                   {
-                    label: displayedTokens.knownInput?"未缓存输入":"已记录输入",
-                    value: displayedTokens.knownInput?displayedTokens.input-displayedTokens.cacheRead-displayedTokens.cacheWrite:displayedTokens.input,
+                    label: "非缓存输入",
+                    value: selectedBreakdown.uncached,
                     barColor: dailyTrendConfig.input.color!,
                     text: "text-blue-400",
                   },
                   {
-                    label: "缓存命中",
-                    value: displayedTokens.knownInput?displayedTokens.cacheRead:0,
+                    label: "缓存读取",
+                    value: selectedBreakdown.cacheRead,
                     barColor: dailyTrendConfig.cacheRead.color!,
                     text: "text-emerald-400",
                   },
-                  {label:'缓存写入',value:displayedTokens.knownInput?displayedTokens.cacheWrite:0,barColor:'hsl(40 70% 50%)',text:'text-amber-400'},
+                  {label:'缓存写入',value:selectedBreakdown.cacheWrite,barColor:'hsl(40 70% 50%)',text:'text-amber-400'},
                   {
                     label: "输出",
-                    value: displayedTokens.output,
+                    value: selectedBreakdown.output,
                     barColor: dailyTrendConfig.output.color!,
                     text: "text-violet-400",
                   },
-                ].filter(item=>displayedTokens.knownInput||!['缓存命中','缓存写入'].includes(item.label)).map(({ label, value, barColor, text }) => {
-                  const pct = total > 0 ? (value / total) * 100 : 0;
+                ].map(({ label, value, barColor, text }) => {
+                  const pct = displayedTokens.knownInput && value !== null && total > 0 ? (value / total) * 100 : 0;
                   return (
                     <div key={label}>
                       <div className="mb-1 flex items-center justify-between text-[10px]">
                         <span className="text-muted-foreground">{label}</span>
-                        <span className={cn("font-mono font-semibold tabular-nums", text)}>{fmtTokens(value)}</span>
+                        <span className={cn("font-mono font-semibold tabular-nums", text)}>{value === null ? (selectedUsage ? "未知" : "—") : fmtTokens(value)}</span>
                       </div>
                       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                         <div
@@ -548,7 +554,7 @@ export default function DashboardPage() {
               })()}
             </div>
 
-            {!displayedTokens.knownInput&&usageStats&&<p className="text-[10px] text-muted-foreground">缓存读取已记录 {fmtTokens(displayedTokens.cacheRead)}；部分历史口径未核定，暂不估算占比。</p>}
+            <p className="text-[10px] text-muted-foreground">{displayedTokens.knownInput ? TOKEN_USAGE_NOTE : "历史输入口径未核定，非缓存输入未知；总量保留已记录值，暂不估算占比。"}</p>
             {/* Cache hit rate */}
             {(() => {
               // input 已含缓存 → 命中率 = 缓存命中 / 总输入。
@@ -570,9 +576,9 @@ export default function DashboardPage() {
 
           {/* Right: daily bar chart */}
           <div className="flex min-h-0 flex-col">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="flex gap-3 text-[9px] text-muted-foreground">
-                {(["input", "output", "cacheRead"] as const).map((k) => (
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-3 text-[9px] text-muted-foreground">
+                {(["input", "cacheRead", "cacheWrite", "output", "unknownInput"] as const).filter(k=>k!=="unknownInput"||dailyTokenData.some(d=>d.unknownInput>0)).map((k) => (
                   <span key={k} className="flex items-center gap-1">
                     <span
                       className="inline-block size-2 rounded-sm"
@@ -652,6 +658,7 @@ export default function DashboardPage() {
                       />
                     }
                   />
+                  <Bar dataKey="unknownInput" stackId="1" fill="var(--color-unknownInput)" />
                   <Bar dataKey="input" stackId="1" fill="var(--color-input)" radius={[0, 0, 0, 0]} />
                   <Bar dataKey="output" stackId="1" fill="var(--color-output)" radius={[0, 0, 0, 0]} />
                   <Bar dataKey="cacheWrite" stackId="1" fill="var(--color-cacheWrite)" />

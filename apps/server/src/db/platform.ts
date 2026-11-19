@@ -944,11 +944,38 @@ export async function seedBuiltins(db: Database): Promise<void> {
     for(const [keys,before,added] of bindings)await db.query('UPDATE tools SET agents=agents||$3::jsonb WHERE key=ANY($1::text[]) AND agents=$2::jsonb AND enabled',[keys,JSON.stringify(before),JSON.stringify(added)]);
     await store.setSetting('pi_extra_role_bindings_v1','true');
   }
-  if(await store.getSetting('pi_reporter_trigger_v1')!=='true'){
-    await db.query(`INSERT INTO agent_triggers(agent_key,on_finding,finding_message) SELECT 'reporter',true,'根据本次漏洞及其证据完善报告，先读取证据版本再提交。' WHERE NOT EXISTS(SELECT 1 FROM agent_triggers WHERE agent_key='reporter')`);
-    await store.setSetting('pi_reporter_trigger_v1','true');
-  }
-
+  // Reports are requested per finding. Disable the old dedicated auto-report
+  // rules once, retaining their settings so operators can explicitly opt in.
+  await db.transaction(async tx => {
+    const first = await tx.query(`INSERT INTO settings(key,value) VALUES('reporter_on_demand_v1','true')
+      ON CONFLICT DO NOTHING RETURNING key`);
+    if (!first.rowCount) return;
+    const {rows} = await tx.query(`SELECT * FROM agent_triggers
+      WHERE enabled AND agent_key='reporter' AND (on_finding OR on_tool_call) FOR UPDATE`);
+    for (const rule of rows) {
+      // SERIES stored a JSON list; the trigger editor also writes comma-separated names.
+      const raw = String(rule.tool_names ?? '').trim();
+      const json = raw.startsWith('[');
+      let names: string[] = [];
+      if (rule.on_tool_call) {
+        if (json) {
+          try { const list: unknown = JSON.parse(raw); if (Array.isArray(list)) names = list.filter((v): v is string => typeof v === 'string'); }
+          catch { /* Preserve unrecognized custom filters. */ }
+        } else names = raw.split(',').map(v => v.trim()).filter(Boolean);
+      }
+      const otherTools = names.filter(name => name.toLowerCase() !== 'report_finding');
+      const hasFindingTool = otherTools.length !== names.length;
+      if (!rule.on_finding && !hasFindingTool) continue;
+      const keepToolTrigger = rule.on_tool_call && (!hasFindingTool || otherTools.length > 0);
+      if (keepToolTrigger || rule.on_goal_met || rule.on_task_timeout || rule.on_task_create || Number(rule.interval_sec) > 0) {
+        const tools = !hasFindingTool ? raw : json ? JSON.stringify(otherTools) : otherTools.join(',');
+        await tx.query('UPDATE agent_triggers SET on_finding=false,on_tool_call=$2,tool_names=$3 WHERE id=$1',
+          [rule.id,keepToolTrigger,tools]);
+      } else {
+        await tx.query('UPDATE agent_triggers SET enabled=false WHERE id=$1',[rule.id]);
+      }
+    }
+  });
 
   // 1. 内置 agent（ON CONFLICT 只刷 name/description，interactive_shell/run_seconds 不覆盖用户改动）
   for (const a of BUILTIN_AGENTS) {

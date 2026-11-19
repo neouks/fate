@@ -7,7 +7,7 @@ import {ActivityDelivery} from './activity-delivery.js';
 import {nativeStreamID,withNativeActivity,type NativeActivityIdentity,type NativeActivityReference} from './native-activity.js';
 import type {ToolLoading} from '../agent/tool-loading.js';
 import {platformMcpExtension,hasDeferredMcp,MCP_RESOURCE_TOOLS,toolDiscoveryInstructions} from './platform-mcp.js';
-import {domainCompactionExtension,type CompactionHealth} from './domain-compaction.js';
+import {nativeCompactionExtension,type CompactionHealth} from './native-compaction.js';
 import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
 import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
 import {stableToolPayload,hostTaskContext} from './request-prefix.js';
@@ -147,8 +147,6 @@ export interface AgentRunnerOptions {
   toolLoading?: ToolLoading;
   discoveryGuard?: (name:string)=>Promise<void>;
   platform?: {role:string;taskID:number;conversationID?:number;policy:PlatformPolicy};
-  /** Size-only provider boundary instrumentation; never stores request content/credentials. */
-  loadDomainState?: () => Promise<Record<string,unknown>>;
   intentID?: number;
   turnID?:string;
   mainSegment?:number;
@@ -566,7 +564,7 @@ export class AgentRunner {
 
 
 		const compactionHealth:CompactionHealth={requests:0,completed:0,failed:0};
-    const compactionExtension=opts.platform?domainCompactionExtension(opts,compactionHealth,()=>requestLimit()-turns-compactionHealth.requests):undefined;
+    const compactionExtension=opts.platform?nativeCompactionExtension(opts,compactionHealth,()=>requestLimit()-turns-compactionHealth.requests):undefined;
 		const loader = new DefaultResourceLoader({
 			cwd: opts.cwd,
 			agentDir: opts.agentDir,

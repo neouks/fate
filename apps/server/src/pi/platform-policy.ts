@@ -8,7 +8,7 @@ export const PLATFORM_POLICY_VERSION = 'domain-v1';
 export const PLATFORM_ROLES = ['goals','planner','mainagent','worker','auto','pentest','reporter'] as const;
 export interface PlatformPolicy {
   version: typeof PLATFORM_POLICY_VERSION;
-  compaction: 'domain' | 'native';
+  compaction: 'native';
   mcpLoading: 'deferred' | 'direct';
   builtinLoading?: 'deferred' | 'direct';
   toolPolicyVersion?: string;
@@ -27,7 +27,9 @@ export async function platformPolicy(db: Database, role: string): Promise<Platfo
   if(builtin&&!['direct','deferred'].includes(builtin))throw new Error('无效 pi_builtin_loading');
   const binding = search.rows[0];
   const disabled = binding && (!binding.enabled || !Array.isArray(binding.agents) || !binding.agents.includes(role));
-  return {version:PLATFORM_POLICY_VERSION, compaction:compression === 'domain' ? 'domain':'native',
+  // Historical domain settings remain readable, but new sessions always use
+  // PI's native compactor, cut points, file tracking and summary format.
+  return {version:PLATFORM_POLICY_VERSION, compaction:'native',
     toolPolicyVersion:'lean-tools-v1',builtinLoading:disabled||builtin==='direct'?'direct':'deferred',
     mcpLoading: disabled || loading === 'direct' ? 'direct':'deferred',
     ...(disabled ? {fallback:'tool_search 已禁用或未绑定，使用直接装配'}:{})};

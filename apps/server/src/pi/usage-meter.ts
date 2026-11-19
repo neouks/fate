@@ -5,6 +5,8 @@ import {createAssistantMessageEventStream,type Provider,type AssistantMessage,ty
 import type {Database} from '../db/index.js';
 import type {UsageScope} from '../db/usage-ledger.js';
 
+import {checkWorkerTokenBudget} from '../db/worker-token-budget.js';
+
 const fields=['input','output','cacheRead','cacheWrite'] as const;
 type Field=typeof fields[number];
 type Counts=Partial<Record<Field,number>>;
@@ -66,6 +68,7 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
      await assertUsageStorage(db,options.signal);
      const row=await db.transaction(async tx=>{
       if(scope.runtimeID&&!(await tx.query('SELECT id FROM runtime_role_configs WHERE id=$1 AND finished_at IS NULL AND expires_at>clock_timestamp() FOR SHARE',[scope.runtimeID])).rowCount)throw new Error('模型执行器已过期');
+      await checkWorkerTokenBudget(tx,scope);
       const audit=await tx.query(`INSERT INTO llm_request_attempts(request_id,task_id,conversation_id,role,profile_id,model,status,purpose,runtime_id)
        VALUES($1,$2,$3,$4,$5,$6,'running',$7,$8) RETURNING id`,[requestID,scope.taskID||null,scope.conversationID??null,scope.role,profile.id>0?profile.id:null,model.id,scope.purpose,scope.runtimeID??null]);
       await tx.query(`UPDATE llm_usage_ledger SET profile_name=$2,intent_id=$3,main_seg=$4,turn_id=$5,scope_key=COALESCE(runtime_id,$5,request_id) WHERE request_id=$1`,

@@ -61,10 +61,12 @@ export function defaultEngineConfig(): EngineConfig {
 /** worker 被中断的原因（终态映射依据，对齐 Go cancelcause）。 */
 export type AbortCause = "pause" | "cancel" | "kill" | "task-timeout" | "stop" | "lease-lost" | "task-completed" | "task-ended" | "shutdown";
 
+type SteeringRunner = {steer(message:string):Promise<'queued'|'handled'>};
 interface WorkHandle {
   turnID: string;
   abort: (cause: AbortCause, detail?:string) => Promise<void>;
-  runner:Promise<{steer(message:string):Promise<void>}>;
+  runner:Promise<SteeringRunner>;
+  readyRunner?: SteeringRunner;
   settled?: boolean;
   done: Promise<void>;
   cause?: AbortCause;
@@ -708,7 +710,7 @@ export class Engine {
     let stopDetail = '';
     const controller = new AbortController();
     let complete!: () => void;
-    let ready!: (runner:{steer(message:string):Promise<void>})=>void;
+    let ready!: (runner:SteeringRunner)=>void;
     const handle: WorkHandle = {
       turnID: turn.turnID,
       runner:new Promise(resolve=>{ready=resolve;}),
@@ -737,7 +739,7 @@ export class Engine {
       if(task)await this.db.tasks().stampFirstRun(rt.taskID,task.timeout_seconds);
       result = await runWorkerIntent({
         resourceLease,turnID:turn.turnID,
-        onRunner:ready,
+        onRunner:runner=>{handle.readyRunner=runner;ready(runner);},
         db: this.db, taskID: rt.taskID, expID: rt.expID,
         intent: intent as never, workerName: name, model,
         dataDir: this.dataDir,
@@ -772,7 +774,7 @@ export class Engine {
     else if (cause === "kill") terminal = "stopped";
     else if (cause === "task-timeout") terminal = "exhausted";
     else if (cause && cause !== 'pause') terminal = "stopped";
-    else if (result?.stopReason === "budget") terminal = "exhausted";
+    else if (reason === "token_limit" || result?.stopReason === "budget") terminal = "exhausted";
     else if (result?.aborted) terminal = "stopped";
     else if (failure) {
       terminal = "blocked";
@@ -1009,29 +1011,56 @@ export class Engine {
 
   async killWork(taskID: number, intentID: number, reason: string, source='planner'): Promise<void> {
     const rt = this.mustRt(taskID);
+    const terminal = await this.db.transaction(async db => {
+      await this.coordinator.assert(taskID,rt.lease!,db);
+      await db.query('SELECT pg_advisory_xact_lock($1)',[-rt.expID]);
+      const task = await db.tasks().getTask(taskID);
+      const store = db.exploration(rt.expID), node = await store.getNode(intentID);
+      if (!task || task.paused || rt.paused || rt.stopped || !node || node.kind !== 'intent' || node.state === 'paused' || node.payload.cancelled_by_user === true)
+        throw new Error('任务或意图已暂停、取消或不存在，不能自动替换');
+      if (node.state === 'open') {
+        await store.setIntentState(intentID,'stopped');
+        const receipt = await workerStopReceipt(db,rt.expID,node,source==='mainagent'?'main_terminated':'planner_terminated',randomUUID(),reason);
+        await db.query("UPDATE exploration_nodes SET payload=payload||jsonb_build_object('execution_stop',$2::jsonb) WHERE id=$1",[intentID,JSON.stringify(receipt)]);
+        await store.appendActivity({node_id:intentID,worker:source,kind:'status',tool:'kill_work',detail:reason,
+          metadata:{event_type:'lifecycle',status:'stopped',execution_stop:receipt}});
+        return true;
+      }
+      return ['stopped','done','blocked','exhausted'].includes(node.state);
+    });
     const handle = rt.work.get(intentID);
-    if (!handle) throw new Error(`意图 #${intentID} 不在运行中`);
+    if (!handle) {
+      if (terminal) return;
+      throw new Error(`意图 #${intentID} 不在当前执行器运行，尚未确认停止`);
+    }
     await handle.abort("kill",`${source}: ${reason}`);
     await handle.done;
   }
 
-  async steerWork(taskID:number,intentID:number,message:string,source='planner'):Promise<void>{
+  async steerWork(taskID:number,intentID:number,message:string,source='planner'){
     if(!message.trim()||Array.from(message).length>4000)throw Object.assign(new Error('纠偏消息需要 1–4000 字符'),{statusCode:400});
-    const rt=this.mustRt(taskID),handle=rt.work.get(intentID);
-    if(!handle||handle.settled)throw Object.assign(new Error('意图不在当前执行器运行'),{statusCode:409});
+    const rt=this.rt(taskID);
+    if(!rt)throw Object.assign(new Error('当前执行器没有运行此任务，请刷新后重试'),{statusCode:409});
+    const handle=rt.work.get(intentID);
+    if(!handle||handle.settled||handle.cause)throw Object.assign(new Error('意图不在当前执行器运行'),{statusCode:409});
+    if(source==='user'&&!handle.readyRunner)throw Object.assign(new Error('Worker 正在初始化，请稍后发送'),{statusCode:409});
     await this.coordinator.assert(taskID,rt.lease!);
     const node=await this.db.exploration(rt.expID).getNode(intentID);
-    if(!node||node.state!=='running'||rt.paused||rt.stopped)throw Object.assign(new Error('意图已暂停或结束'),{statusCode:409});
+    if(!node||node.kind!=='intent'||node.state!=='running'||rt.paused||rt.stopped)throw Object.assign(new Error('意图已暂停或结束'),{statusCode:409});
     const runner=await Promise.race([handle.runner,handle.done.then(()=>undefined)]);
-    if(!runner||handle.settled)throw Object.assign(new Error('Worker 已退出'),{statusCode:409});
-    await runner.steer(`【${source} 对当前意图的纠偏；不扩大授权】\n${message}`);
+    if(!runner||handle.settled||handle.cause||rt.paused||rt.stopped||rt.work.get(intentID)!==handle)throw Object.assign(new Error('Worker 已退出或正在停止'),{statusCode:409});
+    // User input reaches PI unchanged: native skill/template expansion and
+    // extension input handlers own its interpretation, exactly as in PI chat.
+    const disposition=await runner.steer(source==='user'?message:`【${source} 对当前意图的纠偏；不扩大授权】\n${message}\n仅在同一目标内调整方法、复用证据或缩减剩余工作；已取消的工作无需为补齐原验收而重做。若业务目标已变化，保存已有事实并结束，由 Planner 停止旧意图、下发新意图。原授权和禁止事项仍有效。`);
+    const id=randomUUID();
     // Platform control activity is distinct from pi's internal steering message role.
     // Native enqueue confirms submission only, not delivery or semantic effect.
     await this.db.exploration(rt.expID).appendActivity({
       node_id:intentID,worker:node.owner,kind:'status',tool:'steer_work',summary:message,detail:message,
       metadata:{event_type:'steering',turn_id:handle.turnID,source,
-        steering:{id:randomUUID(),source,intent_id:intentID,target_turn_id:handle.turnID,status:'submitted'}},
+        steering:{id,source,intent_id:intentID,target_turn_id:handle.turnID,status:disposition==='handled'?'handled':'submitted'}},
     });
+    return {id,intent_id:intentID,turn_id:handle.turnID,status:disposition};
   }
 
   /** Durable button continuation; no chat injection and no task admission. */

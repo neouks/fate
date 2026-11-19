@@ -22,7 +22,6 @@ export function FindingReproductionPanel({finding,contextTask,readOnly,onChanged
  const running=data?.job?.status==="running"||data?.job?.status==="queued";
  React.useEffect(()=>{if(!running)return;let active=true;let timer:ReturnType<typeof setTimeout>;const poll=async()=>{try{const v=await http<FindingReproductionDetail>(base+"/reproduction"+q);if(active){setData(v);if(v.job?.status==="running"||v.job?.status==="queued")timer=setTimeout(poll,1500);else onChanged();}}catch(e){if(active)setError((e as Error).message);}};timer=setTimeout(poll,1500);return()=>{active=false;clearTimeout(timer);};},[running,base,q,onChanged]);
  async function act(fn:()=>Promise<unknown>){setBusy(true);try{await fn();await load();setError("");onChanged();}catch(e){toast.error((e as Error).message);}finally{setBusy(false);}}
- async function upload(file:File,step?:string){await act(async()=>{const form=new FormData();form.set("file",file);const url=`/api${base}/images${q}${step?`${q?"&":"?"}step_id=${encodeURIComponent(step)}`:""}`;const r=await fetch(url,{method:"POST",headers:{"X-Series-Token":localStorage.getItem("series_token")??""},body:form});if(!r.ok)throw new Error((await r.json()).error??"图片上传失败");});}
  async function downloadBody(trafficID:string,side:"request"|"response"){
   setBusy(true);try{
    const evidence=await api.findingTraffic(finding.finding_id!,contextTask);
@@ -42,7 +41,7 @@ export function FindingReproductionPanel({finding,contextTask,readOnly,onChanged
   return value?.trim()?<section className="task-finding-section" key={key}><h2>{label}</h2><p>{value}</p></section>:null;
  });
  const openEditor=()=>{setDraft(structuredClone(repro??{entry_point:"",prerequisites:[],steps:[],provenance:""}));setDescription(sections?.description??finding.summary);setImpact(sections?.impact.join("\n")??"");setRemediation(sections?.remediation.join("\n")??"");setEditing(true);};
- const actions=!readOnly&&<div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy||running} onClick={()=>void act(()=>http(base+"/analyze"+q,{method:"POST"}))}>重新分析</Button><Button variant="outline" disabled={busy||running||!data} onClick={openEditor}>编辑过程与说明</Button></div>;
+ const actions=!readOnly&&<div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy||running} onClick={()=>void act(()=>http(base+"/analyze"+q,{method:"POST"}))}>{finding.report?.trim() || sections ? "重新生成报告" : "生成完整报告"}</Button><Button variant="outline" disabled={busy||running||!data} onClick={openEditor}>编辑过程与说明</Button></div>;
  const sectionList=(values: string[]) => <ul className="list-inside list-disc">{values.map((value,i)=><li key={i}>{value}</li>)}</ul>;
  const contents=<>
 
@@ -54,14 +53,14 @@ export function FindingReproductionPanel({finding,contextTask,readOnly,onChanged
  {!workspaceEvidence&&<><Markdown text={descriptionText}/>{discovery}</>}
  {repro?<><p>入口：{repro.entry_point||"未记录"}</p>{repro.prerequisites.length>0&&<ul className="list-inside list-disc">{repro.prerequisites.map((p,i)=><li key={i}>{p}</li>)}</ul>}
  {repro.steps.map((step,i)=><React.Fragment key={step.id}><p>{i+1}. {step.action||"验证"}</p>{step.expected&&<p>{step.expected}</p>}{step.proves&&<p>{step.proves}</p>}
- {!step.verified&&<Badge variant="outline">Worker 提交，待关联原始证据</Badge>}{(step.packet_note||step.truncated)&&<Alert><AlertDescription>{step.packet_note||"当前为证据片段，完整内容请查看证据来源。"}</AlertDescription></Alert>}
+ {(step.packet_note||step.truncated)&&<Alert><AlertDescription>{step.packet_note||"当前为证据片段，完整内容请查看证据来源。"}</AlertDescription></Alert>}
  <Packet label="请求 / 命令" value={step.request}/><Packet label="响应 / 输出" value={step.response}/>
  {step.traffic_id&&<div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={()=>void downloadBody(step.traffic_id!,"request")}>下载请求 Body</Button><Button variant="outline" disabled={busy} onClick={()=>void downloadBody(step.traffic_id!,"response")}>下载响应 Body</Button></div>}
  {(step.source||step.source_ref)&&<Button variant="outline" onClick={()=>void readSource(step.id)}>查看完整证据来源</Button>}
  {source?.id===step.id&&<div><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words">{source.content}</pre>{source.next_offset<source.total&&<Button variant="outline" onClick={()=>void readSource(step.id,true)}>继续读取</Button>}</div>}
- <Images images={data?.images.filter(im=>im.step_id===step.id)??[]} base={base} q={q} disabled={busy||readOnly} upload={f=>upload(f,step.id)} mutate={fn=>act(fn)}/>
- </React.Fragment>)}{!sections?.discovery&&repro.provenance&&<p>发现来源：{repro.provenance}</p>}</>:<Alert><AlertDescription>尚未整理复现过程。原始证据完整保留，可选择重新分析；缺失材料不会补造成已验证步骤。</AlertDescription></Alert>}
- <Images images={data?.images.filter(im=>!im.step_id||!repro?.steps.some(s=>s.id===im.step_id))??[]} base={base} q={q} disabled={busy||readOnly} upload={upload} mutate={fn=>act(fn)}/>
+ <Images images={data?.images.filter(im=>im.step_id===step.id)??[]} base={base} q={q} disabled={busy||readOnly} mutate={fn=>act(fn)}/>
+ </React.Fragment>)}{!sections?.discovery&&repro.provenance&&<p>发现来源：{repro.provenance}</p>}</>:<Alert><AlertDescription>尚未整理复现过程。{readOnly ? "可查看已保存的证据。" : "可按需调用 Reporter 整理已保存的证据。"}</AlertDescription></Alert>}
+ <Images images={data?.images.filter(im=>!im.step_id||!repro?.steps.some(s=>s.id===im.step_id))??[]} base={base} q={q} disabled={busy||readOnly} mutate={fn=>act(fn)}/>
  {!workspaceEvidence&&sections?.impact.length ? <><h3>具体影响</h3>{sectionList(sections.impact)}</> : null}
  {!workspaceEvidence&&sections?.remediation.length ? <><h3>修复建议</h3>{sectionList(sections.remediation)}</> : null}
  {data?.versions.length? <details><summary>历史报告版本</summary>{data.versions.map(v=><Button key={v.revision} variant="link" onClick={()=>void act(async()=>{const value=await http<{report:string}>(base+`/report-versions/${v.revision}`+q);await navigator.clipboard.writeText(value.report);toast.success("历史版本已复制");})}>版本 {v.revision} · 证据 {v.evidence_version} · 复制原文</Button>)}</details>:null}
@@ -77,10 +76,10 @@ export function FindingReproductionPanel({finding,contextTask,readOnly,onChanged
  return <Card><CardHeader><div className="flex flex-wrap items-center justify-between gap-2"><CardTitle>漏洞报告</CardTitle>{actions}</div><CardDescription>按操作顺序说明复现过程，HTTP 报文保留请求行、状态行、Header 和 Body。</CardDescription></CardHeader><CardContent className="flex min-w-0 flex-col gap-4">{contents}</CardContent></Card>;
 }
 function Packet({label,value}:{label:string;value:string}){return <><p>{label}{!value&&"（原始证据缺失）"}</p>{value&&<pre className="min-w-0 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs">{value}</pre>}</>;}
-function Images({images,base,q,disabled,upload,mutate}:{images:FindingStepImage[];base:string;q:string;disabled:boolean;upload:(file:File)=>Promise<void>;mutate:(fn:()=>Promise<unknown>)=>Promise<void>}){
- return <div className="flex flex-col gap-2" onDragOver={e=>{if(!disabled)e.preventDefault();}} onDrop={e=>{if(disabled)return;e.preventDefault();const file=e.dataTransfer.files[0];if(file)void upload(file);}} onPaste={e=>{if(disabled)return;const file=Array.from(e.clipboardData.items).find(i=>i.type.startsWith("image/"))?.getAsFile();if(file){e.preventDefault();void upload(file);}}}>
+function Images({images,base,q,disabled,mutate}:{images:FindingStepImage[];base:string;q:string;disabled:boolean;mutate:(fn:()=>Promise<unknown>)=>Promise<void>}){
+ if (!images.length) return null;
+ return <div className="flex flex-col gap-2">
  {images.map(image=><figure className="flex flex-col gap-2" key={image.id}><EvidenceImage src={`/api${base}/images/${image.id}${q}`} caption={image.caption}/><Input aria-label="证据图注" disabled={disabled} defaultValue={image.caption} onBlur={e=>{if(e.target.value!==image.caption)void mutate(()=>http(base+`/images/${image.id}`+q,{method:"PATCH",body:JSON.stringify({caption:e.target.value})}));}}/>{!disabled&&<div className="flex gap-2"><Button variant="ghost" onClick={()=>void mutate(()=>http(base+`/images/${image.id}`+q,{method:"DELETE"}))}>删除截图</Button><Button variant="ghost" onClick={()=>void mutate(()=>http(base+`/images/${image.id}`+q,{method:"PATCH",body:JSON.stringify({position:Math.max(0,image.position-1)})}))}>前移截图</Button></div>}</figure>)}
- {!disabled&&<Field><FieldLabel>粘贴、拖拽或选择证据截图</FieldLabel><Input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={e=>{const file=e.target.files?.[0];if(file)void upload(file);e.target.value="";}}/></Field>}
  </div>;
 }
 function EvidenceImage({src,caption}:{src:string;caption:string}){

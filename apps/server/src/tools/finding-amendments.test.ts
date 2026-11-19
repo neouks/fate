@@ -81,7 +81,7 @@ test('finding supplement, deduplication, version races, recovery and native pi p
   const nochange=await invoke({...amend,evidence_version:changed.evidence_version},'noop');assert.equal(nochange.updated,false);assert.equal(nochange.evidence_version,changed.evidence_version);
   await scheduler.tick();await scheduler.tick();
   const eventKey=`finding:${node}:evidence:${changed.evidence_version}`;
-  assert.equal((await db.query('SELECT count(*) n FROM agent_trigger_events WHERE event_key=$1',[eventKey])).rows[0]!.n,'1','Reporter refresh event once');
+  assert.equal((await db.query('SELECT count(*) n FROM agent_trigger_events WHERE event_key=$1',[eventKey])).rows[0]!.n,'0','supplementing evidence does not start a report by default');
   assert.equal((await db.query('SELECT count(*) n FROM finding_evidence_amendments WHERE finding_id=$1',[id])).rows[0]!.n,'1');
 
   await db.close();db=await openDatabase();

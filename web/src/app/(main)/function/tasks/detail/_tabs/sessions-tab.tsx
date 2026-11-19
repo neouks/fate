@@ -1,4 +1,7 @@
 "use client";
+
+import {tokenMetrics, tokenUsageDetails} from "@/lib/token-usage";
+import {WorkerComposer} from "@/components/worker-composer";
 import {notifyTurnSummaries} from '@/lib/turn-summary';
 
 import { preserveTranscriptPosition } from "@/lib/transcript-scroll";
@@ -178,27 +181,22 @@ function fmtTokens(n: number): string {
 const TokenMetrics = React.forwardRef<
   HTMLSpanElement,
   React.ComponentPropsWithoutRef<"span"> & {
-    input: number;
-    cache: number;
-    output: number;
-    labels?: "short" | "long";
+    usage: TokenTotal;
   }
->(({ input, cache, output, labels = "short", className, ...props }, ref) => {
-  const names = labels === "short" ? ["入", "缓", "出"] : ["input", "cache", "output"];
-  const values = [input, cache, output];
+>(({ usage, className, ...props }, ref) => {
   return (
     <span
       ref={ref}
       className={cn("inline-flex min-w-0 flex-wrap items-center gap-1 text-muted-foreground", className)}
       {...props}
     >
-      {values.map((value, index) => (
-        <React.Fragment key={names[index]}>
-          <span>{names[index]}</span>
-          <Badge variant="secondary" className="h-5 px-1.5 font-mono tabular-nums">
-            {fmtTokens(value)}
+      {tokenMetrics(usage).map(({label, value}) => (
+        <span key={label} className="inline-flex items-center gap-1 whitespace-nowrap">
+          <span>{label}</span>
+          <Badge variant="secondary" className="h-5 px-1.5 font-mono tabular-nums" title={value?.toLocaleString('zh-CN')}>
+            {value === null ? "未知" : fmtTokens(value)}
           </Badge>
-        </React.Fragment>
+        </span>
       ))}
     </span>
   );
@@ -1490,15 +1488,6 @@ export function SessionsTab({
   },[sessionTokens]);
 
   const activeTokens = tokenForSession(activeKey);
-  const tokenTotal = {
-    i: activeTokens.input_tokens,
-    o: activeTokens.output_tokens,
-    cr: activeTokens.cache_read_tokens,
-    any:
-      activeTokens.input_tokens +
-        activeTokens.output_tokens >
-      0,
-  };
 
   const workerExiting=allIntents.some(n=>n.id===active.intent_id&&n.executor_active===true&&n.state!=="running");
   // Cache the loaded record span, but keep elapsed time moving until actual exit.
@@ -1710,17 +1699,11 @@ export function SessionsTab({
                   <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
                     <span>任务总计</span>
                     <span>·</span>
-                    <TokenMetrics
-                      input={taskTokens.input_tokens}
-                      cache={taskTokens.cache_read_tokens}
-                      output={taskTokens.output_tokens}
-                    />
+                    <TokenMetrics usage={taskTokens} />
                   </div>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {taskTokens.usage_complete===false?"已记录输入":"输入总量"} {taskTokens.input_tokens.toLocaleString()} · 输出 {taskTokens.output_tokens.toLocaleString()} ·
-                  缓存读取 {taskTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
-                  {taskTokens.cache_write_tokens.toLocaleString()}
+                  {tokenUsageDetails(taskTokens)}
                 </TooltipContent>
               </Tooltip>
             )}
@@ -1963,33 +1946,12 @@ export function SessionsTab({
                 </span>
               )}
               <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-x-3 gap-y-1 text-xs text-muted-foreground max-sm:w-full max-sm:flex-wrap">
-                {tokenTotal.any && (
+                {sessionTokens[activeKey] && (
                   <Tooltip>
-                    {/* 手机端用短标签（入/缓/出）：长标签会把这一行撑成两行，进一步压缩记录区。 */}
                     <TooltipTrigger asChild>
-                      <span className="inline-flex min-w-0 items-center">
-                        <TokenMetrics
-                          input={tokenTotal.i}
-                          cache={tokenTotal.cr}
-                          output={tokenTotal.o}
-                          labels="short"
-                          className="sm:hidden"
-                        />
-                        <TokenMetrics
-                          input={tokenTotal.i}
-                          cache={tokenTotal.cr}
-                          output={tokenTotal.o}
-                          labels="long"
-                          className="max-sm:hidden"
-                        />
-                      </span>
+                      <TokenMetrics usage={activeTokens} />
                     </TooltipTrigger>
-                    <TooltipContent>
-                      {activeTokens.usage_complete===false?"已记录输入":"输入总量"} {activeTokens.input_tokens.toLocaleString()} · 输出{" "}
-                      {activeTokens.output_tokens.toLocaleString()} · 缓存读取{" "}
-                      {activeTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
-                      {activeTokens.cache_write_tokens.toLocaleString()}
-                    </TooltipContent>
+                    <TooltipContent>{tokenUsageDetails(activeTokens)}</TooltipContent>
                   </Tooltip>
                 )}
                 {runDuration != null && (
@@ -2055,6 +2017,11 @@ export function SessionsTab({
                   hasMore={activeState?.hasMore} onEarlier={node=>loadEarlier(activeKey,()=>node)}
                   onRetry={()=>loadSession(activeKey)} />
               )}
+            {active.role === "worker" && active.intent_id && !active.inherited && !focused && !invalidFocus && (
+              <WorkerComposer key={`${taskId}:${active.intent_id}`} taskId={taskId} intentId={active.intent_id}
+                disabledReason={!workerExecutionAllowed ? "任务未运行，暂不能发送。" : workerExiting || workerResuming || controllingIntent === active.intent_id ? "Worker 状态变更中，请稍后发送。" : active.status === "paused" ? "Worker 已暂停，请先恢复后发送。" : active.status !== "running" ? "Worker 已结束或尚未开始，当前会话只读。" : undefined}
+                onSent={()=>loadSession(activeKey)} />
+            )}
             {active.role === "worker" &&
               !active.inherited &&
               (active.status === "running" || active.status === "paused") && (

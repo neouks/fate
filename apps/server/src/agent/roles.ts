@@ -1,4 +1,4 @@
-import {workerMandate,plannerDispatchReminder} from './direction-autonomy.js';
+import {workerMandate,latestWorkerSteering,plannerDispatchReminder,WORK_COORDINATION_GUIDANCE} from './direction-autonomy.js';
 import {plannerConvergenceState} from './planner-convergence.js';
 import {resolveShell} from '../config/execution.js';
 import {targetProxy} from '../egress/upstream.js';
@@ -157,8 +157,8 @@ export interface WorkerRunInput {
   egressAddr?: string;
   egressScope?: string;
   wrapupPromptOverride?: string;
-  /** Host cancellation only; domain Agents never exchange messages. */
-  onRunner?: (runner: { abort(): Promise<void>;steer(message:string):Promise<void> }) => void | Promise<void>;
+  /** Host cancellation and PI native steering. */
+  onRunner?: (runner: { abort(): Promise<void>;steer(message:string):Promise<'queued'|'handled'> }) => void | Promise<void>;
 }
 
 /** worker 会话文件：确定性键，断点续跑身份（Go: WorkerSessionID）。 */
@@ -262,13 +262,12 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
   const rc = await agentRunConfig(db, "worker");
   const contextPolicy=roleContextPolicy('worker',model.model.contextWindow,await db.platform().getSetting('worker_context_budget_tokens'));
 
-  // Keep role/Skill/tool prefixes stable. The host supplies the immutable mandate
-  // at every request boundary, including after compaction and session recovery.
+  // Keep role/Skill/tool prefixes stable. Refresh only platform assignment state
+  // at request boundaries, including after compaction and session recovery.
   const anchored = await db.exploration(expID).anchorAssetIDs(intent.id);
   const assets = anchored.length > 0 ? await db.assets().getByIDs(anchored) : [];
   const assetsJSON=clampOutput(JSON.stringify({total:assets.length,items:assets.slice(0,20).map(a=>({id:a.id,type:a.type,url:a.url,method:a.method,host:a.domain||a.ip||a.app_name})),...(assets.length?{detail_tool:'asset_get'}:{})}));
   const system = await systemRolePrompt(db, "worker");
-  const taskContext = workerMandate(intent.id,intent.payload,contract,assetsJSON);
 
   // 首条 user：全局态势（可降级，刻意不含 coverage）。
   const overview = await workerLaunchContext(ctx,intent.id);
@@ -291,14 +290,13 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
     wrapExecutionTool:journalTools(journal,ctx,new Set(['bash','write','edit','http_request','shell_open','shell_send',...execution.tools.map(t=>t.name)])),
     stopOnRecoveryBlock:()=>journal.recoveryBlocked,
     contextLayout: CONTEXT_LAYOUT_VERSION,
-    taskContext,
     contextPolicy,
     compactionSettings:contextPolicy.compactionSettings,
     summaryTargetTokens:contextPolicy.summaryTargetTokens,
     reserveSettlementTurns: 2,
-    boundaryContext: async()=>await constraints.context()+'\n'+await contextNeedBoundary(ctx),
+    boundaryContext: async()=>workerMandate(intent.id,intent.payload,contract,assetsJSON,
+      await latestWorkerSteering(db,expID,intent.id))+'\n'+await constraints.context()+'\n'+await contextNeedBoundary(ctx),
     compactionInstructions:CONTEXT_RETENTION_RULES,
-    loadDomainState:async()=>({context_needs:await contextNeedBoundary(ctx)}),
     intentID:intent.id,
     cwd: runDir,
     agentDir: path.join(dataDir, "pi-agent"),
@@ -353,7 +351,7 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
   });
   try {
     ctx.sessionEntries=()=>runner.sessionEntries;
-    await input.onRunner?.({ abort: () => runner.abort(),steer:async message=>{await runner.steer(message);} });
+    await input.onRunner?.({ abort: () => runner.abort(),steer:message=>runner.steer(message) });
     const res = await runner.prompt(firstUser);
     await runner.acknowledgeNativeActivities();
     return { ...res, usage: counter.usage() };
@@ -447,7 +445,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     plannerBudget.maxTurns=plannerBudget.maxTurns>0?Math.min(plannerBudget.maxTurns,input.maxTurns):input.maxTurns;
     plannerBudget.maxDurationMs=plannerBudget.maxDurationMs>0?Math.min(plannerBudget.maxDurationMs,120_000):120_000;
   }
-  const system = await systemRolePrompt(db, "planner", { Goal: goal }, input.terminalOnly, input.terminalOnly ? input.wrapupPromptOverride : undefined)+'\n\n'+PLANNER_READING_RULES+'\n'+PLANNER_TITLE_PROTOCOL;
+  const system = await systemRolePrompt(db, "planner", { Goal: goal }, input.terminalOnly, input.terminalOnly ? input.wrapupPromptOverride : undefined)+'\n\n'+PLANNER_READING_RULES+'\n'+PLANNER_TITLE_PROTOCOL+'\n'+WORK_COORDINATION_GUIDANCE;
 
   const overview = await buildGraphOverview(ctx);
   overview.asset_readers=tools.filter(t=>['asset_search','asset_get'].includes(t.name)).map(t=>t.name);
@@ -760,7 +758,6 @@ async function runIsolatedGoals(input:GoalsRunInput):Promise<WorkerRunResult>{
    maxWrapupTurns:config.wrapupMaxTurns||1,wrapup:phase==='objectives'?()=>({prompt:GOALS_STAGE_PROTOCOL[phase]}):undefined,
    stopWhen:async()=>phase==='objectives'&&(await goalsBootstrap(db,taskID))?.phase==='completed',
    onRequestSize:async()=>{await db.transaction(tx=>activeBootstrap(phaseCtx,tx));await agentRunConfig(db,'goals');if(phase==='objectives'&&!(await applyToolBindings(db,'goals',goalsTools(phaseCtx))).some(t=>t.name==='set_goals'))throw new Error('Goals 的 set_goals 已禁用，初始化暂停');},
-   loadDomainState:async()=>({phase,goal:state.goal,...(phase==='constraints'?{description:state.description}:{})}),
    guard:async()=>{await db.transaction(tx=>activeBootstrap(phaseCtx,tx));return undefined;},
    onActivity:a=>{if(a.kind==='tool_end'){if(a.isError)errors.add(a.toolName);else errors.delete(a.toolName);}return counter.wrapped(a,{worker:'goals'});},
   });
@@ -833,7 +830,6 @@ async function runCombinedGoals(input:GoalsRunInput):Promise<WorkerRunResult>{
   stopWhen:async()=>(await goalsBootstrap(db,taskID))?.phase==='completed',
   onRequestSize:async()=>{await db.transaction(tx=>activeBootstrap(ctx,tx));await requireWriter();},
   boundaryContext:async()=>{const current=await goalsBootstrap(db,taskID);return '【初始化持久状态；已成功保存的不重复写入】\n'+JSON.stringify({policy:state.policy,pending_errors:current?.pending_errors,constraints:await loadConstraints(db,expID)});},
-  loadDomainState:async()=>({policy:state.policy,goal:state.goal,description:state.description}),
   guard:async event=>{
    await db.transaction(tx=>activeBootstrap(ctx,tx));
    if(event.toolName==='set_goals'&&prematureGoalCalls.has(event.toolCallId)){

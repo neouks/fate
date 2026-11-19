@@ -345,6 +345,27 @@ export class ExplorationStore {
         w.identity_key,w.prose_key,w.has_work`;
       const sameWork=(row:IndexedIntent)=>row.identity_key===keys.identity_key||
         ((!contract.work||!row.has_work)&&row.prose_key===keys.prose_key);
+      let replacedID: number | undefined;
+      if (payload.replaces_intent_id !== undefined) {
+        replacedID = Number(payload.replaces_intent_id);
+        if (!Number.isSafeInteger(replacedID) || replacedID <= 0 || payload.retry_of !== undefined)
+          throw new Error('replaces_intent_id 无效或与 retry_of 冲突');
+        const old = (await tx.query<IndexedIntent>(`SELECT ${projection} FROM intent_work_index w JOIN exploration_nodes n ON n.id=w.intent_id
+          WHERE w.exploration_id=$1 AND w.intent_id=$2`, [this.expID,replacedID])).rows[0];
+        if (!old || !['stopped','done','blocked','exhausted'].includes(old.state) || old.payload.cancelled_by_user === true)
+          throw new Error('被替换意图必须属于本任务且已经结束；先 kill_work 确认结束，不能绕过用户暂停或取消');
+        const executing = await tx.query(`SELECT 1 FROM engine_worker_slots s JOIN engine_task_leases l ON l.task_id=s.task_id AND l.token=s.token
+          WHERE s.intent_id=$1 AND l.expires_at>clock_timestamp() LIMIT 1`, [replacedID]);
+        if (executing.rowCount) throw new Error('旧 Worker 尚未退出，等待释放后再下发替代意图');
+        if (sameWork(old)) throw new Error('替代目标与原意图相同；已有工作不重复派发，可恢复故障使用 retry_of');
+        const replacement = (await tx.query<IndexedIntent>(`SELECT ${projection} FROM intent_work_index w JOIN exploration_nodes n ON n.id=w.intent_id
+          WHERE w.exploration_id=$1 AND n.payload->>'replaces_intent_id'=$2 ORDER BY n.id LIMIT 1`, [this.expID,String(replacedID)])).rows[0];
+        if (replacement) {
+          if (!sameWork(replacement)) throw new Error(`旧意图已由 #${replacement.id} 替代，请读取当前工作，不能再次替换旧意图`);
+          await tx.commit();
+          return {id:Number(replacement.id),created:false,dedup:{version:3,strength:identity.strength,match:'equivalent_work'}};
+        }
+      }
       if(payload.retry_of){
         const previous=(await tx.query<IndexedIntent>(`SELECT ${projection} FROM intent_work_index w JOIN exploration_nodes n ON n.id=w.intent_id
           WHERE w.exploration_id=$1 AND w.intent_id=$2`,[this.expID,Number(payload.retry_of)])).rows[0];

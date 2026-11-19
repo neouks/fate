@@ -1,4 +1,6 @@
 "use client";
+
+import {tokenMetrics, tokenUsageDetails} from "@/lib/token-usage";
 import {useVisiblePoll} from "@/hooks/use-visible-poll";
 
 import * as React from "react";
@@ -1122,34 +1124,13 @@ function TaskPreviewSheet({ task, nowSec, onClose }: { task: Task | null; nowSec
                   <h3 id="task-preview-token" className="text-sm font-medium">
                     Token
                   </h3>
-                  <dl className="grid grid-cols-3 gap-3">
-                    <div className="flex min-w-0 flex-col gap-1">
-                      <dt className="text-muted-foreground text-xs">输入</dt>
-                      <dd
-                        className="truncate text-sm font-medium tabular-nums"
-                        title={task.tokens?.input_tokens.toLocaleString()}
-                      >
-                        {task.tokens ? fmtTokens(task.tokens.input_tokens) : "—"}
+                  <dl className="grid grid-cols-2 gap-3" title={tokenUsageDetails(task.tokens)}>
+                    {tokenMetrics(task.tokens).map(({label,value}) => <div key={label} className="flex min-w-0 flex-col gap-1">
+                      <dt className="text-muted-foreground text-xs">{label}</dt>
+                      <dd className="truncate text-sm font-medium tabular-nums" title={value?.toLocaleString('zh-CN')}>
+                        {value === null ? (task.tokens ? "未知" : "—") : fmtTokens(value)}
                       </dd>
-                    </div>
-                    <div className="flex min-w-0 flex-col gap-1">
-                      <dt className="text-muted-foreground text-xs">缓存读取</dt>
-                      <dd
-                        className="truncate text-sm font-medium tabular-nums"
-                        title={task.tokens?.cache_read_tokens.toLocaleString()}
-                      >
-                        {task.tokens ? fmtTokens(task.tokens.cache_read_tokens) : "—"}
-                      </dd>
-                    </div>
-                    <div className="flex min-w-0 flex-col gap-1">
-                      <dt className="text-muted-foreground text-xs">输出</dt>
-                      <dd
-                        className="truncate text-sm font-medium tabular-nums"
-                        title={task.tokens?.output_tokens.toLocaleString()}
-                      >
-                        {task.tokens ? fmtTokens(task.tokens.output_tokens) : "—"}
-                      </dd>
-                    </div>
+                    </div>)}
                   </dl>
                 </section>
 

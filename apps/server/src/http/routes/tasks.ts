@@ -251,9 +251,19 @@ export function registerTaskRoutes(app: FastifyInstance): void {
     });
   }
 
-  // Historical messages remain readable; Worker control is button-only.
-  app.post("/api/tasks/:id/intents/:intentID/messages", async (_req, reply) =>
-    reply.code(410).send({ error: "Worker 不支持直接对话，请使用暂停或恢复按钮" }));
+  // Live Worker input uses PI steering; it never resumes or creates an intent.
+  app.post("/api/tasks/:id/intents/:intentID/messages", async (req, reply) => {
+    const p=req.params as {id:string;intentID:string},taskID=Number(p.id),intentID=Number(p.intentID);
+    const message=(req.body as {message?:unknown}|null)?.message;
+    if(!Number.isSafeInteger(taskID)||taskID<1||!Number.isSafeInteger(intentID)||intentID<1||typeof message!=='string'||!message.trim()||Array.from(message).length>4000)
+      return reply.code(400).send({error:'需要有效任务、意图和 1–4000 字符的消息'});
+    const task=await tasks().getTask(taskID);
+    if(!task)return reply.code(404).send({error:'任务不存在'});
+    if(task.paused||task.queued||task.status!=='running')return reply.code(409).send({error:'任务暂停、排队或结束时不能发送 Worker 消息'});
+    const node=await app.db.exploration(task.exploration_id).getNode(intentID);
+    if(!node||node.kind!=='intent')return reply.code(404).send({error:'当前任务中不存在此意图'});
+    return reply.code(202).send(await app.engine.steerWork(taskID,intentID,message,'user'));
+  });
 
   app.get("/api/tasks/:id/worker-queue", async (req) => {
     const taskID = Number((req.params as { id: string }).id);

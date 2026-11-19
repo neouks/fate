@@ -28,6 +28,8 @@ test('finding reproduction documents and enforces the observed object boundary',
  const base={vulnclass:'fixture',severity:'low',summary:'fixture',evidence:'local fixture'};
  const validate=(args:Record<string,unknown>)=>validateToolArguments(tool,{type:'toolCall',id:'fixture',name:tool.name,arguments:args});
  assert.throws(()=>validate({...base,reproduction:[],steps:[step]}),/reproduction|steps/);
- assert.doesNotThrow(()=>validate({...base,reproduction:{steps:[step]}}));
+ assert.doesNotThrow(()=>validate(base));
+ assert.throws(()=>validate({...base,reproduction:{steps:[step]}}));
+ assert.doesNotThrow(()=>validate({finding_id:1,evidence_version:0,reproduction:{steps:[step]}}));
  assert.match((tool.parameters as any).properties.reproduction.description,/steps 只能放在 reproduction 内/);
 });

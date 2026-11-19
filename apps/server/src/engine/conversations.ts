@@ -197,7 +197,6 @@ export class ConversationService {
     nativeActivity:{source:{scope:'conversation',scopeID:id,runID,token:lease.token,turnID},worker:'assistant',turn_id:turnID},flushNativeSession:activeSession.flush,
     canonicalSessionPath:activeSession.canonical,onSessionCompacted:async manager=>{await activeSession!.compact(manager);},archiveDiagnostics:activeSession.diagnostics,
     stopWhen:role==='reporter'?async()=>reportSaved&&pendingReports.size===0:undefined,
-    loadDomainState:async()=>({conversation_id:id,...(role==='reporter'?{pending_report_ids:[...pendingReports],read_tool:'get_finding',save_tool:'update_finding_report'}:{})}),
     ...agentBudgets(config,{maxTurns:30,maxDurationMs:1200_000}),maxWrapupTurns:config.wrapupMaxTurns||2,
     wrapup:()=>role==='reporter'&&pendingReports.size?{prompt:config.wrapupPrompt||hostProtocol('reporter')}:undefined,
     extensionFactories:execution?.extensions,

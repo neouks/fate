@@ -8,6 +8,7 @@ import {skillFilePath,parseSkillDocument,loadBoundSkills} from '../../agent/skil
 import {profilePolicy,validateProfilePolicy,validateRetryRule,rejectRetiredRetry} from '../../pi/profile-policy.js';
 import {configuredRuntimeResources,resourcePolicy,invalidateRuntimeResources,validateRuntimeResources} from '../../engine/runtime-resources.js';
 import {catalogTools} from '../../agent/tool-catalog.js';
+import {WORKER_TOKEN_LIMIT,workerTokenLimit} from '../../db/worker-token-budget.js';
 import {roleContextPolicy,CONTEXT_DEFAULTS} from '../../agent/context-policy.js';
 import {toolIdentity} from '../../agent/tool-registry.js';
 import {assertActiveRole} from '../../agent/retired-roles.js';
@@ -238,8 +239,9 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     ]);
     return { ...await executionSettings(app.db),workers,web_search_enabled:await platform().getBool('web_search_enabled',false),web_search_backend:'deepseek',llm_pool_enabled:await platform().getBool('llm_pool_enabled',false),llm_pool_bind_fallback:await platform().getBool('llm_pool_bind_fallback',false),runtime_resource_policy:await configuredRuntimeResources(app.db),
       planner_context_budget_tokens:Number((await platform().getSetting('planner_context_budget_tokens'))??CONTEXT_DEFAULTS.planner),
+      [WORKER_TOKEN_LIMIT]:await workerTokenLimit(app.db),
       worker_context_budget_tokens:Number((await platform().getSetting('worker_context_budget_tokens'))??CONTEXT_DEFAULTS.worker),
-      pi_context_policy:(await platform().getSetting('pi_context_policy'))??'domain',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{traffic_capture:'next proxy request',global_proxy:'next target request',agent_traffic_binding:'next reporter session; revocation immediate',constraints_inject_planner:'next model request',constraints_inject_worker:'next model request',shell_mode:'next session',python_interpreter:'next script call',runtime_resource_policy:'queued and next admission; existing executions are not preempted',workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission",planner_context_budget_tokens:'next planner session',worker_context_budget_tokens:'next worker session'}, active_task: activeTask ?? "" };
+      pi_context_policy:'native',pi_mcp_loading:(await platform().getSetting('pi_mcp_loading'))??'deferred', task_concurrency_enabled:(await platform().getSetting("task_concurrency_enabled"))==="true", task_concurrency_limit:Number(await platform().getSetting("task_concurrency_limit"))||5, effective:{[WORKER_TOKEN_LIMIT]:'next worker model request',traffic_capture:'next proxy request',global_proxy:'next target request',agent_traffic_binding:'next reporter session; revocation immediate',constraints_inject_planner:'next model request',constraints_inject_worker:'next model request',shell_mode:'next session',python_interpreter:'next script call',runtime_resource_policy:'queued and next admission; existing executions are not preempted',workers:"per task; next claim",role_settings:"next session",task_concurrency:"next admission",planner_context_budget_tokens:'next planner session',worker_context_budget_tokens:'next worker session'}, active_task: activeTask ?? "" };
   };
   app.get("/api/settings",readSettings);
   app.post("/api/settings/python/detect",async()=>({python_interpreter:pythonInterpreter()}));
@@ -248,10 +250,12 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     if(!b||typeof b!=='object'||Array.isArray(b))return reply.code(400).send({error:'请求体必须为对象'});
-    const known=new Set([...Object.keys(EXECUTION_DEFAULTS),'web_search_enabled','web_search_backend','llm_pool_enabled','llm_pool_bind_fallback','runtime_resource_policy','pi_context_policy','pi_mcp_loading','task_concurrency_enabled','task_concurrency_limit','workers','active_task','planner_context_budget_tokens','worker_context_budget_tokens']);
+    const known=new Set([WORKER_TOKEN_LIMIT,...Object.keys(EXECUTION_DEFAULTS),'web_search_enabled','web_search_backend','llm_pool_enabled','llm_pool_bind_fallback','runtime_resource_policy','pi_context_policy','pi_mcp_loading','task_concurrency_enabled','task_concurrency_limit','workers','active_task','planner_context_budget_tokens','worker_context_budget_tokens']);
     for(const key of Object.keys(b))if(!known.has(key))return reply.code(400).send({error:`不支持的设置：${key}`});
     for(const [key,value] of Object.entries(EXECUTION_DEFAULTS))if(b[key]!==undefined&&typeof b[key]!==typeof value)return reply.code(400).send({error:`${key} 类型无效`});
     try{
+      if(b[WORKER_TOKEN_LIMIT]!==undefined && (!Number.isSafeInteger(b[WORKER_TOKEN_LIMIT]) || Number(b[WORKER_TOKEN_LIMIT])<0))
+        throw new Error('Worker 累计 token 额度必须为非负安全整数');
       if(b.global_proxy!==undefined)normalizeProbeProxy(b.global_proxy);
       if(b.shell_mode!==undefined)resolveShell(String(b.shell_mode));
       if(typeof b.python_interpreter==='string'&&b.python_interpreter.trim()){
@@ -269,7 +273,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     for(const key of poolKeys)if(b[key]!==undefined&&typeof b[key]!=='boolean')return reply.code(400).send({error:`${key} 必须为布尔值`});
     let resources:ReturnType<typeof resourcePolicy>|undefined;
     if(b.runtime_resource_policy!==undefined){try{resources=resourcePolicy(b.runtime_resource_policy);validateRuntimeResources(app.db,resources);}catch(error){return reply.code(400).send({error:(error as Error).message});}}
-    for(const [key,allowed] of Object.entries({pi_context_policy:['domain','native'],pi_mcp_loading:['deferred','direct']})){
+    for(const [key,allowed] of Object.entries({pi_context_policy:['native'],pi_mcp_loading:['deferred','direct']})){
       if(b[key]!==undefined&&!allowed.includes(String(b[key])))return reply.code(400).send({error:`无效 ${key}`});
     }
     const contextKeys=(['planner','worker'] as const).map(role=>({role,key:`${role}_context_budget_tokens`}));
@@ -282,7 +286,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
     // Both role settings are validated before either is changed.
     await app.db.transaction(async tx=>{
       if(b.workers!==undefined)await tx.platform().setWorkers(Number(b.workers));
-      for(const key of ['pi_context_policy','pi_mcp_loading','task_concurrency_enabled','task_concurrency_limit','active_task'])if(b[key]!==undefined)await tx.platform().setSetting(key,String(b[key]));
+      for(const key of [WORKER_TOKEN_LIMIT,'pi_context_policy','pi_mcp_loading','task_concurrency_enabled','task_concurrency_limit','active_task'])if(b[key]!==undefined)await tx.platform().setSetting(key,String(b[key]));
       for(const key of Object.keys(EXECUTION_DEFAULTS))if(b[key]!==undefined)await tx.platform().setSetting(key,String(b[key]).trim());
       if(b.web_search_enabled!==undefined){await tx.platform().setSetting('web_search_enabled',String(b.web_search_enabled));out.web_search_enabled=b.web_search_enabled;}
       if(b.web_search_backend!==undefined){await tx.platform().setSetting('web_search_backend','deepseek');out.web_search_backend='deepseek';}

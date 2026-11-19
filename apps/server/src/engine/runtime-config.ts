@@ -1,7 +1,6 @@
 import {acquireRuntimeResources,resourceScope,type RuntimeResourceLease} from './runtime-resources.js';
 import {prepareToolLoading} from '../agent/tool-loading.js';
 import {assertToolBinding} from '../agent/tool-registry.js';
-import {domainState} from '../agent/domain-state.js';
 import {skillReadAccess} from '../agent/resources.js';
 import {platformPolicy,validatePlatformRunner} from '../pi/platform-policy.js';
 import {resolveRolePrompt,hostProtocol} from '../agent/prompts.js';
@@ -71,9 +70,8 @@ async function createAdmittedRunner(db:Database,taskID:number,role:string,option
   model:configured.model,model_route:{provider:options.model.provider,id:options.model.id},streaming:options.streaming!==false,
   prompt_hash:digest(options.systemPrompt??''),tools:options.toolAllowlist??[],skills:options.allowedSkills??[],mcp:(options.mcpEntries??[]).map(e=>e.name)};
  const guard=options.guard;
- const loadDomainState=async()=>options.goalsPhase ? {...await options.loadDomainState?.()} : ({...await domainState(db,role,taskID,options.intentID),...await options.loadDomainState?.()});
  let runner!:AgentRunner;
- runner=await AgentRunner.create({...options,signal,loadDomainState,
+ runner=await AgentRunner.create({...options,signal,
   liveAllowedSkills:options.skillsDir?async()=>{const rows=(await db.query('SELECT v.skill_name FROM agent_skill_visibility v JOIN agents a ON a.id=v.agent_id WHERE a.key=$1 AND a.enabled AND v.enabled',[role])).rows;return (options.allowedSkills??[]).filter(name=>rows.some(row=>row.skill_name===name));}:undefined,platform:{role,taskID,conversationID,policy:configured.platform_policy},
   onRequestSize:async (size,purpose)=>{
    await options.onRequestSize?.(size,purpose);

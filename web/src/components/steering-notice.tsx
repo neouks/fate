@@ -33,7 +33,7 @@ export function SteeringNotice({step, getDetail, expanded, onExpandedChange, foc
       <AlertTitle>
         <Marker className="flex-wrap">
           <MarkerIcon><Flag/></MarkerIcon>
-          <MarkerContent className="flex-1 basis-40"><strong>{steeringSource(step)} 纠偏</strong> · <code>steer_work</code> → Worker{intent ? ` · 意图 #${intent}` : ''}</MarkerContent>
+          <MarkerContent className="flex-1 basis-40"><strong>{steeringSource(step)} 纠偏</strong> · {steeringSource(step)==='用户'?'直接对话':<code>steer_work</code>} → Worker{intent ? ` · 意图 #${intent}` : ''}</MarkerContent>
           <Badge variant="outline">{steeringStatus(step)}</Badge>
           {step.inherited && <Badge variant="secondary">来源任务 · 只读</Badge>}
         </Marker>

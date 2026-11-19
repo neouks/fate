@@ -94,6 +94,14 @@ test('PI successful compaction preserves the persisted original messages',async(
   await runner.dispose();runner=await AgentRunner.create(options);
   assert.deepEqual(runner.sessionEntries.filter(e=>e.type==='message').map(e=>e.id),original);
   assert.ok(runner.sessionEntries.some(e=>e.type==='compaction'));
+  faux.setResponses([context=>{
+    const sent=JSON.stringify(context.messages);
+    assert.ok(!sent.includes('first synthetic record '.repeat(1000)), 'PI sends the compacted context instead of old full text');
+    assert.ok(sent.includes('Summary: two synthetic records completed.'));
+    return fauxAssistantMessage('Continued from native summary.');
+  }]);
+  await runner.prompt('Continue');
+  assert.ok(JSON.stringify(runner.sessionEntries).includes('first synthetic record '.repeat(1000)), 'archived raw messages remain exact');
  }finally{await runner?.dispose();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}
 });
 

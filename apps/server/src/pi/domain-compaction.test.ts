@@ -6,6 +6,19 @@ import {test} from 'node:test';
 import {fauxAssistantMessage, fauxProvider} from '@earendil-works/pi-ai';
 import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {AgentRunner} from './runner.js';
+import {platformPolicy} from './platform-policy.js';
+import type {Database} from '../db/index.js';
+
+test('legacy domain configuration resolves to PI native compression without changing tool loading', async () => {
+  for (const configured of [undefined, 'domain', 'native']) {
+    const db = {platform: () => ({getSetting: async (key: string) => key === 'pi_context_policy' ? configured : 'direct'}),
+      query: async () => ({rows: []})} as unknown as Database;
+    const policy = await platformPolicy(db, 'worker');
+    assert.equal(policy.compaction, 'native');
+    assert.equal(policy.mcpLoading, 'direct');
+    assert.equal(policy.builtinLoading, 'direct');
+  }
+});
 
 for (const [stopReason, expected] of [
   ['length', /达到模型输出长度上限.*原始会话已保留/],

@@ -131,11 +131,36 @@ export async function readBroadcastPage(db:Database,taskID:number,q:Record<strin
  if(selectedKinds.some(k=>!kinds.has(k))||states.length>20||states.some(s=>s.length>64))throw fail('无效节点筛选');
  const search=typeof q.q==='string'?q.q.trim():'';if(Array.from(search).length>256)throw fail('搜索内容过长');
  const order=q.order==='asc'?'ASC':'DESC',countOnly=q.count_only==='1'||q.count_only==='true',edgeOffset=integer(q.edge_offset);
+ const factIntent=integer(q.fact_intent);
+ const groupIntents=q.group==='intent'&&!factIntent&&!search&&!selectedKinds.length&&!states.length;
  if(edgeOffset>2147483646)throw fail('关联分页位置超出范围');
  const expected=stamp(q.revision);
- const result=await graphProjection(db,taskID,expID,JSON.stringify(['broadcast',page,size,selectedKinds,states,search,order,countOnly,q.edges==='none',edgeOffset]),async tx=>{
+ const result=await graphProjection(db,taskID,expID,JSON.stringify(['broadcast',page,size,selectedKinds,states,search,order,countOnly,q.edges==='none',edgeOffset,groupIntents,factIntent]),async tx=>{
   const revision=await graphProjectionRevision(tx,taskID,expID);
   if(expected&&expected!==revision)throw fail('图谱已变化，请刷新第一页',409);
+  if(groupIntents||factIntent){
+   // Only fold facts with one visible producer. Unowned and ambiguous records
+   // remain individually accessible. Group before applying LIMIT/OFFSET.
+   const cte=`WITH ${OWNERS}, producers AS (
+    SELECT f.id, min(i.id) AS intent_id FROM visible f
+    JOIN exploration_edges e ON e.dst_id=f.id AND e.rel='yields'
+    JOIN visible i ON i.id=e.src_id AND i.kind='intent' AND i.exploration_id=f.exploration_id
+    WHERE f.kind='fact' AND f.state<>'origin' GROUP BY f.id HAVING count(*)=1
+   ), feed AS (${factIntent
+    ? 'SELECT id, id AS latest, 0 AS facts FROM producers WHERE intent_id=$2'
+    : `SELECT coalesce(p.intent_id,v.id) AS id,max(v.id) AS latest,count(p.id)::int AS facts
+       FROM visible v LEFT JOIN producers p ON p.id=v.id GROUP BY coalesce(p.intent_id,v.id)`})`;
+   const params=factIntent?[taskID,factIntent]:[taskID];
+   const total=Number((await tx.query(`${cte} SELECT count(*) n FROM feed`,params)).rows[0]!.n);
+   const rows=countOnly?[]:(await tx.query(`${cte} SELECT ${NODE}, f.facts AS fact_count,
+     last_node.created_at AS broadcast_ts,
+     CASE WHEN n.kind='intent' AND n.state NOT IN ('open','running') THEN
+      left(coalesce(nullif(n.payload#>>'{execution_stop,summary}',''),n.payload#>>'{execution_result,summary}'),768) END AS outcome_summary
+     FROM (SELECT * FROM feed ORDER BY latest ${order} LIMIT $${params.length+1} OFFSET $${params.length+2}) f
+     JOIN exploration_nodes n ON n.id=f.id JOIN owners o USING(exploration_id)
+     JOIN exploration_nodes last_node ON last_node.id=f.latest ORDER BY f.latest ${order}`,[...params,size,offset])).rows;
+   return {items:rows.map(node),total,page,size,revision,payload_preview:true,edges:[],refs:{},edge_total:0,edges_next_offset:null,has_more:offset+size<total};
+  }
   const params:unknown[]=[taskID,selectedKinds,states,`%${search.replace(/[\\%_]/g,'\\$&')}%`];
   const filter=`(cardinality($2::text[])=0 OR n.kind=ANY($2)) AND (cardinality($3::text[])=0 OR (CASE WHEN n.kind='goal' THEN goal_display_state(n.id) ELSE n.state END)=ANY($3))
    AND ($4::text='%%' OR n.payload::text ILIKE $4 OR n.origin ILIKE $4 OR n.id::text ILIKE $4)`;

@@ -1,4 +1,5 @@
 import {writeOrigin,writeAnchors,assertDirectWrite,sourceFields,sameSource} from './write-origin.js';
+import {assertOriginalEvidence} from '../evidence/history-placeholder.js';
 import { resolveGraphNode, authorizedNodes } from "../db/graph_view.js";
 // 探索图读写工具：record_fact（写通道纪律核心）、node_detail、
 // search_worker_traces / get_worker_trace（worker 间过程级信息交换）。
@@ -69,6 +70,7 @@ export function recordFactTool(ctx: ToolRunContext) {
             return {fact_id:Number(old.id),ref:`node:${old.id}`,version:Number(old.content_version),anchored_assets:savedAnchors.length,asset_ids:savedAnchors,writeback:savedWritebackReceipt(payload.writeback)};
           }
         }
+        assertOriginalEvidence(args);
         const payload: Record<string, unknown> = {
           summary: args.summary,
           ...sourceFields(c,origin),
