@@ -20,7 +20,7 @@ function fixture(prompt=previous.planner,wrapup=previous.wrapup){
 test('continuation migration matches only exact builtins and preserves history, edits and rollback selection',async()=>{
   const f=fixture();const result=await migratePlannerContinuation(f.db);
   assert.equal(result.prompt_updated,true);assert.equal(result.wrapup_updated,true);
-  assert.deepEqual(f.versions,[previous.planner,PLANNER_PROMPT]);assert.equal(f.get().currentWrapup,PLANNER_WRAPUP);
+  assert.deepEqual(f.versions,[previous.planner,previous.planner+'\n\n'+PLANNER_CONTINUATION_GUIDANCE]);assert.equal(f.get().currentWrapup,PLANNER_WRAPUP);
   assert.deepEqual(await migratePlannerContinuation(f.db),result);assert.equal(f.versions.length,2);
   f.select(0);await migratePlannerContinuation(f.db);assert.equal(f.get().selected,0);
   const custom=fixture(previous.planner+'\n自定义要求',previous.wrapup+' 自定义');

@@ -1,3 +1,4 @@
+import {INTENT_GRANULARITY_GUIDANCE} from './intent-granularity.js';
 import {CONTEXT_ITEM_LIMIT_GUIDANCE,INTENT_RETRY_GUIDANCE} from '../tools/input-contracts.js';
 import { WORKER_FINDING_BRIEF, FINDING_WRITE_GUIDANCE } from './finding-write-policy.js';
 import { REPORTER_SAVE_GUIDANCE } from '../evidence/report-sections.js';
@@ -46,7 +47,7 @@ export const PREVIOUS_REQUIRED_TOOL_CONTRACTS:Record<string,string> = {
 export function mandatoryToolContract(name: string, description: string): string {
   const contract = name === 'context_get' ? CONTEXT_ITEM_LIMIT_GUIDANCE : name === 'add_intent' ? INTENT_RETRY_GUIDANCE : undefined;
   if(!contract)return description;
-  for(const part of [PREVIOUS_REQUIRED_TOOL_CONTRACTS[name]!.trim(),contract])
+  for(const part of [PREVIOUS_REQUIRED_TOOL_CONTRACTS[name]!.trim(),contract,...(name==='add_intent'?[INTENT_GRANULARITY_GUIDANCE]:[])])
     if(!description.includes(part))description+=' '+part;
   return description;
 }

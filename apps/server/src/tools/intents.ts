@@ -76,7 +76,7 @@ export function addIntentTool(ctx: ToolRunContext) {
       name: "add_intent",
       description:
         "提交 1~4 条探索意图进 frontier，worker 将按优先级领取执行。提交前逐一与 open/running 意图及" +
-        "近期已完成意图比对。每条意图说明待执行的工作和目的，可包含明确的步骤和验收要求。contract.work 可选，legacy_text 仅做文本去重；dedup.related_intent_ids 表示局部交叉，需读取已有工作协调职责，不强制拆成更小单元。parent 必须是产出了证据的 fact/finding 节点" +
+        "近期已完成意图比对。每条意图只解决一个可独立验收的问题，说明必要证据和停止条件；依赖结果的后续工作待事实返回后另派。contract.work 可选，legacy_text 仅做文本去重；dedup.related_intent_ids 表示局部交叉，需读取已有工作协调职责，同一问题的必要步骤保留在一起。parent 必须是产出了证据的 fact/finding 节点" +
         "（发现驱动规划）。串行依赖链用 todo_write 记录，只派前置已满足的那一步。统一传 intents 数组；单条也放入数组，每项必填非空 summary。"+CONVERGENCE_ADD_INTENT_HINT,
       promptSnippet: "派发探索意图（先查重）",
       parameters: {
@@ -84,7 +84,7 @@ export function addIntentTool(ctx: ToolRunContext) {
         properties: {
           intents: {
             type: "array", minItems: 1, maxItems: 4,
-            description: "1–4 个可独立执行的方向；一个方向只放一个元素。每个元素都会创建真实工作，不要把说明、备注、重复概述或对上一项的引用作为额外元素。每项必填独立完整的 summary，任一项无效整批不提交",
+            description: "1–4 个前置已满足、可独立验收的问题；每个问题只放一个元素，依赖结果的后续工作本轮不创建。每个元素都会创建真实工作，不要把说明、备注、重复概述或对上一项的引用作为额外元素。每项必填独立完整的 summary，任一项无效整批不提交",
             items: { type: "object", properties: intentFields, required: ["summary"], additionalProperties: false,
               allOf:[
                 {anyOf:[{required:['retry_of','retry_kind','retry_reason']},{not:{anyOf:[{required:['retry_of']},{required:['retry_kind']},{required:['retry_reason']}]}}]},

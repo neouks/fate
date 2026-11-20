@@ -18,7 +18,7 @@ export const PREVIOUS_CONTEXT_GET_DESCRIPTION = '按 items 读取引用；summar
 
 /** Only behavioral hints belong here; parameter shapes and limits live in the schema. */
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
-  add_intent: '创建工作意图。summary 说明要做什么和目的，asset_ids 引用相关资产，parent_ids/contract.basis 引用已有事实。根据目标、依赖和证据决定工作粒度，可明确接口、参数、步骤及验收要求；contract 按需填写。实际调用并核对逐项成功回执才算派单；已有相同工作不重复提交，局部交叉先核对已有产出。',
+  add_intent: '创建工作意图。summary 说明要做什么和目的，asset_ids 引用相关资产，parent_ids/contract.basis 引用已有事实。每项只解决一个可独立验收的问题；本问题必要步骤与证据保留，依赖结果的后续工作另行派单，contract 按需填写。实际调用并核对逐项成功回执才算派单；已有相同工作不重复提交，局部交叉先核对已有产出。',
   dispatch_intents: '请求宿主下发已有待执行意图，仅 Main 可用；执行前检查任务状态和意图归属。',
   record_fact: '保存新增事实。Worker 默认一个意图在收尾时把相关观察总结成一条 fact 一次写回，summary 概括综合结论，detail 汇总观察、方法、细节和限制，evidence 保留关键原文。只有确实独立、无法归并的结论才拆分。单条传 summary 等顶层字段；独立结论批量只传 facts 数组，不混用。asset_ids 仅列实际涉及资产，scope 描述实际验证范围。核对逐项回执，部分成功只重试失败项。',
   asset_search: '检索本任务及直接来源资产摘要。普通检索提供 DSL，untested=true 查无明确范围测试记录的资产，不代表从未测试；legacy_tested 提示历史范围待核实。用 next_offset 续页，详情用 asset_get。',
@@ -65,11 +65,13 @@ export const PRE_CONVERGENCE_TOOL_DESCRIPTIONS:Record<string,string>={add_intent
 export const REVIEWED_CONVERGENCE_PROVE_GOAL='当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。';
 TOOL_DESCRIPTIONS.add_intent+=' '+CONVERGENCE_ADD_INTENT_HINT;
 TOOL_DESCRIPTIONS.prove_goal=CONVERGENCE_PROVE_GOAL_HINT;
+const PREVIOUS_INTENT_DESCRIPTION = '创建工作意图。summary 说明要做什么和目的，asset_ids 引用相关资产，parent_ids/contract.basis 引用已有事实。根据目标、依赖和证据决定工作粒度，可明确接口、参数、步骤及验收要求；contract 按需填写。实际调用并核对逐项成功回执才算派单；已有相同工作不重复提交，局部交叉先核对已有产出。';
 const PREVIOUS_STEER_DESCRIPTION = '仅用结构化 correction 缩减原验收项（stop_criteria），或向原验收项引用已有事实（reuse_evidence）；criterion_indices 是原 acceptance 的 0 起始索引。禁止自由文本新任务、改变目标或新增前置问题。收尾或完成后禁止纠偏；无意义或重复的直接 kill_work。';
 const PREVIOUS_STEER_CONTRACT = ' stop_criteria 不传 fact_ids；reuse_evidence 必须传 fact_ids。仅支持这两种结构化纠偏，不能追加自由文本方法或替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。';
 const PREVIOUS_FACT_DESCRIPTION = '保存新增事实，相关观察合并为同一结论。单条传 summary 等顶层字段；批量只传 facts 数组，不混用。asset_ids 仅列实际涉及资产，缺省不继承意图范围；scope 描述实际验证范围。核对逐项回执。';
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
   if(name==='steer_work'&&[PREVIOUS_STEER_DESCRIPTION,PREVIOUS_STEER_DESCRIPTION+PREVIOUS_STEER_CONTRACT].includes(String(stored)))stored=undefined;
+  if(name==='add_intent'&&[PREVIOUS_INTENT_DESCRIPTION,PREVIOUS_INTENT_DESCRIPTION+' '+CONVERGENCE_ADD_INTENT_HINT].includes(String(stored)))stored=undefined;
   if(name==='add_intent'&&typeof stored==='string')stored=retireExplorationInstructions('add_intent',stored);
   if(name==='steer_work'&&stored==='给所属运行中 Worker 追加纠偏，PI 在工具回合边界交付；不扩大授权。')stored=undefined;
   // Exact known test placeholder only; preserve intentional custom descriptions.
