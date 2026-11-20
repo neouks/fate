@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {createServer} from 'node:http';
+import {createServer, get} from 'node:http';
 import {gzipSync} from 'node:zlib';
 import {test} from 'node:test';
 import Fastify from 'fastify';
@@ -44,4 +44,33 @@ test('frontend configuration accepts origins only',()=>{
   for(const url of ['file:///tmp/site','http://user:password@localhost:3000','http://localhost:3000/sub','http://localhost:3000/?token=secret']){
     assert.throws(()=>registerFrontendProxy(Fastify(),url),/frontend_url/);
   }
+});
+
+test('cancelled frontend streams never fall through to local routes and leave API usable', async t => {
+  let upstreamClosed!: () => void;
+  const closed = new Promise<void>(resolve => { upstreamClosed = resolve; });
+  const upstream = createServer((_req, res) => {
+    res.writeHead(200, {'content-type': 'application/octet-stream'});
+    res.write(Buffer.alloc(64 * 1024));
+    res.once('close', upstreamClosed);
+  });
+  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  const app = Fastify();
+  registerFrontendProxy(app, `http://127.0.0.1:${(upstream.address() as {port:number}).port}`);
+  let fallthrough = 0;
+  app.setNotFoundHandler((_req, reply) => { fallthrough++; reply.raw.destroy(); });
+  app.get('/api/health', async () => ({ok: true}));
+  t.after(async () => { await app.close(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); });
+  const address = await app.listen({host: '127.0.0.1', port: 0});
+  await new Promise<void>((resolve, reject) => {
+    get(address + '/_next/static/chunk.js', response => {
+      response.once('data', () => { response.destroy(); resolve(); });
+      response.once('error', reject);
+    }).once('error', reject);
+  });
+  await Promise.race([closed, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('upstream not cancelled')), 2000); timer.unref(); })]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fallthrough, 0, 'a cancelled proxy response must not run the local 404 handler');
+  const health = await fetch(address + '/api/health');
+  assert.deepEqual(await health.json(), {ok: true});
 });
