@@ -1,3 +1,4 @@
+import {nativeToolNames} from './native-tools.js';
 import {pendingHumanInputSources} from '../db/human-input.js';
 import {normalizeWorkerInstructions} from './worker-fact-policy.js';
 import {stoppedWorkerCriteria} from './worker-correction.js';
@@ -315,7 +316,7 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
     extensionFactories:execution.extensions,
     ...await roleResources(db, "worker", agentEnv.skillsDir),
     signal: input.signal, maxTurns, maxDurationMs,
-    toolAllowlist: ["read", "write", "edit", "bash", "mcp__*",...execution.names, ...tools.map((t) => t.name)].filter((n) => !disabledBuiltin.has(n)),
+    toolAllowlist: [...nativeToolNames("worker"), "mcp__*",...execution.names, ...tools.map((t) => t.name)].filter((n) => !disabledBuiltin.has(n)),
     resumeSessionPath: active.file,
     canonicalSessionPath:active.canonical,flushNativeSession:active.flush,
     onSessionCompacted:async manager=>{await active.compact(manager);},
@@ -492,7 +493,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db, "planner", agentEnv.skillsDir),
     signal: input.signal, ...plannerBudget,
-    toolAllowlist: ["read", "mcp__*", ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
+    toolAllowlist: [...nativeToolNames("planner"), "mcp__*", ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     resumeSessionPath:active?.file??plannerSessionFile(dataDir,expID),
     canonicalSessionPath:plannerSessionFile(dataDir,expID),flushNativeSession:active?.flush,
     onSessionCompacted:async manager=>{await active?.rebase(manager,()=>syncPlannerHistory(db,taskID,expID,plannerSessionFile(dataDir,expID),input.signal));},
@@ -636,7 +637,7 @@ async function runMainSession(input:MainChatInput,active:NativeRunSession):Promi
     legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db, "mainagent", agentEnv.skillsDir),
     signal: input.signal, ...agentBudgets(rc,{maxTurns:input.maxTurns,maxDurationMs:120_000}),
-    toolAllowlist: ["read","write","edit","bash","mcp__*",...execution.names, ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
+    toolAllowlist: [...nativeToolNames("mainagent"),"mcp__*",...execution.names, ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     resumeSessionPath: active.file,
     canonicalSessionPath:active.canonical,flushNativeSession:active.flush,
     onSessionCompacted:async manager=>{await active.compact(manager);},
@@ -718,7 +719,7 @@ async function runLegacyGoalsDecompose(input: GoalsRunInput): Promise<WorkerRunR
     customTools: tools,
     legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db,"goals",agentEnv.skillsDir),
-    toolAllowlist: ['read',...tools.map((t) => t.name)].filter(name=>!disabled.has(name)),
+    toolAllowlist: [...nativeToolNames('goals'),...tools.map((t) => t.name)].filter(name=>!disabled.has(name)),
     signal: input.signal, ...agentBudgets(gc,{maxTurns:input.maxTurns??8,maxDurationMs:120_000}),
     inMemory: true,
     wrapup: () => goalsSaved ? undefined : {prompt:gc.wrapupPrompt||hostProtocol('goals')},

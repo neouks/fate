@@ -6,7 +6,7 @@ import path from 'node:path';
 import type {Database} from '../db/index.js';
 import {workerTools,runContext} from '../tools/index.js';
 import {toolLoadout,prepareToolLoading} from './tool-loading.js';
-import {NATIVE_TOOLS} from './tool-registry.js';
+import {NATIVE_TOOLS,RESIDENT_NATIVE_TOOLS} from './native-tools.js';
 import {WORKER_PROMPT} from './prompts.js';
 import {AgentRunner} from '../pi/runner.js';
 import {ModelRuntime,type ToolDefinition} from '@earendil-works/pi-coding-agent';
@@ -22,7 +22,7 @@ test('Worker declarations stay small even when prompt/Skill mentions writes and 
   const db={platform:()=>({getBool:async()=>true,getSetting:async()=>null,getAgentByKey:async()=>({webSearch:true})}),query:async(sql:string)=>({rows:names.concat('node_detail').map(key=>({key,kind:key==='custom_probe'?'custom':'builtin',enabled:key!=='http_request',agents:['worker']})).filter(r=>!sql.includes("kind='builtin'")||r.kind==='builtin')})} as unknown as Database;
   const customTools=names.filter(n=>!NATIVE_TOOLS.includes(n)).map(tool);
   const loaded=await prepareToolLoading(db,'worker',{toolAllowlist:names,customTools,legacyTools:[tool('node_detail')],systemPrompt:WORKER_PROMPT,skillsDir:dir,allowedSkills:['fixture']},false);
-  assert.deepEqual(loaded.toolLoading.initialActive,[...NATIVE_TOOLS,'context_get','context_search','ask_user','record_fact','node_detail']);
+  assert.deepEqual(loaded.toolLoading.initialActive,[...RESIDENT_NATIVE_TOOLS,'context_get','context_search','ask_user','record_fact','node_detail']);
   assert.ok(!loaded.toolAllowlist.includes('http_request'));
   for(const name of ['insert_assets','report_finding','web_search','custom_probe']){
    assert.ok(loaded.toolLoading.deferred.includes(name));
@@ -78,7 +78,7 @@ test('PI discovers deferred platform/custom tools, executes them and restores on
  let runner:AgentRunner|undefined;
  try{
   runner=await AgentRunner.create(options);
-  for(const name of NATIVE_TOOLS)assert.ok(runner.activeToolNames.includes(name));
+  for(const name of RESIDENT_NATIVE_TOOLS)assert.ok(runner.activeToolNames.includes(name));
   assert.ok(runner.activeToolNames.includes('record_fact'));
   assert.ok(!runner.activeToolNames.includes('insert_assets'));
   faux.setResponses([fauxAssistantMessage([fauxToolCall('tool_search',{query:'insert_assets',limit:1})]),fauxAssistantMessage([fauxToolCall('insert_assets',{})]),fauxAssistantMessage('done')]);

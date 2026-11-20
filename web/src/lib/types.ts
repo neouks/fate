@@ -1385,6 +1385,7 @@ export interface Tool {
   schema_read_only?: boolean;
   description_source?: string;
   loading?: Record<string, "resident" | "deferred">;
+  effective?: Record<string, {configured_bound: boolean; status: "resident" | "deferred" | "unavailable"; reason?: string}>;
   key: string;
   system: boolean;
   description: string;

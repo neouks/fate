@@ -1,3 +1,4 @@
+import {nativeToolNames} from '../agent/native-tools.js';
 import {trafficSearchTool} from '../tools/traffic-search.js';
 import {acquireRuntimeResources,type RuntimeResourceLease} from './runtime-resources.js';
 import type {ActivityJournal} from './activity-outbox.js';
@@ -201,7 +202,7 @@ export class ConversationService {
     wrapup:()=>role==='reporter'&&pendingReports.size?{prompt:config.wrapupPrompt||hostProtocol('reporter')}:undefined,
     extensionFactories:execution?.extensions,
     systemPrompt:prompt+taskContext+(task?constraintBlock(await loadConstraints(this.db,task.exploration_id)):''),customTools:bound,legacyTools:task?legacyReadCandidates(ctx):[],
-    toolAllowlist:[...(execution?.names??[]),...bound.map(t=>t.name),...(['auto','reporter','pentest'].includes(role)?['read',...(role==='pentest'&&task?['bash','write','edit']:[])].filter(n=>!disabled.has(n)):[]),...(role!=='reporter'&&(role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
+    toolAllowlist:[...(execution?.names??[]),...bound.map(t=>t.name),...nativeToolNames(role,!!task).filter(n=>!disabled.has(n)),...(role!=='reporter'&&(role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
     guard:async g=>{await activeSession!.flush();await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return;},onActivity:persist},id);
    await this.db.query('UPDATE conversations SET session_file=$2 WHERE id=$1',[id,runner.sessionFile??path.join(cwd,'session.jsonl')]);
    const triggerEvents=claimed.run.trigger_id?(await this.db.query('SELECT event_key,kind,task_id,payload FROM agent_trigger_events WHERE event_key=ANY($1::text[]) ORDER BY id',[claimed.run.event_keys??[]])).rows:null;

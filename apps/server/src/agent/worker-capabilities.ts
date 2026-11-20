@@ -1,3 +1,4 @@
+import {nativeToolNames} from './native-tools.js';
 import {TERMINAL_TOOLS} from '../pi/terminal.js';
 import {applyToolBindings, disabledBuiltinTools} from './tool-bindings.js';
 import {boundCustomTools} from '../tools/custom.js';
@@ -21,7 +22,7 @@ export async function workerCapabilities(ctx: ToolRunContext) {
     platformPolicy(ctx.db,'worker'),resolveRolePrompt(ctx.db,'worker'),
   ]);
   const candidates = [...new Set([
-    ...['bash','read','write','edit'].filter(name => !disabled.has(name)),
+    ...nativeToolNames('worker').filter(name => !disabled.has(name)),
     ...(agent?.interactiveShell?TERMINAL_TOOLS.filter(name=>!disabled.has(name)):[]),
     ...tools.map(t => t.name), ...custom.map(t => t.key),
     ...(resources.mcpEntries?.length ? resources.mcpResourceTools ?? [] : []),

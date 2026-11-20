@@ -1,3 +1,5 @@
+import {toolAllowedInSession} from '../agent/tool-registry.js';
+import {SDK_NATIVE_TOOLS,nativeToolDefinitions,nativeToolRejection} from '../agent/native-tools.js';
 import {projectWebHistory} from '../search/context.js';
 import {WORKER_FACT_GUIDANCE} from '../agent/worker-fact-policy.js';
 import {toolDeclarationWindow} from './tool-declaration-window.js';
@@ -12,7 +14,7 @@ import {ActivityDelivery} from './activity-delivery.js';
 import type {WorkerTokenBudget} from '../db/worker-token-budget.js';
 import {nativeStreamID,withNativeActivity,type NativeActivityIdentity,type NativeActivityReference} from './native-activity.js';
 import type {ToolLoading} from '../agent/tool-loading.js';
-import {platformMcpExtension,hasDeferredMcp,MCP_RESOURCE_TOOLS,toolDiscoveryInstructions} from './platform-mcp.js';
+import {platformMcpExtension,hasDeferredMcp,declaredToolNames,toolDiscoveryInstructions} from './platform-mcp.js';
 import {nativeCompactionExtension,type CompactionHealth} from './native-compaction.js';
 import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
 import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
@@ -371,6 +373,18 @@ export class AgentRunner {
             const skills=formatSkillsForPrompt(loadBoundSkills(opts.skillsDir,names).skills,'read').trim();
             messages=messages.map(m=>m.role==='system'&&m.sections?{...m,sections:{...m.sections,skills:skills||null}}:m);
           }
+          if(opts.discoveryGuard){
+            const revoked=new Set<string>();
+            const names=new Set([...api.getActiveTools(),...messages.flatMap(m=>m.role==='system'?m.toolsAdded?.map(t=>t.name)??[]:[])]);
+            for(const name of names){
+              if(name.startsWith('mcp__'))continue;
+              try{if(opts.toolAllowlist&&!permitted(name))throw new Error('未授权');await opts.discoveryGuard(name);}catch{revoked.add(name);}
+            }
+            if(revoked.size){
+              api.setActiveTools(api.getActiveTools().filter(name=>!revoked.has(name)));
+              messages=messages.map(m=>m.role==='system'&&m.toolsAdded?{...m,toolsAdded:m.toolsAdded.filter(t=>!revoked.has(t.name))}:m);
+            }
+          }
           if(opts.mcpGuard&&opts.resourceOwners?.size){
             const revoked=new Set<string>();
             for(const [name,owner]of opts.resourceOwners){try{await opts.mcpGuard(owner.server,'tools/call',owner.tool);}catch{revoked.add(name);}}
@@ -425,8 +439,8 @@ export class AgentRunner {
         return payload;
       });
     };
-    const declared=[...new Set([...(opts.toolAllowlist??[]),...(hasDeferredMcp(opts)||opts.toolLoading?.deferred.length?['tool_search']:[]),...(opts.mcpEntries?.length&&opts.toolAllowlist?.includes('mcp__*')?(opts.mcpResourceTools??MCP_RESOURCE_TOOLS):[])])];
-    const permitted=(name:string)=>roleAllowsTool(opts.platform?.role,name)&&(declared.includes(name)||name.startsWith('mcp__')&&declared.includes('mcp__*'));
+    const declared=declaredToolNames(opts);
+    const permitted=(name:string)=>toolAllowedInSession(name,declared,opts.platform?.role,opts.platform?opts.platform.taskID>0:true);
 
 		const settings = SettingsManager.inMemory({
       // The host owns model requests, usage accounting and task lifetime.
@@ -456,9 +470,11 @@ export class AgentRunner {
 			});
 		};
 
-		const guardExtension: ExtensionFactory | undefined = opts.platform?.role==='planner' || opts.guard || opts.settlementTools || opts.stopWhen
+		const guardExtension: ExtensionFactory | undefined = opts.toolAllowlist || opts.platform?.role==='planner' || opts.guard || opts.settlementTools || opts.stopWhen
 			? (pi) => {
 					pi.on('tool_call', async (event, context): Promise<ToolCallEventResult | undefined> => {
+            if(opts.toolAllowlist&&!permitted(event.toolName))return {block:true,reason:`工具 ${event.toolName} 未获当前会话授权`,terminate:false};
+            try{await opts.discoveryGuard?.(event.toolName);}catch(error){return {block:true,reason:String(error),terminate:false};}
             const rejection=roleToolRejection(opts.platform?.role,event.toolName);
             if(rejection)return {block:true,reason:rejection,terminate:false};
             if(await opts.stopWhen?.())return {block:true,reason:'本角色的最终结果已提交，不能继续操作',terminate:false};
@@ -634,7 +650,7 @@ export class AgentRunner {
 			noExtensions: true,
 			extensionFactories: [activityExtension, diagnosticsExtension, modelPolicyExtension, compactionExtension, guardExtension, wrapupExtension, budgetExtension, mcpFactory,toolDeclarationWindow(opts.toolLoading,()=>closing.active),...(opts.extensionFactories??[])].filter(
 				(e): e is ExtensionFactory => typeof e === 'function',
-			).map(factory=>wrapRegisteredTools(opts.toolLoading||opts.platform?.role==='planner'?restrictRegisteredTools(factory,permitted):factory,tool=>{
+			).map(factory=>wrapRegisteredTools(opts.toolAllowlist||opts.platform?.role==='planner'?restrictRegisteredTools(factory,permitted):factory,tool=>{
         const wrapped=opts.wrapExecutionTool?.(tool)??tool;
         return opts.toolLoading?.deferred.includes(tool.name)?{...wrapped,exposure:'deferred'}:wrapped;
       })),
@@ -660,6 +676,12 @@ export class AgentRunner {
 				: SessionManager.create(opts.cwd, opts.sessionDir);
 
     const customTools=[...(opts.customTools??[])];
+    // Deferred native definitions need native exposure metadata as well as an
+    // inactive initial loadout, so discovery never exposes them prematurely.
+    if(opts.toolLoading)for(const tool of nativeToolDefinitions(opts.cwd)){
+      if(permitted(tool.name)&&opts.toolLoading.deferred.includes(tool.name)&&!customTools.some(t=>t.name===tool.name))
+        customTools.push({...tool,exposure:'deferred'});
+    }
     if(opts.wrapExecutionTool || opts.writeWorkspaceFile)for(const definition of nativeWorkspaceFileTools(opts.cwd, opts.writeWorkspaceFile)){
       const tool=definition as ToolDefinition;
       if(opts.toolAllowlist?.includes(tool.name)&&!customTools.some(t=>t.name===tool.name))customTools.push(tool);
@@ -674,8 +696,8 @@ export class AgentRunner {
 			sessionManager,
 			resourceLoader: loader,
 			tools:opts.toolLoading?undefined:opts.toolAllowlist?declared:undefined,
-      excludeTools:opts.toolLoading?['read','bash','write','edit','grep','find','ls'].filter(n=>!permitted(n)):undefined,
-			customTools:(opts.toolLoading?customTools.filter(t=>permitted(t.name)):customTools).map(t=>opts.wrapExecutionTool?.(t)??t),
+      excludeTools:SDK_NATIVE_TOOLS.filter(name=>nativeToolRejection(opts.platform?.role,name,opts.platform?opts.platform.taskID>0:true)||opts.toolAllowlist&&!permitted(name)),
+			customTools:(opts.toolAllowlist?customTools.filter(t=>permitted(t.name)):customTools).map(t=>opts.wrapExecutionTool?.(t)??t),
 		});
 
 		const runner = new AgentRunner(session, opts, activityDelivery);

@@ -23,14 +23,13 @@ import type { Agent, Tool, RoleToolPreview } from "@/lib/types";
 
 const historic = (t: Tool) => t.implementation_status === "retired" || t.implementation_status === "unsupported";
 const stateLabel = { active: "当前实现", compatibility: "兼容入口", retired: "已退役", unsupported: "无当前实现" };
-// Older catalogs may omit source. Keep their platform entries visible without
-// exposing pi or MCP helpers in this management view.
+// Show both platform and pi tools; MCP resources remain in MCP settings.
+// Older catalogs may omit source.
 const NON_PLATFORM_LEGACY_KEYS = new Set([
-  "read", "bash", "write", "edit", "tool_search",
   "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource",
 ]);
 const isPlatformTool = (tool: Tool) =>
-  tool.system && (tool.source ? tool.source === "platform" : !NON_PLATFORM_LEGACY_KEYS.has(tool.key));
+  tool.system && (tool.source ? (tool.source === "platform" || tool.source === "pi") : !NON_PLATFORM_LEGACY_KEYS.has(tool.key));
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep in sync with traffic.SeedToolMetas.
@@ -230,8 +229,8 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
       <div className="mt-auto flex flex-wrap gap-1 pt-1">
         {tool.agents.length === 0 && <span className="text-muted-foreground text-[10px]">（未绑定 Agent）</span>}
         {tool.agents.map((a) => (
-          <Badge key={a} variant="outline" className="px-1.5 py-0 text-[10px]">
-            {a}{tool.loading?.[a] ? ` · ${tool.loading[a] === "resident" ? "常驻" : "按需"}` : ""}
+          <Badge key={a} variant="outline" title={tool.effective?.[a]?.reason} className="px-1.5 py-0 text-[10px]">
+            {a}{tool.loading?.[a] ? ` · ${tool.loading[a] === "resident" ? "常驻" : "按需"}` : tool.effective?.[a]?.status === "unavailable" ? ` · 未生效：${tool.effective[a].reason}` : ""}
           </Badge>
         ))}
       </div>
@@ -315,14 +314,14 @@ export default function ToolsPage() {
           <CardHeader>
             <CardTitle>角色装配预览</CardTitle>
             <CardDescription>
-              预览当前配置下的新任务会话。数量仅计平台工具；Schema 大小含 pi 和自定义工具，不含 MCP。
+              预览当前配置下的新任务会话。数量包含平台和 pi 工具；绑定不会覆盖角色限制，未生效项会显示原因。Schema 大小不含 MCP。
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {roles.map((r) => (
               <div key={r.role} className="rounded-md border p-3 text-sm">
                 <strong>{r.role}</strong>
-                <p>平台常驻 {r.resident.filter((key) => platformKeys.has(key)).length} · 平台按需 {r.deferred.filter((key) => platformKeys.has(key)).length}</p>
+                <p>内置常驻 {r.resident.filter((key) => platformKeys.has(key)).length} · 内置按需 {r.deferred.filter((key) => platformKeys.has(key)).length}</p>
                 <p className="text-muted-foreground text-xs">运行 Schema（含 pi 和自定义工具）{(r.schema_bytes.resident / 1024).toFixed(1)} KiB</p>
                 <p className="text-muted-foreground text-xs">{r.policy_version}</p>
                 {r.fallback && <p className="text-xs">{r.fallback}</p>}
@@ -341,7 +340,7 @@ export default function ToolsPage() {
         <TabsContent value="system">
           <Card>
             <CardHeader>
-              <CardTitle>平台内置工具</CardTitle>
+              <CardTitle>内置工具（平台与 pi）</CardTitle>
               <CardDescription>
                 {query.trim()
                   ? `${systemTools.length} / ${allSystemCount} 个匹配，点击卡片编辑描述、只读参数及 Agent 绑定`
@@ -351,7 +350,7 @@ export default function ToolsPage() {
             <CardContent>
               {systemTools.length === 0 ? (
                 <p className="text-muted-foreground py-6 text-center text-sm">
-                  {query.trim() ? "没有匹配的平台内置工具" : "暂无平台内置工具"}
+                  {query.trim() ? "没有匹配的内置工具（平台与 pi）" : "暂无内置工具（平台与 pi）"}
                 </p>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

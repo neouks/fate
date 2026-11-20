@@ -1,3 +1,4 @@
+import {NATIVE_TOOL_CATALOG} from '../agent/native-tools.js';
 import {migrateSeriesGoals} from '../agent/goals-series-migration.js';
 import {migrateDirectionWriteback} from '../agent/direction-migration.js';
 import {migrateRetiredExplorationPolicy} from '../agent/retired-exploration-policy.js';
@@ -860,12 +861,8 @@ const BUILTIN_SKILL_VISIBILITY: Record<string,string[]> = {"api-recon":["auto","
 export async function seedBuiltinTools(db: Database): Promise<void> {
   const P = ["planner"], W = ["worker"], M = ["mainagent"], G = ["goals"];
   const SHARED = ["planner", "worker", "mainagent"];
-  const ALL = ["planner", "worker", "mainagent", "goals"];
   const seeds: Array<[string, string, string[]]> = [
-    ["bash", "执行 shell 命令（出口网关记录任务流量）", ALL],
-    ["read", "读取文件", [...ALL,"auto","reporter","pentest"]],
-    ["write", "写入文件", ["worker"]],
-    ["edit", "编辑文件（字符串替换）", ["worker"]],
+    ...NATIVE_TOOL_CATALOG.map(t=>[t.name, '', t.roles] as [string,string,string[]]),
     ["graph_overview", "读取探索态势总览（目标/frontier/在跑/近期事实/覆盖度）", SHARED],
     ["node_detail", "钻取节点详情与血缘", SHARED],
     ["search_worker_traces", "检索其他 work 的执行过程观察", SHARED],

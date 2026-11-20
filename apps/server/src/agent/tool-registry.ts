@@ -1,8 +1,9 @@
-import {roleToolRejection} from './planner-capabilities.js';
+import {NATIVE_TOOLS,RESIDENT_NATIVE_TOOLS,nativeToolRejection} from './native-tools.js';
+export {NATIVE_TOOLS} from './native-tools.js';
+import {roleAllowsTool,roleToolRejection} from './planner-capabilities.js';
 /** Catalog identity and exposure policy. Execution implementations remain native pi/domain tools. */
 export const TOOL_POLICY_VERSION = 'lean-tools-v1';
 export const ACTIVE_ROLES = ['goals','planner','mainagent','worker','auto','pentest','reporter'] as const;
-export const NATIVE_TOOLS = ['read','bash','write','edit'];
 export const TOOL_ALIASES: Record<string,string> = {
   node_detail:'context_get',search_worker_traces:'context_search',get_worker_trace:'context_get',
   expand_index:'context_search',expand_digest:'context_get',list_facts:'context_search',
@@ -35,7 +36,7 @@ const core:Record<string,string[]>={
   reporter:common,
 };
 export function isCoreTool(role:string,name:string) {
-  return NATIVE_TOOLS.includes(name)||name==='tool_search'||core[role]?.includes(name)===true;
+  return RESIDENT_NATIVE_TOOLS.includes(name)||name==='tool_search'||core[role]?.includes(name)===true;
 }
 export function toolIdentity(name:string,kind='builtin') {
   const status=kind!=='builtin'?'active':RETIRED_TOOLS.has(name)?'retired':TOOL_ALIASES[name]?'compatibility':supported.has(name)?'active':'unsupported';
@@ -46,10 +47,16 @@ export function toolIdentity(name:string,kind='builtin') {
 
 /** Sub-capabilities keep their old switches after entrypoints are merged. */
 export async function assertToolBinding(db:import('../db/index.js').Database,role:string,key:string) {
-  const rejection=roleToolRejection(role,key);if(rejection)throw new Error(rejection);
+  const rejection=roleToolRejection(role,key)??nativeToolRejection(role,key);if(rejection)throw new Error(rejection);
   if(RETIRED_TOOLS.has(key))throw new Error(`工具 ${key} 已移除`);
   if(TOOL_ALIASES[key])await assertToolBinding(db,role,TOOL_ALIASES[key]!);
   const row=(await db.query('SELECT enabled,agents FROM tools WHERE key=$1',[key])).rows[0];
   if(row&&(row.enabled===false||!Array.isArray(row.agents)||!row.agents.includes(role)))
     throw new Error(`当前角色无 ${key} 读取或执行权限`);
+}
+
+/** The same ceiling and session grant apply to registration, discovery and calls. */
+export function toolAllowedInSession(name:string,declared:readonly string[],role?:string,taskBound=true){
+  return !nativeToolRejection(role,name,taskBound)&&roleAllowsTool(role,name)&&!RETIRED_TOOLS.has(name)&&
+    (declared.includes(name)||name.startsWith('mcp__')&&declared.includes('mcp__*'));
 }

@@ -1,10 +1,11 @@
+import {nativeToolRejection} from './native-tools.js';
 import {roleAllowsTool} from './planner-capabilities.js';
 import {skillFilePath} from './skill-files.js';
 import {readFile} from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
 import {createInterface} from 'node:readline';
 import {applyToolBindings} from './tool-bindings.js';
-import {TOOL_POLICY_VERSION,TOOL_ALIASES,isCoreTool,toolIdentity,RETIRED_TOOLS} from './tool-registry.js';
+import {TOOL_POLICY_VERSION,TOOL_ALIASES,isCoreTool,RETIRED_TOOLS} from './tool-registry.js';
 import type {AgentRunnerOptions} from '../pi/runner.js';
 import type {Database} from '../db/index.js';
 import type {ToolDefinition} from '@earendil-works/pi-coding-agent';
@@ -43,12 +44,12 @@ export async function legacyToolSession(file:string):Promise<boolean>{
 }
 /** Pure loadout shared with preview. Filtering never introduces a tool absent from the bound set. */
 export function toolLoadout(role:string,options:Pick<AgentRunnerOptions,'customTools'|'toolAllowlist'>,settings:{direct?:boolean;legacy?:boolean;referenced?:string[];custom?:string[];fallback?:string}={}) {
- const allowed=[...new Set(options.toolAllowlist??[])].filter(n=>roleAllowsTool(role,n)&&!RETIRED_TOOLS.has(n));
+ const allowed=[...new Set(options.toolAllowlist??[])].filter(n=>roleAllowsTool(role,n)&&!nativeToolRejection(role,n)&&!RETIRED_TOOLS.has(n));
  const compatibility=allowed.filter(n=>TOOL_ALIASES[n]&&(settings.legacy||settings.referenced?.includes(n)||!allowed.includes(TOOL_ALIASES[n]!)));
  const names=allowed.filter(n=>!TOOL_ALIASES[n]||compatibility.includes(n));
  const customTools=(options.customTools??[]).filter(t=>names.includes(t.name)).map(compactToolSchema);
  // A mention in a prompt/Skill is not a request to declare its full schema.
- // Keep native tools and legacy aliases available; PI discovers domain/custom tools.
+ // Keep resident tools and legacy aliases available; PI discovers all other tools.
  const deferred=settings.direct?[]:names.filter(n=>!n.includes('*')&&!n.startsWith('mcp__')&&!isCoreTool(role,n)&&!compatibility.includes(n));
  const initialActive=names.filter(n=>!deferred.includes(n));
  const policy:ToolLoading={version:TOOL_POLICY_VERSION,initialActive,deferred,compatibility,referencedActive:initialActive.filter(n=>settings.referenced?.includes(n)),...(!settings.direct&&deferred.length?{idleToolRequests:2}:{}),...(settings.fallback?{fallback:settings.fallback}:{})};

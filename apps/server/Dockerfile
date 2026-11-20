@@ -18,8 +18,8 @@ RUN cd apps/server && pnpm run build
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
-# 常用工具：worker 的 bash 工具会用到
-RUN apk add --no-cache curl ripgrep vim jq nmap bash
+# pi grep/find use rg/fd directly; install them before serving model requests.
+RUN apk add --no-cache curl ripgrep fd vim jq nmap bash
 COPY --from=build /repo/apps/server/dist ./dist
 COPY --from=build /repo/apps/server/node_modules ./node_modules
 COPY --from=build /repo/apps/server/package.json ./package.json

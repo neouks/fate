@@ -50,6 +50,13 @@ export function runProgram(file:string,args:string[],options:{cwd:string;env?:No
 }
 export async function configuredBash(db:Database,cwd:string,env:Record<string,string>):Promise<ToolDefinition>{
  const shell=resolveShell(await db.platform().getSetting('shell_mode')??'auto');
- const tool=createBashToolDefinition(cwd,{operations:{exec:async(command,directory,options)=>runProgram(shell.path,[...shell.args,command],{cwd:directory,env:{...options.env,...env},signal:options.signal,timeoutMs:options.timeout===undefined?undefined:options.timeout*1000,onData:options.onData})}}) as unknown as ToolDefinition;
+ // Bash-compatible interpreters use pi's native process lifecycle and output handling.
+ // Keep the adapter only for interpreters with different invocation syntax.
+ const tool=createBashToolDefinition(cwd,['bash','gitbash'].includes(shell.mode)?{
+  shellPath:shell.path,spawnHook:context=>({...context,env:{...context.env,...env}}),
+ }:{operations:{exec:async(command,directory,options)=>runProgram(shell.path,[...shell.args,command],{
+  cwd:directory,env:{...options.env,...env},signal:options.signal,
+  timeoutMs:options.timeout===undefined?undefined:options.timeout*1000,onData:options.onData,
+ })}}) as unknown as ToolDefinition;
  tool.description+=`\n实际命令解释器：${shell.mode}。请使用该解释器的语法。`;return tool;
 }
