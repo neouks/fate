@@ -12,7 +12,7 @@ import {recoverExpiredRuntimes} from './runtime-config.js';
 import {workerStopReceipt,failureReason,persistedWorkerAbortCause,type WorkerStopReason} from './worker-outcome.js';
 import {ConversationService} from './conversations.js';
 import {normalizeContract,validateResult,type IntentResult} from '../agent/intent-contract.js';
-import {correctionMessage,stoppedWorkerCriteria,validateWorkerCorrection,type WorkerCorrection} from '../agent/worker-correction.js';
+import {correctionIdentity,correctionMessage,stoppedWorkerCriteria,validateWorkerCorrection,type WorkerCorrection} from '../agent/worker-correction.js';
 import {validateResultEvidence} from '../tools/coordination.js';
 import {randomUUID} from 'node:crypto';
 import {pendingPlannerContext,acknowledgePlannerContext} from '../db/planner-context.js';
@@ -1041,7 +1041,18 @@ export class Engine {
     await handle.done;
   }
 
+  private steeringQueues = new Map<string,Promise<void>>();
+
   async steerWork(taskID:number,intentID:number,input:string|WorkerCorrection,source='planner'){
+    // Serialize receipt check + enqueue for this intent, including concurrent agents.
+    const key=`${taskID}:${intentID}`,previous=this.steeringQueues.get(key);
+    let release!:()=>void;const current=new Promise<void>(resolve=>{release=resolve;});
+    this.steeringQueues.set(key,current);
+    try{await previous;return await this.steerWorkOnce(taskID,intentID,input,source);}
+    finally{release();if(this.steeringQueues.get(key)===current)this.steeringQueues.delete(key);}
+  }
+
+  private async steerWorkOnce(taskID:number,intentID:number,input:string|WorkerCorrection,source:string){
     if(source==='user'&&(typeof input!=='string'||!input.trim()||Array.from(input).length>4000))throw Object.assign(new Error('纠偏消息需要 1–4000 字符'),{statusCode:400});
     const rt=this.rt(taskID);
     if(!rt)throw Object.assign(new Error('当前执行器没有运行此任务，请刷新后重试'),{statusCode:409});
@@ -1062,12 +1073,12 @@ export class Engine {
         for(const id of correction.fact_ids)if(!readable.has(id))
           throw Object.assign(new Error(`证据 #${id} 不是当前任务有效的事实或 finding`),{statusCode:400});
       }
-      if(correction.kind==='reuse_evidence' && (await this.db.query(`SELECT 1 FROM activity
+      if(correction.kind!=='stop_criteria' && (await this.db.query(`SELECT 1 FROM activity
         WHERE exploration_id=$1 AND node_id=$2 AND kind='status' AND tool='steer_work'
         AND metadata->>'event_type'='steering' AND metadata#>>'{steering,scope_version}'='1'
-        AND metadata#>>'{steering,status}' IN ('submitted','delivered')
-        AND metadata#>'{steering,correction}'=$3::jsonb LIMIT 1`,[rt.expID,intentID,JSON.stringify(correction)])).rows.length)
-        throw Object.assign(new Error('相同证据纠偏已提交，不重复追加工作'),{statusCode:409});
+        AND metadata#>>'{steering,status}' IN ('submitted','delivered','handled')
+        AND (metadata#>'{steering,correction}') - 'reason'=$3::jsonb LIMIT 1`,[rt.expID,intentID,JSON.stringify(correctionIdentity(correction))])).rows.length)
+        throw Object.assign(new Error('相同纠偏已提交，不重复追加工作'),{statusCode:409});
     }
     const message=correction?correctionMessage(correction):input as string;
     const runner=await Promise.race([handle.runner,handle.done.then(()=>undefined)]);

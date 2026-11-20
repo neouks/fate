@@ -31,11 +31,15 @@ async function invoke(tool:ToolDefinition,args:Record<string,unknown>){
 
 test('steering schema rejects impossible correction combinations before delivery',()=>{
  const tool=steerWorkTool(ctx('planner'));
- for(const correction of [{kind:'reuse_evidence',criterion_indices:[0]},{kind:'stop_criteria',criterion_indices:[0],fact_ids:[1]}])
+ for(const correction of [{kind:'reuse_evidence',criterion_indices:[0]},{kind:'stop_criteria',criterion_indices:[0],fact_ids:[1]},
+  {kind:'adjust_method',criterion_indices:[0],method:'改用分号'},
+  {kind:'adjust_method',criterion_indices:[0],method:'改用分号',reason:'分隔失败',fact_ids:[1]},
+  {kind:'reuse_evidence',criterion_indices:[0],fact_ids:[1],method:'改用分号'}])
   assert.throws(()=>validate(tool,{intent_id:1,correction}));
- for(const correction of [{kind:'reuse_evidence',criterion_indices:[0],fact_ids:[1]},{kind:'stop_criteria',criterion_indices:[0]}])
+ for(const correction of [{kind:'reuse_evidence',criterion_indices:[0],fact_ids:[1]},{kind:'stop_criteria',criterion_indices:[0]},
+  {kind:'adjust_method',criterion_indices:[0],method:'改用分号',reason:'分隔失败'}])
   assert.doesNotThrow(()=>validate(tool,{intent_id:1,correction}));
- assert.doesNotMatch(tool.description,/调整方法/);
+ assert.match(tool.description,/adjust_method/);
 });
 
 test('finding creation and amendment have disjoint native schemas',()=>{
@@ -183,7 +187,7 @@ test('platform contracts execute against isolated data, without model or target 
    if(preview.descriptions.traffic_search)assert.match(preview.descriptions.traffic_search,/next 原样续页/);
    if(preview.descriptions.search_finding_traffic)assert.match(preview.descriptions.search_finding_traffic,/next 原样续页/);
    if(preview.descriptions.get_finding)assert.match(preview.descriptions.get_finding,/read_complete/);
-   if(preview.descriptions.steer_work)assert.doesNotMatch(preview.descriptions.steer_work,/调整方法/);
+   if(preview.descriptions.steer_work)assert.match(preview.descriptions.steer_work,/adjust_method/);
    const definitions=role==='goals'?goalsTools({...runContext(db,taskID,expID,'goals'),goalsPhase:'combined'}):roleDefinitions(db,role);
    for(const tool of await applyToolBindings(db,role,definitions)){
     if(!preview.schemas[tool.name])continue;

@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import {Engine} from './engine.js';
 import {registerTaskRoutes} from '../http/routes/tasks.js';
 import {requireJWT,signJWT} from '../http/auth.js';
+import {correctionIdentity} from '../agent/worker-correction.js';
 import {normalizeContract} from '../agent/intent-contract.js';
 
 // No database, server listener or real Worker is started by these fixtures.
@@ -21,7 +22,7 @@ function fixture(disposition:'queued'|'handled'='queued') {
       assert.doesNotMatch(sql,/\bDELETE\b|\bTRUNCATE\b/);
       if(sql.includes('SELECT id FROM exploration_nodes'))return {rows:saved.filter(n=>values![1].includes(n.id))};
       if(sql.includes('SELECT metadata#>'))return {rows:activities.filter(a=>a.metadata.steering?.correction?.kind==='stop_criteria').map(a=>({indices:a.metadata.steering.correction.criterion_indices}))};
-      if(sql.includes("AND metadata#>'{steering,correction}'=$3"))return {rows:activities.filter(a=>JSON.stringify(a.metadata.steering?.correction)===values![2]).map(()=>({exists:1}))};
+      if(sql.includes("AND (metadata#>'{steering,correction}') - 'reason'=$3"))return {rows:activities.filter(a=>JSON.stringify(correctionIdentity(a.metadata.steering.correction))===values![2]).map(()=>({exists:1}))};
       if(sql.includes('SELECT DISTINCT n.id'))return {rows:saved.map(n=>({id:n.id,content_version:0}))};
       if(sql.includes("jsonb_build_object('execution_stop'"))node.payload.execution_stop=JSON.parse(values![1]);
       return {rows:[]};
@@ -29,7 +30,7 @@ function fixture(disposition:'queued'|'handled'='queued') {
     exploration:(exp:number)=>({getNode:async(id:number)=>exp!==10?null:id===201?node:saved.find(n=>n.id===id)??null,
       setIntentState:async(_id:number,state:string)=>{node.state=state;},
       appendActivity:async(row:any)=>{activities.push(row);}})};
-  const engine=Object.assign(Object.create(Engine.prototype),{tasks:new Map([[1,rt]]),db,coordinator:{assert:async()=>{}}}) as Engine;
+  const engine=Object.assign(Object.create(Engine.prototype),{tasks:new Map([[1,rt]]),steeringQueues:new Map(),db,coordinator:{assert:async()=>{}}}) as Engine;
   return {engine,db,task,node,rt,handle,runner,messages,activities,saved};
 }
 
@@ -144,4 +145,38 @@ test('authenticated messages API validates task ownership and never resumes a ta
   assert.deepEqual(f.messages,[]);
   const result=await send('直接校正');assert.equal(result.statusCode,202,result.body);
   assert.equal(result.json().status,'queued');assert.deepEqual(f.messages,['直接校正']);
+});
+
+const methodCorrection={kind:'adjust_method' as const,criterion_indices:[0],method:'以分号分列后检查 A，保持只读',reason:'逗号分列失败'};
+test('method advice uses native steering, keeps contract, and deduplicates concurrent and restored calls',async()=>{
+ for(const status of ['queued','handled'] as const){
+  const f=fixture(status),original=JSON.stringify(f.node.payload.contract);
+  const results=await Promise.allSettled([f.engine.steerWork(1,201,methodCorrection),f.engine.steerWork(1,201,{...methodCorrection,reason:'同一错误的另一个说明'})]);
+  assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+  assert.match((results.find(r=>r.status==='rejected') as PromiseRejectedResult).reason.message,/不重复/);
+  assert.equal(f.messages.length,1);assert.match(f.messages[0],/宿主方法纠偏/);
+  assert.equal(JSON.stringify(f.node.payload.contract),original);
+  assert.equal((f.engine as any).steeringQueues.size,0);
+  // A fresh queue still consults durable receipts.
+  (f.engine as any).steeringQueues=new Map();
+  await assert.rejects(f.engine.steerWork(1,201,{...methodCorrection,method:'  '+methodCorrection.method+'  '}),/不重复/);
+  await f.engine.steerWork(1,201,{...methodCorrection,method:'换成逐行读取后以分号分列检查 A'});
+  assert.equal(f.messages.length,2);
+ }
+});
+test('method advice cannot reopen stopped criteria, closing or completed Workers, or bypass pause',async()=>{
+ const f=fixture();
+ await f.engine.steerWork(1,201,{kind:'stop_criteria',criterion_indices:[0]});
+ await assert.rejects(f.engine.steerWork(1,201,methodCorrection),/不能.*重新开启/);
+ for(const change of [(g:ReturnType<typeof fixture>)=>{g.runner.phase='closing';},
+  (g:ReturnType<typeof fixture>)=>{g.runner.phase='completed';},(g:ReturnType<typeof fixture>)=>{g.rt.paused=true;},
+  (g:ReturnType<typeof fixture>)=>{g.handle.cause='timeout';},(g:ReturnType<typeof fixture>)=>{g.rt.stopped=true;}]){
+  const g=fixture();change(g);await assert.rejects(g.engine.steerWork(1,201,methodCorrection),{statusCode:409});assert.equal(g.messages.length,0);
+ }
+});
+test('failed method delivery does not poison duplicate checking or keep the queue locked',async()=>{
+ const f=fixture(),steer=f.runner.steer;f.runner.steer=async()=>{throw Error('enqueue failed');};
+ await assert.rejects(f.engine.steerWork(1,201,methodCorrection),/enqueue failed/);
+ assert.equal(f.activities.length,0);assert.equal((f.engine as any).steeringQueues.size,0);
+ f.runner.steer=steer;await f.engine.steerWork(1,201,methodCorrection);assert.equal(f.messages.length,1);
 });

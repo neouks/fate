@@ -35,7 +35,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   prove_goal: '用仍获授权的 confirmed 事实或漏洞证明目标；任务原文、线索及撤回记录不能作证。证据须支持该目标，量化条件核对实测值。',
   kill_work: '当前方向明确无意义、重复、越界或被取消时直接终止，保留已写回事实与 findings；以回执确认停止。已完成的正常结束，不以 kill 代替完成，不反复纠偏。',
   ask_user:HUMAN_INPUT_RULES,
-  steer_work: '仅用结构化 correction 缩减原验收项（stop_criteria），或向原验收项引用已有事实（reuse_evidence）；criterion_indices 是原 acceptance 的 0 起始索引。禁止自由文本新任务、改变目标或新增前置问题。收尾或完成后禁止纠偏；无意义或重复的直接 kill_work。',
+  steer_work: '使用结构化 correction 在原目标、原授权内调整方法（adjust_method）、缩减原验收项（stop_criteria）或引用已有事实（reuse_evidence）。criterion_indices 引用原 acceptance 的 0 起始索引。发现参数错误、方法不适配或重复失败时优先纠正原 Worker 的方法；不新增目标、验收项、资产范围或工具授权。重复纠偏不再提交，收尾或完成后禁止纠偏；明确无意义或重复的方向直接 kill_work。',
   todo_write: '保存跨轮依赖待办；有依赖的步骤仅在前置满足后下发。',
   set_goals: '仅保存目标栏要求的最终结果，不从描述扩写、不把探索步骤当作目标。新任务 Goals 阶段须逐字提供 source_quote；Main 追加保持原有接口。成功返回即已保存。',
   set_constraints: CONSTRAINT_TOOL_DESCRIPTION,
@@ -65,8 +65,11 @@ export const PRE_CONVERGENCE_TOOL_DESCRIPTIONS:Record<string,string>={add_intent
 export const REVIEWED_CONVERGENCE_PROVE_GOAL='当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。';
 TOOL_DESCRIPTIONS.add_intent+=' '+CONVERGENCE_ADD_INTENT_HINT;
 TOOL_DESCRIPTIONS.prove_goal=CONVERGENCE_PROVE_GOAL_HINT;
+const PREVIOUS_STEER_DESCRIPTION = '仅用结构化 correction 缩减原验收项（stop_criteria），或向原验收项引用已有事实（reuse_evidence）；criterion_indices 是原 acceptance 的 0 起始索引。禁止自由文本新任务、改变目标或新增前置问题。收尾或完成后禁止纠偏；无意义或重复的直接 kill_work。';
+const PREVIOUS_STEER_CONTRACT = ' stop_criteria 不传 fact_ids；reuse_evidence 必须传 fact_ids。仅支持这两种结构化纠偏，不能追加自由文本方法或替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。';
 const PREVIOUS_FACT_DESCRIPTION = '保存新增事实，相关观察合并为同一结论。单条传 summary 等顶层字段；批量只传 facts 数组，不混用。asset_ids 仅列实际涉及资产，缺省不继承意图范围；scope 描述实际验证范围。核对逐项回执。';
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
+  if(name==='steer_work'&&[PREVIOUS_STEER_DESCRIPTION,PREVIOUS_STEER_DESCRIPTION+PREVIOUS_STEER_CONTRACT].includes(String(stored)))stored=undefined;
   if(name==='add_intent'&&typeof stored==='string')stored=retireExplorationInstructions('add_intent',stored);
   if(name==='steer_work'&&stored==='给所属运行中 Worker 追加纠偏，PI 在工具回合边界交付；不扩大授权。')stored=undefined;
   // Exact known test placeholder only; preserve intentional custom descriptions.
@@ -75,7 +78,7 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
   if(name==='report_finding'&&isPreviousFindingDescription(stored))stored=undefined;
   if(name==='report_conversation_finding'&&stored==='绑定任务的 Pentest 原子提交有证据的漏洞')stored=undefined;
   if(name==='context_get'&&[PREVIOUS_CONTEXT_GET_DESCRIPTION,PREVIOUS_CONTEXT_GET_DESCRIPTION+' 任一项失败则调用标为失败，成功项仍保留；长正文需选择 field，按 read_options 选择读取。'].includes(String(stored)))stored=undefined;
-  if(name==='steer_work'&&stored===TOOL_DESCRIPTIONS.steer_work+' 仅同一目标内调整方法、复用证据或缩减剩余工作，不能替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。')stored=undefined;
+  if(name==='steer_work'&&stored===PREVIOUS_STEER_DESCRIPTION+' 仅同一目标内调整方法、复用证据或缩减剩余工作，不能替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。')stored=undefined;
   if(Object.hasOwn(PREVIOUS_READ_CONTRACT_DESCRIPTIONS,name)&&stored===PREVIOUS_READ_CONTRACT_DESCRIPTIONS[name])stored=undefined;
   if(Object.hasOwn(PREVIOUS_REQUIRED_TOOL_CONTRACTS,name)&&stored===TOOL_DESCRIPTIONS[name]!+PREVIOUS_REQUIRED_TOOL_CONTRACTS[name]!)stored=undefined;
   stored=recognizedHistoricalDescription(name,stored);

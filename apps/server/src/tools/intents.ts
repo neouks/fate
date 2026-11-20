@@ -259,7 +259,7 @@ export function steerWorkTool(ctx: ToolRunContext) {
     {
       name: "steer_work",
       description:
-        "仅通过 PI steering 缩减当前意图的已有验收项，或向原验收项引用已有事实；不接受自由文本任务，不改目标、授权或新增前置工作。" +
+        "通过 PI steering 调整原验收项的方法、缩减范围或引用已有事实；方法调整仅用于原目标、原授权内，不新增目标、验收项或前置工作。" +
         "进入收尾或已完成时禁止纠偏；已完成正常结束，明确无意义或重复的直接 kill_work，保留已写回数据。",
       promptSnippet: "运行中纠偏（不打断）",
       parameters: {
@@ -268,12 +268,15 @@ export function steerWorkTool(ctx: ToolRunContext) {
         properties: {
           intent_id: { type: "integer", minimum: 1 },
           correction: {type:'object',additionalProperties:false,properties:{
-            kind:{type:'string',enum:['stop_criteria','reuse_evidence']},
-            criterion_indices:{type:'array',minItems:1,maxItems:10,items:{type:'integer',minimum:0},description:'原意图 acceptance 的从 0 开始索引；stop_criteria 停止这些项，reuse_evidence 仅向这些项引用证据'},
+            kind:{type:'string',enum:['stop_criteria','reuse_evidence','adjust_method']},
+            criterion_indices:{type:'array',minItems:1,maxItems:10,items:{type:'integer',minimum:0},description:'原意图 acceptance 的从 0 开始索引；stop_criteria 停止这些项，reuse_evidence 引用证据，adjust_method 调整这些项的实现方法'},
             fact_ids:{type:'array',minItems:1,maxItems:20,items:{type:'integer',minimum:1},description:'仅 reuse_evidence 使用：当前任务已有有效 fact/finding 节点 ID'},
+            method:{type:'string',minLength:1,maxLength:2000,description:'仅 adjust_method：具体方法建议，例如纠正参数或更换无效方法；不得扩大原目标、验收项、资产范围或工具授权'},
+            reason:{type:'string',minLength:1,maxLength:1000,description:'仅 adjust_method：已观察到的失败、重复尝试或方法不适配及调整依据'},
           },required:['kind','criterion_indices'],oneOf:[
-            {properties:{kind:{const:'stop_criteria'}},not:{required:['fact_ids']}},
-            {properties:{kind:{const:'reuse_evidence'}},required:['fact_ids']},
+            {properties:{kind:{const:'stop_criteria'}},not:{anyOf:[{required:['fact_ids']},{required:['method']},{required:['reason']}]}},
+            {properties:{kind:{const:'reuse_evidence'}},required:['fact_ids'],not:{anyOf:[{required:['method']},{required:['reason']}]}},
+            {properties:{kind:{const:'adjust_method'}},required:['method','reason'],not:{required:['fact_ids']}},
           ]},
         },
         required: ["intent_id", "correction"],

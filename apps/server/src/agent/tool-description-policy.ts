@@ -59,7 +59,7 @@ export function describeToolContract(name: string, description: string): string 
   if (name === 'dispatch_intents') return description + ' 提交非空 intent_ids；仅用户明确要求批量下发时传 all_open: true。';
   if (name === 'record_fact') return description.replace('缺项仍保存但不计覆盖','缺少资产或 scope 时仍保存但不计覆盖')
     + ' Worker 每条事实必填非空 evidence；不得提交历史压缩占位符或猜测的保存编号。批量逐项核对结果，整批失败返回工具错误。';
-  if (name === 'steer_work') return description + ' stop_criteria 不传 fact_ids；reuse_evidence 必须传 fact_ids。仅支持这两种结构化纠偏，不能追加自由文本方法或替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。';
+  if (name === 'steer_work') return description + ' stop_criteria 不传 fact_ids；reuse_evidence 必须传 fact_ids。adjust_method 必须传 method 和 reason、不传 fact_ids，仅在原目标、原验收项和原授权内调整方法；说明已观察到的失败或重复尝试。不能新增目标、验收项、资产范围或工具授权；相同纠偏不重复发送，收尾或完成后不再追加。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。';
   if (name === 'kill_work') return description + ' 支持等待中或运行中意图；核对返回 state，停止失败不得下发替代意图，不能绕过用户暂停或取消。';
   if (name === 'insert_assets') return description + ' 整批失败返回工具错误，部分成功只重试失败项。';
   if (name === 'register_user_target') return description + ' evidence 引用完整原句或独立目标地址行。精确域名用 subdomain；root_domain 仅用于原文明确的通配根域。';
