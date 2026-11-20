@@ -1,7 +1,7 @@
 import type {Database} from '../db/index.js';
 import type {Node} from '../db/exploration.js';
 
-import {TOKEN_LIMIT_REACHED, TOKEN_USAGE_UNCERTAIN} from '../db/worker-token-budget.js';
+import {TOKEN_LIMIT_REACHED, TOKEN_USAGE_UNCERTAIN, UNSETTLED_WORKER_USAGE} from '../db/worker-token-budget.js';
 
 export type WorkerStopReason = 'completed'|'partial'|'blocked'|'missing_result'|'invalid_result'
   |'token_limit'|'token_usage_unknown'|'turn_limit'|'duration_limit'|'task_timeout'|'planner_terminated'|'main_terminated'|'user_cancelled'
@@ -25,7 +25,7 @@ const labels:Record<WorkerStopReason,string> = {
 export function failureReason(message:string):WorkerStopReason {
   if (message.includes(TOKEN_LIMIT_REACHED)) return 'token_limit';
   if (message.includes(TOKEN_USAGE_UNCERTAIN)) return 'token_usage_unknown';
-  return /connection error|fetch failed|ECONN|ETIMEDOUT|socket|network error/i.test(message)?'model_connection_error':'model_error';
+  return /connection error|fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|network error/i.test(message)?'model_connection_error':'model_error';
 }
 
 /** A pending human tool can observe durable control before the engine heartbeat.
@@ -43,6 +43,11 @@ export async function persistedWorkerAbortCause(db:Database,taskID:number):Promi
   if(task.expired)return 'task-timeout';
 }
 
+function redactStopDetail(detail:string){
+  return detail.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi,'$1[redacted]@')
+    .replace(/(?:Bearer\s+|\bsk-)[\w.-]+/gi,'[redacted]').slice(0,2000);
+}
+
 /** A host receipt is not model evidence or an accepted execution_result. */
 export async function workerStopReceipt(db:Database,expID:number,node:Node,reason:WorkerStopReason,attemptID:string,detail='') {
   const result=node.payload.execution_result as Record<string,unknown>|undefined;
@@ -56,13 +61,31 @@ export async function workerStopReceipt(db:Database,expID:number,node:Node,reaso
   const progress=(saved??node.payload.progress) as Record<string,unknown>|undefined;
   const operations=(await db.query(`SELECT id,tool_name,status FROM worker_operations WHERE intent_id=$1
     AND status IN ('running','uncertain') ORDER BY id LIMIT 20`,[node.id])).rows.map(r=>({ref:`operation:${r.id}`,tool:r.tool_name,status:r.status}));
-  const error=detail.replace(/(?:Bearer\s+|\bsk-)[\w.-]+/gi,'[redacted]').slice(0,2000);
+  const error=redactStopDetail(detail);
+  let summary=error.startsWith(labels[reason])?error:labels[reason]+(error?`：${error}`:'');
+  // The audit contains the redacted provider error. An admission failure has
+  // no new physical request, so look up the unresolved receipt for this intent.
+  const unsettled=reason==='token_usage_unknown'&&detail.includes(UNSETTLED_WORKER_USAGE);
+  if(unsettled||reason==='model_connection_error'){
+    const failure=(await db.query<{error:string}>(`SELECT a.error FROM llm_usage_ledger l
+      JOIN tasks t ON t.id=l.task_id
+      JOIN llm_request_attempts a ON a.request_id=l.request_id AND a.task_id=l.task_id
+      WHERE t.exploration_id=$1 AND l.intent_id=$2 AND l.role='worker'
+        AND l.source IN ('provider','request_audit') AND l.status='failed'
+        AND (CASE WHEN $3::boolean THEN l.quality NOT IN ('complete','not_sent') ELSE l.turn_id=$4 END)
+      ORDER BY l.created_at DESC,l.audit_id DESC LIMIT 1`,[expID,node.id,unsettled,attemptID])).rows[0];
+    if(unsettled)summary=`${TOKEN_USAGE_UNCERTAIN}：${UNSETTLED_WORKER_USAGE}`;
+    if(failure?.error){
+      const original=redactStopDetail(failure.error);
+      summary=unsettled?`模型请求原始错误：${original}\n${summary}`:`${labels[reason]}：${original}`;
+    }
+  }
   const changedBasis=reason==='basis_changed'||reason==='basis_unavailable';
   const basis=(node.payload.contract as {basis?:{node_id:number}[]}|undefined)?.basis??[];
   const recovery=reason==='completed'?'':changedBasis
     ?`由 Planner 重新读取当前意图、依据 ${basis.map(b=>`node:${b.node_id}`).join(', ')||'引用'} 和已保存事实，核对最新版本及剩余条件后重新评估；Worker 不自行恢复探测。`
     :String(result?.remaining||('先读取当前意图、最新已保存观察及工具结果，核对未完成条件，不重复已完成操作。'+(progress?.next_step?' 较早检查点（可能已完成）：'+progress.next_step:progress?.blocker?' 阻塞：'+progress.blocker:''))).slice(0,2000);
-  return {version:1,attempt_id:attemptID,reason,summary:labels[reason]+(error?`：${error}`:''),
+  return {version:1,attempt_id:attemptID,reason,summary,
     recorded_at:new Date().toISOString(),progress_at:progress?.updated_at??null,
     fact_refs:refs.rows.map(r=>({node_id:Number(r.id),version:Number(r.content_version)})),
     recovery:operations.length?'先用 context_get 读取未知操作 '+operations.map(o=>o.ref).join(', ')+'；核对实际结果后再恢复，不能盲目重做。':recovery,

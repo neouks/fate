@@ -9,7 +9,9 @@ import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {openDatabase} from '../db/index.js';
 import {aggregateUsage} from '../db/usage-ledger.js';
 import {WORKER_TOKEN_LIMIT, TOKEN_LIMIT_REACHED, TOKEN_USAGE_UNCERTAIN, readWorkerTokenBudget, workerRequestMaxTokens} from '../db/worker-token-budget.js';
-import {failureReason} from '../engine/worker-outcome.js';
+import {failureReason,workerStopReceipt} from '../engine/worker-outcome.js';
+import type {Database} from '../db/index.js';
+import type {Node} from '../db/exploration.js';
 import {registerConfigRoutes} from '../http/routes/config.js';
 import {recordFactTool} from '../tools/graph.js';
 import {reportFindingTool} from '../tools/findings.js';
@@ -19,6 +21,35 @@ import {AgentRunner} from './runner.js';
 import {meterProvider, configureUsageOutbox, closeUsageOutbox, type MeterContext} from './usage-meter.js';
 
 const dsn = process.env.TEST_WORKER_BUDGET_DSN;
+
+test('Worker stop receipts preserve the provider error alongside an unresolved charge',async()=>{
+  const node={id:12,payload:{}} as Node;
+  let original='terminated: other side closed (UND_ERR_SOCKET)';
+  const calls:unknown[][]=[];
+  const db={query:async(sql:string,params:unknown[])=>{
+    if(!sql.includes('llm_request_attempts'))return {rows:[]};
+    calls.push(params);
+    return {rows:original?[{error:original}]:[]};
+  }} as unknown as Database;
+  const hold=TOKEN_USAGE_UNCERTAIN+'：先前请求尚未结算或缺少完整用量';
+  const receipt=await workerStopReceipt(db,11,node,'token_usage_unknown','turn-1','宿主上下文构建失败：'+hold);
+  assert.equal(receipt.reason,'token_usage_unknown');
+  assert.equal(receipt.summary,'模型请求原始错误：'+original+'\n'+hold);
+  assert.deepEqual(calls.pop(),[11,12,true,'turn-1']);
+
+  original='connect ECONNREFUSED via http://user:password@localhost:3000 (Bearer fixture-token)';
+  const direct=await workerStopReceipt(db,11,node,'model_connection_error','turn-2','Connection error');
+  assert.deepEqual(calls.pop(),[11,12,false,'turn-2']);
+  assert.match(direct.summary,/connect ECONNREFUSED/);
+  assert.doesNotMatch(direct.summary,/password|fixture-token/);
+  original='';
+  assert.equal((await workerStopReceipt(db,11,node,'token_usage_unknown','turn-3',hold)).summary,hold);
+  const queries=calls.length;
+  await workerStopReceipt(db,11,node,'task_paused','turn-4');
+  await workerStopReceipt(db,11,node,'token_usage_unknown','turn-5',TOKEN_USAGE_UNCERTAIN+'：额度配置无效');
+  assert.equal(calls.length,queries);
+});
+
 test('Worker budget gates physical calls across resume and lets admitted writes finish', {skip: !dsn && 'isolated PostgreSQL required'}, async t => {
   assert.match(new URL(dsn!).pathname, /^\/test_worker_budget_[a-z0-9_]+$/);
   process.env.SERIES_PG_DSN = dsn;

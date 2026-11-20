@@ -777,7 +777,7 @@ export class Engine {
     else if (result?.aborted) terminal = "stopped";
     else if (failure) {
       terminal = "blocked";
-      summary = failure instanceof Error ? failure.message : String(failure);
+      summary = '';
     }
     const u = result?.usage;
     await rt.activityTail;
@@ -824,7 +824,8 @@ export class Engine {
         terminal='blocked';reason='operation_uncertain';acceptedResult=false;
         summary='工具执行结果尚未核对，当前意图未确认完成；已保存的事实仍然保留。';
       }
-      const receipt=await workerStopReceipt(db,rt.expID,latest,reason,String(turn.metadata.turn_id),stopDetail|| (failure?String(failure):reason==='invalid_result'?summary:''));
+      const failureText=failure instanceof Error?failure.message:failure?String(failure):'';
+      const receipt=await workerStopReceipt(db,rt.expID,latest,reason,String(turn.metadata.turn_id),stopDetail||failureText||(reason==='invalid_result'?summary:''));
       receipt.accepted_result=acceptedResult;
       if (!summary.trim()) summary = receipt.summary;
       else if (reason !== 'completed' && reason !== 'partial' && reason !== 'blocked') summary += `\n执行结束原因：${receipt.summary}`;

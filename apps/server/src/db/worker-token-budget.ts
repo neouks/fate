@@ -4,6 +4,7 @@ import {CANONICAL_USAGE_CTE, USAGE_SUM_SQL, type UsageScope} from './usage-ledge
 export const WORKER_TOKEN_LIMIT = 'worker_total_token_limit';
 export const TOKEN_LIMIT_REACHED = 'Worker 累计 token 额度已达到';
 export const TOKEN_USAGE_UNCERTAIN = 'Worker 累计 token 用量待核对';
+export const UNSETTLED_WORKER_USAGE = '先前请求尚未结算或缺少完整用量';
 
 export async function workerTokenLimit(db: Database) {
   const raw = await db.platform().getSetting(WORKER_TOKEN_LIMIT);
@@ -35,7 +36,7 @@ export async function readWorkerTokenBudget(tx: Database, scope: UsageScope & {r
     FROM measured`, [scope.taskID, scope.intentID]);
   const used = BigInt(row!.input_tokens) + BigInt(row!.output_tokens);
   if (Number(row!.pending_calls) || Number(row!.uncertain)) {
-    throw new Error(TOKEN_USAGE_UNCERTAIN + '：先前请求尚未结算或缺少完整用量');
+    throw new Error(TOKEN_USAGE_UNCERTAIN + '：' + UNSETTLED_WORKER_USAGE);
   }
   const remaining = Math.max(0, limit - Number(used));
   const reserve = Math.min(limit, Math.max(Math.ceil(limit * 0.1), 3 * requestCeiling));
