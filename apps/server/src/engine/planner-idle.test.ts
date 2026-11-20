@@ -1,3 +1,4 @@
+import {PLANNER_CONTINUATION_GUIDANCE} from '../agent/planner-continuation.js';
 import assert from 'node:assert/strict';
 import {test,type TestContext} from 'node:test';
 import {mkdtemp,mkdir,rm} from 'node:fs/promises';
@@ -13,13 +14,15 @@ import {configureAgentEnv,runPlannerRound} from '../agent/roles.js';
 import {TodoStore} from '../tools/context.js';
 import {plannerDispatchReminder} from '../agent/worker-assignment.js';
 import previous from '../agent/fixtures/pre-planner-continuation.json' with {type:'json'};
-import {PLANNER_PROMPT,PLANNER_WRAPUP} from '../agent/prompts.js';
+import {PLANNER_WRAPUP} from '../agent/prompts.js';
 import {migratePlannerContinuation,PLANNER_CONTINUATION_MIGRATION} from '../agent/planner-continuation-migration.js';
 
 const dsn=process.env.TEST_PLANNER_IDLE_DSN;
 test('isolated 4898 idle reproduction, native model rounds, recovery and controls',{skip:!dsn&&'isolated PostgreSQL required',timeout:120_000},async t=>{
   assert.match(new URL(dsn!).pathname,/^\/test_[a-z0-9_]+$/);process.env.SERIES_PG_DSN=dsn;
   const db=await openDatabase(),dir=await mkdtemp(join(tmpdir(),'fate-planner-idle-'));
+  // Scripted model responses call domain tools directly, without tool discovery.
+  await db.platform().setSetting('agent_tool_loading_v1:planner',JSON.stringify({add_intent:'resident',prove_goal:'resident'}));
   await mkdir(join(dir,'skills'));configureAgentEnv({skillsDir:join(dir,'skills')});
   const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),refreshOnCreate:false});
   const faux=fauxProvider({provider:'planner-idle-fixture'});await runtime.registerNativeProvider(faux.provider);
@@ -131,7 +134,7 @@ test('isolated 4898 idle reproduction, native model rounds, recovery and control
     await db.query('UPDATE agents SET current_prompt_id=$2,wrapup_prompt=$3 WHERE id=$1',[agent.id,old.id,previous.wrapup]);
     await db.query('DELETE FROM settings WHERE key=$1',[PLANNER_CONTINUATION_MIGRATION]);
     const migrated=await migratePlannerContinuation(db);assert.equal(migrated.prompt_updated,true);assert.equal(migrated.wrapup_updated,true);
-    assert.equal(await db.platform().currentPrompt(agent.id),PLANNER_PROMPT);
+    assert.equal(await db.platform().currentPrompt(agent.id),previous.planner+'\n\n'+PLANNER_CONTINUATION_GUIDANCE);
     assert.equal((await db.query('SELECT wrapup_prompt FROM agents WHERE id=$1',[agent.id])).rows[0]!.wrapup_prompt,PLANNER_WRAPUP);
     assert.equal((await db.query('SELECT template_text FROM agent_prompts WHERE id=$1',[old.id])).rows[0]!.template_text,previous.planner);
     assert.deepEqual(await migratePlannerContinuation(db),migrated);

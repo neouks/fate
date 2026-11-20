@@ -34,6 +34,8 @@ const dsn=process.env.TEST_AUTONOMY_RUNTIME_DSN;
 test('full Worker entry enforces authority and lifecycle for v2 intents',{skip:!dsn&&'isolated PostgreSQL required'},async t=>{
  assert.match(new URL(dsn!).pathname,/^\/test_/);process.env.SERIES_PG_DSN=dsn;
  const db=await openDatabase(),dir=await mkdtemp(path.join(tmpdir(),'autonomy-guards-'));await mkdir(dir+'/skills');configureAgentEnv({skillsDir:dir+'/skills'});
+ // This scripted Planner fixture exercises dispatch, not discovery.
+ await db.platform().setSetting('agent_tool_loading_v1:planner',JSON.stringify({add_intent:'resident'}));
  const runtime=await ModelRuntime.create({authPath:dir+'/auth.json',modelsPath:dir+'/models.json',refreshOnCreate:false});const faux=fauxProvider({provider:'autonomy-guards'});await runtime.registerNativeProvider(faux.provider);
  let requests=0;const server=http.createServer((_req,res)=>{requests++;res.writeHead(200,{'Content-Type':'application/json'}).end('{"ok":true}');});await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+(server.address() as {port:number}).port+'/fixture';
  t.after(async()=>{server.closeAllConnections();server.close();await db.close();await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
