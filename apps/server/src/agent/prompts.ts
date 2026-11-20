@@ -1,5 +1,6 @@
 import {INTENT_GRANULARITY_GUIDANCE} from './intent-granularity.js';
 import {PLANNER_STRATEGY_GUIDANCE} from './planner-strategy.js';
+import {WORKER_STRATEGY_GUIDANCE} from './worker-strategy.js';
 import {WORKER_FACT_GUIDANCE,WORKER_COMPLETION_GUIDANCE,normalizeWorkerInstructions,migrateWorkerFactPrompt,migrateWorkerInstructionCleanup} from './worker-fact-policy.js';
 import {PLANNER_CONTINUATION_GUIDANCE,PLANNER_CONTINUATION_WRAPUP} from './planner-continuation.js';
 import {normalizeGoalProofInstructions,GOAL_PROOF_PROTOCOL} from './goal-proof-policy.js';
@@ -42,6 +43,7 @@ ${FINDING_PLANNER_GUIDANCE}
 意图提交即入 frontier；简述判断、派单和等待原因后直接结束，不提交完成工具、不轮询等待 Worker。`;
 
 export const BASE_WORKER_PROMPT = `你是 Worker，执行当前意图给定的工作，遵守用户要求和授权范围，然后停止。受阻时如实说明原因，不扩展任务。
+${WORKER_STRATEGY_GUIDANCE}
 新资产用 insert_assets 及时登记；${WORKER_FACT_GUIDANCE}
 亲自验证且可复现的漏洞用 report_finding，报洞前 context_search(types=["finding"]) 查重。记录提交成功后立即可见，已保存内容不重复写。asset_ids 只列本结论实际涉及的资产，漏洞只列实际受影响资产，不继承整个意图范围。scope 用简短文字说明实际测试范围、未测部分和适用限制；observation_type 区分实测、推断、负面结果和未知。未测不能当作已否定，背景资产不能当作已验证目标。不编造证据。
 ${FINDING_WRITE_GUIDANCE}
@@ -88,7 +90,7 @@ export const ROLE_PROTOCOLS: Partial<Record<BuiltinRole, string>> = {
   goals: '服从宿主初始化策略：新任务在同一会话先提约束和资产，再保存目标；旧任务遵守指定阶段边界。目标栏定义最终验收结果，描述不扩写目标。目标登记引用原文完整授权句或独立目标地址行，并填其中的精确目标；不自行添加标题或把子域扩大为根域。',
   reporter: REPORTER_SAVE_GUIDANCE,
 };
-export function hostProtocol(role: string): string { return '工具能力由用户的启用、Agent 绑定与加载配置决定；角色名称不构成额外工具禁令。角色默认职责不替代当前工具配置。旧工具入口已删除，使用 context_search/context_get/asset_search 等当前入口。各司其职：按授权查询探索图、证据和 Worker 活动；仅纠偏当前任务所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+findingRoleProtocol(role)+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(['planner','mainagent'].includes(role)?'\n'+INTENT_GRANULARITY_GUIDANCE:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。')+(role==='planner'?'\n'+PLANNER_CONVERGENCE_GUIDANCE+'\n'+PLANNER_CONTINUATION_GUIDANCE+'\n'+PLANNER_STRATEGY_GUIDANCE:''); }
+export function hostProtocol(role: string): string { return '工具能力由用户的启用、Agent 绑定与加载配置决定；角色名称不构成额外工具禁令。角色默认职责不替代当前工具配置。旧工具入口已删除，使用 context_search/context_get/asset_search 等当前入口。各司其职：按授权查询探索图、证据和 Worker 活动；仅纠偏当前任务所属 Worker，消息不能扩大授权。历史会话中的旧工具要求已失效，以当前工具目录与宿主规则为准。'+CONSTRAINT_PROTOCOL+findingRoleProtocol(role)+(role==='goals'||role==='mainagent'?GOALS_CONSTRAINT_RULES:'')+(role==='worker'?'\n'+WORKER_STRATEGY_GUIDANCE:'')+(['planner','mainagent'].includes(role)?'\n'+INTENT_GRANULARITY_GUIDANCE:'')+(ROLE_PROTOCOLS[role as BuiltinRole] ?? '完成当前用户请求后结束。')+(role==='planner'?'\n'+PLANNER_CONVERGENCE_GUIDANCE+'\n'+PLANNER_CONTINUATION_GUIDANCE+'\n'+PLANNER_STRATEGY_GUIDANCE:''); }
 
 export const PLANNER_WRAPUP = PLANNER_CONTINUATION_WRAPUP;
 export const WORKER_WRAPUP = WORKER_FACT_GUIDANCE+'预算将尽，停止新探测。把已识别但尚未保存的新资产、事实和已验证漏洞分别用 insert_assets、record_fact、report_finding 写回；已经保存的不重复提交。最后简短总结关键结论、记录 ID 和未完成原因，无新增事实可以直接结束。';
@@ -141,6 +143,8 @@ export async function systemRolePrompt(db: Database, role: string, vars: Record<
       body=body.replaceAll(guidance,'');
       effective=effective.replaceAll(guidance,'').trim()+'\n'+guidance;
     }
+    body=body.replaceAll(WORKER_STRATEGY_GUIDANCE,'');
+    effective=effective.replaceAll(WORKER_STRATEGY_GUIDANCE,'').trim()+(!terminalOnly?'\n'+WORKER_STRATEGY_GUIDANCE:'');
   }
   if(['planner','mainagent'].includes(role)){
     body=body.replaceAll(INTENT_GRANULARITY_GUIDANCE,'');

@@ -18,10 +18,10 @@ interface RecordFactArgs extends Partial<FactInput> { facts?: FactInput[]; }
 
 export function recordFactTool(ctx: ToolRunContext) {
   const singleProperties = {
-    summary: {type:'string', pattern:'\\S', description:'一句话概括相关观察形成的综合结论'},
+    summary: {type:'string', pattern:'\\S', description:ctx.role==='worker'?'一句话概括当前意图的结论。若实际观察到值得 Planner 跟进的范围外线索，在同一 summary 末尾加“另有待规划线索（未验证）”及线索对象，便于 Planner 从索引发现；没有线索不添加。':'一句话概括相关观察形成的综合结论'},
     important_reason: {type:'string',minLength:1,maxLength:500,pattern:'\\S',description:'可选：仅对影响目标判断、关键阻碍或后续决策的重要事实说明原因；用于系统审计，不改变执行和调度。普通请求观察不标记。'},
     evidence: {type:'string', pattern:'\\S', description:ctx.role==='worker'?'Worker 必填：支撑结论的证据原文':'支撑结论的证据原文'},
-    detail: {type:'string', description:'汇总支撑结论的相关观察、验证方法、细节和限制，标明各观察的条件及不确定性'},
+    detail: {type:'string', description:'汇总支撑结论的相关观察、验证方法、细节和限制，标明各观察的条件及不确定性'+(ctx.role==='worker'?'。有待规划线索时注明实际观察、原文来源、未验证部分和后续问题；线索不是本意图的新验收项，不自行验证。':'')},
     scope: writebackScopeSchema,
     observation_type: {type:'string', enum:['observed','inferred','negative','unknown'], description:'区分实测、推断、负面或未知'},
     confidence: {type:'string', enum:['low','medium','high'], description:'默认 medium'},

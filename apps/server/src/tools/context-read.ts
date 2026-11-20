@@ -331,5 +331,5 @@ export async function workerLaunchContext(c:ToolRunContext,intentID:number){
     related_directions:peers.map(p=>({ref:`node:${p.id}`,state:p.state,owner:p.owner,summary:p.summary,objective:p.objective})),
     progress:progressSummary((await c.db.query('SELECT progress FROM worker_checkpoints WHERE intent_id=$1',[intentID])).rows[0]?.progress??node?.payload.progress),previous_result:resultSummary(node?.payload.previous_result),execution_stop:stopSummary(node?.payload.execution_stop),
     own_findings:await searchContext(c,{intent_id:intentID,types:['fact','finding'],limit:10}),
-    graph_access:{search:'context_search',detail:'context_get',note:'只执行当前意图；边发现边用 record_fact/report_finding 直接写回，最后简洁总结。private_observations 和 progress 是旧版历史材料，须复核后重新写回，不自动发布。'}};
+    graph_access:{search:'context_search',detail:'context_get',note:'只执行当前意图；按结论汇总 record_fact，已验证漏洞用 report_finding，最后简洁总结。意图外的新增线索保留依据与未验证部分交回 Planner，不接续执行。private_observations 和 progress 是旧版历史材料，须复核后重新写回，不自动发布。'}};
 }
