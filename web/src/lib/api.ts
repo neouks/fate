@@ -1123,6 +1123,9 @@ export const api = {
     put<{ ok: boolean }>(`/agents/${key}/visibility`, { mcp, skill }),
 
   // ---- tools (内置工具目录) ----
+  agentToolLoading: (key: string) => get<import("./types").AgentToolLoading>(`/agents/${encodeURIComponent(key)}/tool-loading`),
+  saveAgentToolLoading: (key: string, overrides: import("./types").AgentToolLoading["overrides"]) =>
+    put<import("./types").AgentToolLoading>(`/agents/${encodeURIComponent(key)}/tool-loading`, { overrides }),
   toolCatalog: () => get<{ tools: Tool[]; roles: import("./types").RoleToolPreview[] }>("/tools"),
   tools: () => get<{ tools: Tool[] }>("/tools").then((r) => arr(r.tools)),
   saveTool: (key: string, patch: Partial<Pick<Tool, "description" | "schema" | "agents" | "enabled">>) =>

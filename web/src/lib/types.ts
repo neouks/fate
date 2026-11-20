@@ -1369,6 +1369,16 @@ export interface MissingSkill {
 }
 
 // ---- Tools (内置工具目录) ----
+export interface AgentToolLoading {
+  overrides: Record<string, "resident" | "deferred">;
+  editable_tools: string[];
+  resident: string[];
+  deferred: string[];
+  default_mode: "resident" | "deferred";
+  default_resident: string[];
+  fallback: string | null;
+  applies_on: "next_run";
+}
 // Builtin parameter schemas are read-only and come from each role's loadout.
 export interface RoleToolPreview {
   role: string; scope: string; policy_version: string; resident: string[]; deferred: string[]; compatibility: string[]; fallback?: string;

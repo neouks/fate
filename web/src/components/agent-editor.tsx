@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { AgentToolLoadingEditor } from "@/components/agent-tool-loading";
 import { useSettingsPanelActive } from "@/components/system-settings/panel-scope";
 import { toast } from "sonner";
 import { EyeIcon, GitCompareIcon, InfoIcon, PencilIcon, RotateCcwIcon, SaveIcon, Trash2Icon, XIcon } from "lucide-react";
@@ -28,10 +29,6 @@ import { Markdown } from "@/components/markdown";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { Agent, AgentDetail, AgentTrigger, MCPServer, PromptVar, PromptVersion, Settings, SkillItem, Tool } from "@/lib/types";
-
-// Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
-// only usable when capture is on. Keep this list in sync with traffic.SeedToolMetas.
-const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get"]);
 
 // AgentEditor is the tabbed editor for one agent, used inside the agents-page
 // drawer (and reused full-page for deep links). Tabs: 配置与提示词 / MCP / Skill /
@@ -253,6 +250,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         enabled: t.enabled,
       });
       toast.success(`${on ? "已解绑" : "已绑定"}工具「${t.key}」`);
+      api.tools().then(setTools).catch(() => {});
       onSaved?.(); // refresh the list so the card's 工具 count stays in sync
     } catch (e) {
       toast.error("保存工具绑定失败：" + (e as Error).message);
@@ -633,45 +631,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
 
       {/* Tools 绑定 */}
       <TabsContent value="tools" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        <p className="text-muted-foreground mb-3 text-xs">勾选绑定给此 Agent 的内置工具。</p>
-        <div className="grid gap-2">
-          {tools.filter(t => !["web_search", "web_read"].includes(t.key) || ["planner", "worker", "mainagent"].includes(agentKey)).map((t) => {
-            const isTraffic = TRAFFIC_TOOL_KEYS.has(t.key);
-            const gated = isTraffic && !captureOn; // traffic tools need 流量捕获 on
-            return (
-              <label
-                key={t.key}
-                className={cn(
-                  "flex items-center gap-2 rounded-md border p-2 text-sm",
-                  gated && "opacity-60",
-                )}
-              >
-                <Checkbox
-                  checked={t.agents.includes(agentKey)}
-                  disabled={gated}
-                  onCheckedChange={() => toggleTool(t)}
-                />
-                <span className="font-mono text-xs">{t.key}</span>
-                {isTraffic && (
-                  <Badge variant="secondary" className="px-1 py-0 text-[9px]">流量</Badge>
-                )}
-                {!t.enabled && (
-                  <Badge variant="outline" className="text-destructive px-1 py-0 text-[9px]">已停用</Badge>
-                )}
-                {gated ? (
-                  <span className="text-muted-foreground ml-auto text-xs">需开启流量捕获</span>
-                ) : (
-                  t.description && (
-                    <span className="text-muted-foreground ml-auto line-clamp-1 max-w-[55%] text-xs">
-                      {t.description}
-                    </span>
-                  )
-                )}
-              </label>
-            );
-          })}
-          {tools.length === 0 && <span className="text-muted-foreground text-xs">（暂无工具）</span>}
-        </div>
+        <AgentToolLoadingEditor key={agentKey} agentKey={agentKey} tools={tools} captureOn={captureOn} onToggle={toggleTool}
+          onSaved={() => { api.tools().then(setTools).catch(() => {}); onSaved?.(); }} />
       </TabsContent>
 
       {/* 触发(P3, 仅自定义 agent) */}

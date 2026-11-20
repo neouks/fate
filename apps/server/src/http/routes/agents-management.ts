@@ -1,4 +1,5 @@
 import {ACTIVE_ROLES} from '../../agent/tool-registry.js';
+import {toolLoadingSettingKey} from '../../agent/tool-loading-preferences.js';
 import {roleSupportsMcp} from '../../agent/resource-policy.js';
 import type {FastifyInstance} from 'fastify';
 import type {Agent} from '../../db/platform.js';
@@ -95,6 +96,7 @@ export function registerAgentManagementRoutes(app:FastifyInstance) {
         EXISTS(SELECT 1 FROM runtime_session_leases l WHERE l.key='conversation:'||c.id AND l.expires_at>now())) LIMIT 1`,[key]);
       if(busy.rowCount)throw fail(409,'该 Agent 仍有排队或运行中的会话，请先停止会话并等待执行器退出');
       await tx.query('DELETE FROM agent_triggers WHERE agent_key=$1',[key]);
+      await tx.query('DELETE FROM settings WHERE key=$1',[toolLoadingSettingKey(key)]);
       await tx.query('UPDATE tools SET agents=agents-$1::text WHERE agents ? $1',[key]);
       await tx.query('DELETE FROM agents WHERE id=$1',[a.id]);
     });

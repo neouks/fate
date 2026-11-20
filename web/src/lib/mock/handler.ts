@@ -116,6 +116,7 @@ const mockCompanies = structuredClone(D.companies);
 const mockAssets = structuredClone(D.assets);
 const mockActivity = structuredClone(D.activity);
 const mockTools: Tool[] = structuredClone(D.tools);
+const mockAgentToolLoading = new Map<string, Record<string, "resident" | "deferred">>();
 const mockMcpServers: MCPServer[] = structuredClone(D.mcpServers);
 const mockMcpToolsById: Record<number, import("../types").MCPTool[]> = structuredClone(D.mcpToolsById);
 let nextMockMcpID = Math.max(0, ...mockMcpServers.map((server) => server.id)) + 1;
@@ -2876,6 +2877,22 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     return { deleted: Number(seg[2]) };
 
   // ── agents ──
+  if (seg[0] === "agents" && seg[2] === "tool-loading") {
+    const role = seg[1];
+    if (!D.agents.some(agent => agent.key === role)) throw new Error("Agent 不存在");
+    if (m === "PUT") {
+      const value = b.overrides;
+      if (!value || typeof value !== "object" || Array.isArray(value) || Object.values(value).some(mode => mode !== "resident" && mode !== "deferred")) throw new Error("加载配置非法");
+      mockAgentToolLoading.set(role, structuredClone(value) as Record<string, "resident" | "deferred">);
+    }
+    const overrides = mockAgentToolLoading.get(role) ?? {};
+    const default_resident = role === "goals" ? ["context_get", "context_search", "set_goals", "set_constraints", "register_user_target"] :
+      ["read", "bash", "write", "edit", "tool_search", "context_search", "context_get", "ask_user", ...(role === "planner" ? ["graph_overview"] : ["record_fact"])];
+    const available = mockTools.filter(tool => tool.enabled && tool.agents.includes(role));
+    const resident = available.filter(tool => (overrides[tool.key] ?? (default_resident.includes(tool.key) ? "resident" : "deferred")) === "resident").map(tool => tool.key);
+    return { overrides, default_resident, default_mode: "deferred", resident, deferred: available.filter(tool => !resident.includes(tool.key)).map(tool => tool.key),
+      editable_tools: mockTools.filter(tool => tool.key !== "tool_search" && tool.implementation_status !== "compatibility").map(tool => tool.key), fallback: null, applies_on: "next_run" };
+  }
   if (path === "/agents" && m === "GET") return { agents: D.agents };
   if (path === "/agents" && m === "POST")
     return {

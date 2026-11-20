@@ -1,4 +1,5 @@
 import {GOALS_STAGE_PROTOCOL,goalsStageVariables} from '../../agent/goals-policy.js';
+import {registerAgentToolLoadingRoutes} from './agent-tool-loading.js';
 import {previewRoleTools} from '../../agent/tool-catalog.js';
 import {assertActiveRole} from '../../agent/retired-roles.js';
 import {platformPolicy} from '../../pi/platform-policy.js';
@@ -95,6 +96,7 @@ function triggerSets(b: Record<string, unknown>): { cols: string[]; params: unkn
 }
 
 export function registerAgentConfigRoutes(app: FastifyInstance): void {
+  registerAgentToolLoadingRoutes(app);
   const db = () => app.db;
   async function updateExisting(sql:string,params:unknown[]) {
     const result=await db().query(sql,params);
