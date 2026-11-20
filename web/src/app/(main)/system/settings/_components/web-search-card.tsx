@@ -17,13 +17,10 @@ const labels: Record<WebSearchSelection, string> = {auto:"自动", deepseek:"Dee
 const available = Object.keys(labels).filter((key): key is WebSearchSource => key !== "auto");
 const sourceLabel = (source: string) => Object.hasOwn(labels, source) ? labels[source as WebSearchSelection] : source;
 
-const SEARCH_AGENTS = [
-  ["worker", "Worker"], ["planner", "Planner"], ["mainagent", "主 Agent"],
-] as const;
-
 export function WebSearchCard() {
   const [settings, setSettings] = useState<WebSearchSettings | null>(null);
   const [key, setKey] = useState("");
+  const [searchAgents, setSearchAgents] = useState<Array<[string,string]>>([]);
   const [roles, setRoles] = useState<string[]>([]);
   const [sources, setSources] = useState<WebSearchSource[]>(["deepseek"]);
   const [preferred, setPreferred] = useState<WebSearchSelection>("deepseek");
@@ -44,12 +41,13 @@ export function WebSearchCard() {
   const load = useCallback(async () => {
     setLoadError("");
     try {
-      const value = await api.webSearchSettings();
+      const [value, agents] = await Promise.all([api.webSearchSettings(), api.agents()]);
+      setSearchAgents(agents.map(a=>[a.key,a.name]));
       setSettings(value);
       setSources(value.sources ?? ["deepseek"]);
       setPreferred(value.default_source ?? "deepseek");
       setTestSource(value.default_source ?? "deepseek");
-      setRoles(value.agent_roles.filter(role => SEARCH_AGENTS.some(([key]) => key === role)));
+      setRoles(value.agent_roles);
     }
     catch (error) { setLoadError((error as Error).message); }
   }, []);
@@ -77,7 +75,7 @@ export function WebSearchCard() {
   return <Card className="mb-4 break-inside-avoid md:mb-6">
     <CardHeader>
       <CardTitle>网络搜索</CardTitle>
-      <CardDescription>Planner、Worker 和主 Agent 可搜索公开技术文档，并按需读取正文。已读正文在模型请求中去重。</CardDescription>
+      <CardDescription>按 Agent 配置公开技术文档检索和正文读取能力。已读正文在模型请求中去重。</CardDescription>
     </CardHeader>
     <CardContent>
       <FieldGroup>
@@ -104,13 +102,13 @@ export function WebSearchCard() {
         <Field>
           <FieldLabel>使用网络搜索的 Agent</FieldLabel>
           <div className="flex flex-wrap gap-x-5 gap-y-3">
-            {SEARCH_AGENTS.map(([role, label]) => <label key={role} className="flex items-center gap-2 text-sm">
+            {searchAgents.map(([role, label]) => <label key={role} className="flex items-center gap-2 text-sm">
               <Checkbox disabled={disabled} checked={roles.includes(role)} onCheckedChange={checked => setRoles(current => checked ? [...new Set([...current, role])] : current.filter(item => item !== role))} />
               {label}
             </label>)}
           </div>
           <FieldDescription>保存后按所选角色及已有工具授权生效。</FieldDescription>
-          {settings && <FieldDescription role="status">{!settings.web_search_enabled ? "总开关已关闭" : !settings.ready ? "搜索凭证未就绪" : settings.effective_agent_roles.length ? `已生效：${SEARCH_AGENTS.filter(([role]) => settings.effective_agent_roles.includes(role)).map(([,label]) => label).join("、")}` : "尚无可调用的 Agent，请选择上方角色并保存"}</FieldDescription>}
+          {settings && <FieldDescription role="status">{!settings.web_search_enabled ? "总开关已关闭" : !settings.ready ? "搜索凭证未就绪" : settings.effective_agent_roles.length ? `已生效：${searchAgents.filter(([role]) => settings.effective_agent_roles.includes(role)).map(([,label]) => label).join("、")}` : "尚无可调用的 Agent，请选择上方角色并保存"}</FieldDescription>}
         </Field>
         <Field>
           <FieldLabel htmlFor="deepseek-search-key">DeepSeek API Key</FieldLabel>
