@@ -1,4 +1,5 @@
 import {migrateIntentGranularity} from '../agent/intent-granularity-migration.js';
+import {migratePlannerStrategy} from '../agent/planner-strategy-migration.js';
 import { cleanupToolCatalog } from '../agent/tool-catalog-cleanup.js';
 import { toolIdentity } from '../agent/tool-registry.js';
 import {NATIVE_TOOL_CATALOG} from '../agent/native-tools.js';
@@ -1035,6 +1036,7 @@ export async function seedBuiltins(db: Database): Promise<void> {
   await migratePlannerContinuation(db);
   await cleanupToolCatalog(db);
   await migrateIntentGranularity(db);
+  await migratePlannerStrategy(db);
 
   // 5. 内置 MCP 只是配置预设：disabled 且不授予任何 agent。ON CONFLICT 保证重启不覆盖用户改动。
   await db.query(
