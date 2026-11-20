@@ -17,6 +17,37 @@ const definition=(name:string):ToolDefinition=>({name,label:name,description:'Lo
 });
 const declarations=(context:any)=>context.messages.filter((m:any)=>m.role==='system').flatMap((m:any)=>m.toolsAdded??[]);
 
+for(const role of ['planner','worker','mainagent'])for(const scenario of ['boundary','expired','invalid'])test(`${role}: declared boundary calls renew; expired tools reject immediately (${scenario})`,async t=>{
+  const expired=scenario==='expired',invalid=scenario==='invalid';
+  const dir=await mkdtemp(join(tmpdir(),'fate-boundary-use-'));
+  const runtime=await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),refreshOnCreate:false});
+  const faux=fauxProvider({provider:'local-boundary-fixture'});await runtime.registerNativeProvider(faux.provider);
+  const lookup='asset_get',tick='context_get',tools=[definition(lookup),definition(tick)];
+  const loadout=toolLoadout(role,{customTools:tools,toolAllowlist:[lookup,tick]});
+  const sessionFile=join(dir,'session.jsonl');
+  const runner=await AgentRunner.create({cwd:dir,agentDir:dir,resumeSessionPath:sessionFile,
+    modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Synthetic local test.',...loadout});
+  t.after(async()=>{try{await runner.dispose();}finally{await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});}});
+  const call=(name:string,value:string)=>()=>fauxAssistantMessage([fauxToolCall(name,{value})]);
+  const search=()=>fauxAssistantMessage([fauxToolCall('tool_search',{query:lookup,mode:'exact'})]);
+  const responses=[search,call(lookup,'first use'),call(lookup,'second use'),call(tick,'idle one'),
+    ...(expired?[call(tick,'idle two')]:[]),invalid?()=>fauxAssistantMessage([fauxToolCall(lookup,{})]):call(lookup,'boundary use'),
+    ...(expired?[search]:[]),call(lookup,'following turn'),()=>fauxAssistantMessage('done')];
+  faux.setResponses(responses.map((response,index)=>(context)=>{
+    const declared=declarations(context).filter((tool:any)=>tool.name===lookup);
+    assert.equal(declared.length,runner.activeToolNames.includes(lookup)?1:0,'declaration and executable registry must agree');
+    if(expired&&index===5)assert.equal(declared.length,0,'two completed idle turns expire before the next request');
+    return response();
+  }));
+  await runner.prompt('Run the local fixture sequence');
+  const messages=(await readFile(sessionFile,'utf8')).trim().split('\n').map(line=>JSON.parse(line).message);
+  const results=messages.filter(message=>message?.role==='toolResult');
+  assert.equal(results.filter(m=>m.isError).length,expired||invalid?1:0);
+  if(expired)assert.match(JSON.stringify(results.find(m=>m.isError)),/not found/);
+  if(invalid)assert.match(JSON.stringify(results.find(m=>m.isError)),/Validation failed/);
+  assert.equal(results.at(-1).toolName,lookup);assert.equal(results.at(-1).isError,false);
+});
+
 test('all task roles defer large schemas while direct loading retains the full contract',()=>{
   for(const role of ['worker','planner','mainagent','auto','pentest','reporter']){
     const tools=roleDefinitions({} as Database,role),options={customTools:tools,toolAllowlist:tools.map(t=>t.name)};

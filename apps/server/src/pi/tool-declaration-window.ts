@@ -5,8 +5,8 @@ import {loadedToolReceipt} from './platform-mcp.js';
 /** Only declaration lifetime changes. Executions, arguments and results remain
  * in the native audit transcript, and discovery still enforces live bindings. */
 export function toolDeclarationWindow(policy:ToolLoading|undefined,settling:()=>boolean=()=>false):ExtensionFactory|undefined {
-  const idle=policy?.idleToolRequests;
-  if(!idle||!policy.deferred.length)return;
+  const idle=policy?.idleToolRequests??0;
+  if(!policy||!idle||!policy.deferred.length)return;
   const deferred=new Set(policy.deferred);
   return api=>{
     let request=0;
@@ -19,14 +19,16 @@ export function toolDeclarationWindow(policy:ToolLoading|undefined,settling:()=>
           for(const name of names)if(typeof name==='string'&&deferred.has(name))seen.set(name,request);
       }
     });
-    api.on('context',event=>{
-      if(request===0&&event.messages.some(message=>message.role==='assistant')){
+    api.on('before_agent_start',(_event,context)=>{
+      if(request!==0)return;
+      const messages=context.sessionManager.getBranch().flatMap(entry=>entry.type==='message'?[entry.message]:[]);
+      if(messages.some(message=>message.role==='assistant')){
         // A new Runner must not renew every old discovery on resume. Recover
         // recency from the last few native turns, including a search not yet used.
         for(const name of api.getActiveTools())if(deferred.has(name))seen.set(name,-idle);
         let age=0;
-        for(let i=event.messages.length-1;i>=0&&age<=idle;i--){
-          const message=event.messages[i]!;
+        for(let i=messages.length-1;i>=0&&age<=idle;i--){
+          const message=messages[i]!;
           if(message.role==='toolResult'){
             const names=[message.toolName];
             const details=(message as {details?:{loaded?:unknown;already_loaded?:unknown}}).details;
@@ -37,19 +39,34 @@ export function toolDeclarationWindow(policy:ToolLoading|undefined,settling:()=>
           if(message.role==='assistant')age++;
         }
       }
+      retire();
+    });
+    // PI snapshots executable tools before context projection. Changing the
+    // loadout there removes the schema a request too early but leaves the old
+    // executor callable. Change it only before a run or after a complete turn.
+    api.on('context',event=>{
       request++;
+      const active=new Set(api.getActiveTools());
+      const absent=[...deferred].filter(name=>!active.has(name));
+      if(!absent.length)return;
+      return {messages:[...event.messages,{role:'custom' as const,customType:'tool_availability',display:false,timestamp:Date.now(),
+        content:'【本轮工具状态】以下按需工具当前未加载（首次使用或已闲置卸载）：'+absent.slice(0,24).join(', ')+
+          '。即使历史回执显示加载/调用成功，也不能直接调用；需要时先 tool_search(mode=exact, query=单个完整工具名)，确认加载成功后再调用。其余以本轮实际工具声明为准。'}]};
+    });
+    api.on('turn_end',()=>{retire();});
+    function retire(){
       if(settling())return; // The host explicitly pins writeback tools for settlement.
       const active=api.getActiveTools();
       for(const name of [...seen.keys()])if(!active.includes(name))seen.delete(name);
       const keep=active.filter(name=>{
         if(!deferred.has(name))return true;
         if(!seen.has(name))seen.set(name,request);
-        if(request-seen.get(name)!<=idle)return true;
+        if(request-seen.get(name)!<idle)return true;
         seen.delete(name);
         return false;
       });
       if(keep.length!==active.length)api.setActiveTools(keep);
-    });
+    }
     api.on('context_with_system',event=>{
       const active=new Set(api.getActiveTools());
       const retained=new Set<string>();
