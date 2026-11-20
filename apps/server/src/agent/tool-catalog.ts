@@ -16,6 +16,7 @@ import {PLANNER_READING_RULES} from './planner-memory.js';
 import {roleResources} from './resources.js';
 import {skillDir} from '../config/index.js';
 import type {Database} from '../db/index.js';
+import {toolCallStats,emptyToolCallStats} from '../db/tool-call-stats.js';
 const previewCwd='/tmp/fate-tool-preview';
 const native=()=>nativeToolDefinitions(previewCwd);
 export const searchDefinition=toolSearchDefinition;
@@ -77,12 +78,15 @@ export function effectiveToolState(row:{key:string;kind?:string;enabled?:boolean
 }
 export async function catalogTools(db:Database){
  const definitions=builtinDefinitions(db),rows=(await db.query('SELECT * FROM tools ORDER BY key')).rows;
+ const usage=await toolCallStats(db,rows.map(row=>String(row.key)));
  const roles:Awaited<ReturnType<typeof previewRoleTools>>[]=[];for(const {key:role} of await db.platform().listAgents())roles.push(await previewRoleTools(db,role));
  return {roles,tools:rows.filter(row=>!['retired','unsupported'].includes(toolIdentity(String(row.key),String(row.kind)).implementation_status)).map(row=>{
   const identity=toolIdentity(String(row.key),String(row.kind)),definition=definitions.get(String(row.key));
   const effective=Object.fromEntries(roles.map(role=>[role.role,effectiveToolState({...row,key:String(row.key),kind:String(row.kind)},role)]));
   const description=row.kind==='builtin'&&definition?effectiveToolDescription(String(row.key),definition.description,row.description):{description:row.description,source:'configuration'};
-  return {...row,...identity,description:description.description,description_source:description.source,
+  return {...row,...identity,...emptyToolCallStats,...usage.get(String(row.key)),
+   usage_source:'retained_activity',usage_historical_complete:false,
+   description:description.description,description_source:description.source,
    ...(row.kind==='builtin'?catalogSchema(String(row.key),roles,row.schema):{schema:row.schema??{},schema_source:'configuration'}),
    schema_read_only:row.kind==='builtin',agents:row.agents??[],effective,loading:Object.fromEntries(Object.entries(effective).filter(([,state])=>state.status!=='unavailable').map(([role,state])=>[role,state.status]))};
  })};

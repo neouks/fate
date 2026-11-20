@@ -220,7 +220,7 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
         <Badge
           variant="secondary"
           className="ml-auto px-1.5 py-0 text-[10px] tabular-nums"
-          title={tool.calls == null ? "历史统计未记录" : `累计调用 ${tool.calls} 次`}
+          title={tool.calls == null ? "历史统计未记录" : `保留日志中调用 ${tool.calls} 次；成功 ${tool.succeeded ?? 0}，失败 ${tool.failed ?? 0}，结果未记录 ${tool.unknown ?? 0}。不含已清理日志或未投递的记录。`}
         >
           调用 {tool.calls ?? "未记录"}
         </Badge>
@@ -1044,7 +1044,7 @@ function CustomToolDialog({
             )}
             {kind === "shell" && (
               <p className="text-muted-foreground text-xs">
-                调用次数统计包含该工具的 Bash 执行请求，每请求最多一次；不推测脚本内部调用，不回填旧历史。
+                调用次数按保留日志中的独立工具调用去重统计。Shell 环境工具经原生 Bash 执行时记在 Bash 名下，不推测脚本内部调用。
               </p>
             )}
           </FieldGroup>

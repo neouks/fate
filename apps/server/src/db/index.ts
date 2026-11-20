@@ -22,6 +22,7 @@ import {backfillIntentWorkIndex} from './intent-work-index.js';
 import {graphProjectionMetrics,clearGraphProjectionCache} from './graph-projection.js';
 import {turnProjectionMetrics,clearTurnProjectionCache} from './turn-projection-cache.js';
 import {activityMetadataSQL} from './activity-content.js';
+import {prepareToolCallStats} from './tool-call-stats.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,6 +50,7 @@ const usageRollupSQL=readFileSync(path.join(__dirname,'sql','usage-rollups.sql')
 const usageLegacySQL=readFileSync(path.join(__dirname,'sql','usage-legacy-intervals.sql'),'utf8');
 const activityRollupSQL=`CREATE OR REPLACE FUNCTION activity_presentation_metadata(source JSONB) RETURNS JSONB LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN RETURN ${activityMetadataSQL('source')}; END $$;\n`+
  readFileSync(path.join(__dirname,'sql','activity-rollups.sql'),'utf8');
+const toolCallRollupSQL=readFileSync(path.join(__dirname,'sql','tool-call-rollups.sql'),'utf8');
 const nativeResponseRollupSQL=readFileSync(path.join(__dirname,'sql','native-response-rollups.sql'),'utf8');
 const nativeRangeRollupSQL=readFileSync(path.join(__dirname,'sql','native-range-rollups.sql'),'utf8');
 
@@ -222,7 +224,7 @@ export async function openDatabase(): Promise<Database> {
     try {
       await prepareToolOutputAccessMigration(client);
       // 无参数的 query 走简单查询协议，支持单次执行整份多语句 schema。
-      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+taskFileCleanupsSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL+'\n'+goalIntegritySQL+'\n'+resourceUsageSQL+'\n'+findingAmendmentsSQL+'\n'+humanInputSQL;
+      const ddl = retirementSQL + "\n" + schemaSQL+'\n'+streamStorageSQL+'\n'+usageSQL+'\n'+turnReadSQL+'\n'+turnFileChangesSQL+'\n'+taskFileCleanupsSQL+'\n'+usageRollupSQL+'\n'+usageLegacySQL+'\n'+activityRollupSQL+'\n'+toolCallRollupSQL+'\n'+nativeResponseRollupSQL+'\n'+nativeRangeRollupSQL+'\n'+activityOutboxSQL+'\n'+plannerRoundsSQL+'\n'+reproductionSQL+'\n'+graphMaintenanceSQL+'\n'+intentWorkIndexSQL+'\n'+plannerContextDeltasSQL+'\n'+plannerHistorySQL+'\n'+agentHistorySQL+'\n'+graphProjectionSQL+'\n'+goalIntegritySQL+'\n'+resourceUsageSQL+'\n'+findingAmendmentsSQL+'\n'+humanInputSQL;
       for (let attempt = 0; ; attempt++) {
         try {
           await client.query(ddl);
@@ -233,6 +235,7 @@ export async function openDatabase(): Promise<Database> {
         }
       }
       const db = new Database(pool);
+      await prepareToolCallStats(db);
       await migrateOperationJournal(db);
       // 内置种子（agents/规则/MCP/技能可见性）在迁移锁内执行，与 Go 同构。
       await seedBuiltins(db);

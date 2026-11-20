@@ -1387,6 +1387,11 @@ export interface RoleToolPreview {
   descriptions?: Record<string, string>;
 }
 export interface Tool {
+  succeeded?: number;
+  failed?: number;
+  unknown?: number;
+  usage_source?: string;
+  usage_historical_complete?: boolean;
   implementation_status?: "active" | "compatibility" | "retired" | "unsupported";
   canonical_name?: string;
   source?: string;
@@ -1411,7 +1416,7 @@ export interface Tool {
   directory?: string; // shell 专属：工具所在目录，仅作为 Bash 环境提示
   usage_help?: string; // shell 专属：工具用法帮助
   when_to_use?: string; // shell 专属：何时调用
-  calls?: number; // persistent runtime invocation count (older APIs may omit it)
+  calls?: number; // distinct calls in retained activity logs (older APIs may omit it)
 }
 
 // ---- Stats ----
