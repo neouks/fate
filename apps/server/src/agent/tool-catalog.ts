@@ -21,7 +21,7 @@ const native=()=>nativeToolDefinitions(previewCwd);
 export const searchDefinition=toolSearchDefinition;
 /** Constructors only: no model, MCP connection, terminal process, or domain action. */
 export function roleDefinitions(db:Database,role:string,taskBound=true):ToolDefinition[]{
- const ctx=runContext(db,taskBound?1:0,taskBound?1:0,role as never,{hooks:{platform:{} as never}});
+ const ctx=runContext(db,taskBound?1:0,taskBound?1:0,role as never,{...(role==='goals'&&taskBound?{goalsPhase:'combined' as const}:{}),hooks:{platform:{} as never}});
  return availableDomainTools(ctx);
 }
 export function builtinDefinitions(db:Database){
