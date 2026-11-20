@@ -1,5 +1,6 @@
 import { readPreferences, SOURCES } from "../search/sources.js";
 import { referenceSearch, type ReferenceInput } from "../search/references.js";
+import { searchPage, pageWindow, readingURL } from "../search/reading.js";
 import { readPublicPage } from "../search/pages.js";
 import { domainTool } from "./define.js";
 import type { ToolRunContext } from "./context.js";
@@ -40,7 +41,7 @@ function session(ctx: ToolRunContext) {
 
 export function webSearchTool(ctx: ToolRunContext) {
 	const cache = session(ctx).searches;
-	return domainTool<ReferenceInput>(
+	return domainTool<ReferenceInput & {offset?:number}>(
 		{
 			name: "web_search",
 			readOnly: true,
@@ -52,6 +53,7 @@ export function webSearchTool(ctx: ToolRunContext) {
 					query: { type: "string", minLength: 1, maxLength: 128 },
 					count: { type: "integer", minimum: 1, maximum: 50, default: 5 },
 					source: { type: "string", enum: ["auto", ...SOURCES] },
+                    offset: {type:"integer",minimum:0,default:0,description:"同一查询结果分页，使用回执 next_offset；不是网页正文偏移"},
 				},
 				required: ["query"],
 			},
@@ -65,8 +67,11 @@ export function webSearchTool(ctx: ToolRunContext) {
 					args.count ?? 5,
 				]);
 				current.signal?.throwIfAborted();
-				const existing = cache.get(key);
-				if (existing) return { ...(await existing), cached: true };
+				const offset=args.offset??0;
+                if(!Number.isSafeInteger(offset)||offset<0)throw new Error("offset 必须为非负整数");
+                const project=(result:Awaited<ReturnType<typeof referenceSearch>>)=>{if(offset>result.results.length)throw new Error("offset 超出搜索结果范围");return searchPage(result,offset);};
+                const existing = cache.get(key);
+				if (existing) return { ...project(await existing), cached: true };
 				if (cache.size >= 32) cache.delete(cache.keys().next().value!);
 				const pending = referenceSearch(current.db, args, prefs, {
 					signal: current.signal,
@@ -75,7 +80,7 @@ export function webSearchTool(ctx: ToolRunContext) {
 				try {
 					const result = await pending;
 					if (result.status === "partial") cache.delete(key);
-					return result;
+					return project(result);
 				} catch (error) {
 					cache.delete(key);
 					throw error;
@@ -88,7 +93,7 @@ export function webSearchTool(ctx: ToolRunContext) {
 
 export function webReadTool(ctx: ToolRunContext) {
 	const cache = session(ctx).pages;
-	return domainTool<{ url: string; offset?: number }>(
+	return domainTool<{ url: string; offset?: number; version?:string }>(
 		{
 			name: "web_read",
 			readOnly: true,
@@ -100,6 +105,7 @@ export function webReadTool(ctx: ToolRunContext) {
 				properties: {
 					url: { type: "string", minLength: 1, maxLength: 8192 },
 					offset: { type: "integer", minimum: 0, default: 0 },
+                    version:{type:"string",description:"续读时传上一回执的 version，正文变化时重新从 0 读取"},
 				},
 				required: ["url"],
 			},
@@ -108,7 +114,7 @@ export function webReadTool(ctx: ToolRunContext) {
 				const offset = args.offset ?? 0;
 				if (!Number.isSafeInteger(offset) || offset < 0)
 					throw new Error("offset 必须为非负整数");
-				const key = new URL(args.url);
+				const key = new URL(readingURL(args.url));
 				key.hash = "";
 				current.signal?.throwIfAborted();
 				let pending = cache.get(key.href);
@@ -120,18 +126,10 @@ export function webReadTool(ctx: ToolRunContext) {
 				}
 				try {
 					const page = await pending;
+                    if(args.version&&args.version!==page.version)throw new Error("正文版本已变化，请从 offset=0 重新读取，不能沿用旧偏移");
 					if (offset > page.blocks.length)
 						throw new Error("offset 超出正文范围");
-					const end = Math.min(offset + 3, page.blocks.length);
-					return {
-						url: page.url,
-						version: page.version,
-						blocks: page.blocks.slice(offset, end),
-						offset,
-						next_offset: end < page.blocks.length ? end : null,
-						total_blocks: page.blocks.length,
-						cached,
-					};
+					return {...pageWindow(page,offset),cached};
 				} catch (error) {
 					cache.delete(key.href);
 					throw error;

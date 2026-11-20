@@ -96,6 +96,8 @@ test("page tool supports pagination, caching, cancellation, private redirects an
 	assert.equal(first.next_offset, 3);
 	assert.equal(parse(await read(3)).offset, 3);
 	assert.equal(parse(await read()).cached, true);
+    const changed=await tool.execute("version",{url:"https://8.8.8.8/docs",offset:3,version:"stale"});
+    assert.equal(changed.isError,true);assert.match(JSON.stringify(changed),/版本已变化/);
 	assert.equal(calls, 1);
 	enabled = false;
 	assert.equal((await read()).isError, true);

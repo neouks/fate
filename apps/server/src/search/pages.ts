@@ -53,10 +53,10 @@ export async function publicPageURL(raw: string): Promise<URL> {
 export function extractPage(body: string, type: string) {
 	if (!type.includes("html")) return body.trim();
 	const $ = load(body);
-	$("script,style,noscript,nav,footer,header,iframe,form,svg").remove();
+	$("script,style,noscript,nav,footer,header,aside,[role=navigation],.sidebar,.toc,iframe,form,svg").remove();
 	const main = $("main").first();
 	const article = $("article").first();
-	const root = main.length ? main : article.length ? article : $("body");
+	const root = article.length ? article : main.length ? main : $("body");
 	root.find("tr").each((_, node) => {
 		$(node).replaceWith(
 			"\n" +

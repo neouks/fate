@@ -4,7 +4,7 @@ import {normalizeGoalProofInstructions} from './goal-proof-policy.js';
 import {FINDING_WRITE_GUIDANCE,isPreviousFindingDescription} from './finding-write-policy.js';
 import {describeToolContract,recognizedHistoricalDescription,mandatoryToolContract,PREVIOUS_REQUIRED_TOOL_CONTRACTS} from './tool-description-policy.js';
 import {CONSTRAINT_TOOL_DESCRIPTION} from './constraint-policy.js';
-import {WEB_SEARCH_DESCRIPTION} from '../search/policy.js';
+import {WEB_SEARCH_DESCRIPTION,PREVIOUS_WEB_SEARCH_DESCRIPTION} from '../search/policy.js';
 import { LEGACY_TOOL_DESCRIPTIONS } from './prompt-legacy.js';
 import type {Database} from '../db/index.js';
 import {CONVERGENCE_ADD_INTENT_HINT,CONVERGENCE_PROVE_GOAL_HINT} from './planner-convergence.js';
@@ -94,7 +94,8 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
   const previous = stored===DIRECTION_PREVIOUS_TOOL_DESCRIPTIONS[name] || stored===PLANNER_RECALL_PREVIOUS[name] || name==='asset_search' && stored==='检索任务资产摘要，按 DSL 或未测条件分页' || name==='asset_get' && stored==='按资产 ID 和字段组读取详情' || name==='insert_assets' && stored==='登记新资产及关系到资产图，登记后可直接继续探索。探索结论使用 record_fact。' || stored===retiredApprovalDefaults[name] || name==='context_get' && stored===priorPagedDefault || stored===ARTEX_PREVIOUS_TOOL_DESCRIPTIONS[name] || stored===DIRECT_WRITE_PREVIOUS[name] || stored===priorDefaults[name] || stored===blackboardDefaults[name] || name === 'prove_goal' && stored === '用仍获授权的事实或漏洞证明目标；证据必须支持该目标，量化条件须核对实测值。';
   const description = describeToolContract(name, name === 'web_search' ? WEB_SEARCH_DESCRIPTION : TOOL_DESCRIPTIONS[name] ?? code);
   if (name === 'tool_search' && stored === '按需发现已绑定工具；使用英文工具名或关键词') return {description, source: 'builtin'};
-  if (name === 'web_search' && stored === 'DeepSeek 官方网络搜索') return {description, source: 'builtin'};
+  if (name === 'web_search' && ['DeepSeek 官方网络搜索',PREVIOUS_WEB_SEARCH_DESCRIPTION].includes(String(stored))) return {description, source: 'builtin'};
+  if (name === 'web_read' && stored === '读取公开技术文档正文') return {description, source: 'builtin'};
   if (typeof stored === 'string' && stored.trim() && stored !== description && stored !== LEGACY_TOOL_DESCRIPTIONS[name] && stored !== TOOL_DESCRIPTIONS[name] && !previous)
     return { description: mandatoryToolContract(name,normalizeGoalProofInstructions(stored)), source: 'custom' };
   return { description, source: 'builtin' };

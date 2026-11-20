@@ -1,6 +1,6 @@
 import {toolAllowedInSession} from '../agent/tool-registry.js';
 import {SDK_NATIVE_TOOLS,nativeToolDefinitions,nativeToolRejection} from '../agent/native-tools.js';
-import {projectWebHistory} from '../search/context.js';
+import {projectWebHistory,webReadingReminder} from '../search/context.js';
 import {WORKER_FACT_GUIDANCE} from '../agent/worker-fact-policy.js';
 import {toolDeclarationWindow} from './tool-declaration-window.js';
 import {humanInputUI,maskedHumanResult,type HumanInputHandler} from './human-input.js';
@@ -401,6 +401,8 @@ export class AgentRunner {
         await refreshTokenBudget();
         // Keep legacy feedback in the audit session, never in Agent coordination.
         let messages=projectRecallHistory(projectWebHistory(opts.projectMessages?.(event.messages)??event.messages));
+        const webReminder=webReadingReminder(event.messages);
+        if(webReminder)messages.push({role:'custom',customType:'public_reference_reading',display:false,timestamp:Date.now(),content:webReminder});
         if(opts.contextLayout)messages.push({role:'custom',customType:'host_task_context',display:false,timestamp:Date.now(),content:hostTaskContext(opts.cwd,opts.taskContext)});
         const current=await opts.boundaryContext?.();
         if(current)messages.push({role:'custom',customType:'blackboard_boundary',content:current,display:false,timestamp:Date.now()});
