@@ -13,6 +13,8 @@ export async function pendingPlannerContext(db:Database,taskID:number,expID:numb
   const nodes=ids.length?(await db.query(`SELECT n.id,n.kind,n.state,n.content_version,t.id source_task_id,
     left(COALESCE(p.summary,p.text,''),160) summary,
     length(COALESCE(p.summary,p.text,''))>160 summary_truncated,
+    jsonb_build_object('positive',left(n.payload->'follow_up'->>'positive',500),'question',left(n.payload->'follow_up'->>'question',500),'blocker',left(n.payload->'follow_up'->>'blocker',40)) follow_up,
+    n.payload ? 'follow_up' has_follow_up,
     left(p.observation_type,40) observation_type,n.payload->'scope' IS NOT NULL has_scope,
     CASE WHEN jsonb_typeof(p.writeback)='object' THEN jsonb_strip_nulls(jsonb_build_object(
      'version',p.writeback->'version','asset_binding',left(p.writeback->>'asset_binding',40),
@@ -53,6 +55,7 @@ export async function pendingPlannerContext(db:Database,taskID:number,expID:numb
       change={ref:`node:${n.id}`,source_task_id:Number(n.source_task_id),version:Number(n.content_version),kind:n.kind,state:n.state,
        summary:n.summary,...(n.summary_truncated?{summary_truncated:true}:{}),
        ...(['fact','finding'].includes(String(n.kind))?{observation_type:n.observation_type??'unknown',writeback:n.writeback??{scope_status:'legacy_unspecified'},
+        ...(n.has_follow_up?{follow_up:n.follow_up}:{}),
         ...(n.has_scope?{scope_read:{ref:`node:${n.id}`,field:'/payload/scope',version:Number(n.content_version)}}:{})}:{}),
        progress,result:resultSummary(n.result),execution_stop:stopSummary(n.execution_stop)};
     }else if(event.subject_type){

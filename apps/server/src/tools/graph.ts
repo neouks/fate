@@ -1,3 +1,4 @@
+import {followUpSchema,normalizeFollowUp,type FollowUp} from '../agent/direction-review.js';
 import {writeOrigin,writeAnchors,assertDirectWrite,sourceFields,sameSource} from './write-origin.js';
 import {assertOriginalEvidence} from '../evidence/history-placeholder.js';
 import { resolveGraphNode, authorizedNodes } from "../db/graph_view.js";
@@ -12,7 +13,7 @@ import {normalizeWritebackScope,writebackReceipt,savedWritebackReceipt,writeback
 
 // ─── record_fact：worker 写回事实（intent --yields--> fact）─────────────────
 
-interface FactInput { summary: string; important_reason?: string; evidence?: string; detail?:string; scope?:WritebackScope; observation_type?:'observed'|'inferred'|'negative'|'unknown';confidence?: "low" | "medium" | "high"; asset_ids?: number[]; }
+interface FactInput { follow_up?:FollowUp; summary: string; important_reason?: string; evidence?: string; detail?:string; scope?:WritebackScope; observation_type?:'observed'|'inferred'|'negative'|'unknown';confidence?: "low" | "medium" | "high"; asset_ids?: number[]; }
 
 interface RecordFactArgs extends Partial<FactInput> { facts?: FactInput[]; }
 
@@ -23,6 +24,7 @@ export function recordFactTool(ctx: ToolRunContext) {
     evidence: {type:'string', pattern:'\\S', description:ctx.role==='worker'?'Worker 必填：支撑结论的证据原文':'支撑结论的证据原文'},
     detail: {type:'string', description:'汇总支撑结论的相关观察、验证方法、细节和限制，标明各观察的条件及不确定性'+(ctx.role==='worker'?'。有待规划线索时注明实际观察、原文来源、未验证部分和后续问题；线索不是本意图的新验收项，不自行验证。':'')},
     scope: writebackScopeSchema,
+    follow_up:{...followUpSchema,description:"可选的重要待规划线索。保留实际正向观察和未解问题，必须以本条 evidence 支撑；没有新增线索不填。"},
     observation_type: {type:'string', enum:['observed','inferred','negative','unknown'], description:'区分实测、推断、负面或未知'},
     confidence: {type:'string', enum:['low','medium','high'], description:'默认 medium'},
     asset_ids: {type:'array', items:{type:'integer',minimum:1}, description:'本结论实际涉及的资产 ID；缺省不继承意图资产'},
@@ -80,6 +82,8 @@ export function recordFactTool(ctx: ToolRunContext) {
         if(args.important_reason)payload.important_reason=args.important_reason.trim();
         if (args.evidence) payload["evidence"] = args.evidence;
         if(args.detail)payload.detail=args.detail;
+        const followUp=normalizeFollowUp(args.follow_up);
+        if(followUp){if(!args.evidence?.trim())throw new Error("待规划线索需要实际证据");payload.follow_up=followUp;}
         payload.observation_type=args.observation_type??'unknown';
         payload["confidence"] = args.confidence ?? "medium";
         const scope=normalizeWritebackScope(args.scope);

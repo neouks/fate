@@ -1,3 +1,4 @@
+import type {DirectionReview} from '../agent/direction-review.js';
 // 工具运行上下文：领域工具与 store/引擎回调的唯一连接面。
 // 每次 run（planner 轮 / worker 意图 / mainagent 回合 / goals 分解）构造一份，
 // 工具工厂闭包持有它——工具不感知 HTTP、不感知 pi，只依赖此接口（低耦合关键）。
@@ -9,6 +10,7 @@ export type AgentRole = "planner" | "worker" | "mainagent" | "goals" | "chat" | 
 
 /** planner 跨唤醒共享的规划待办（按任务保留，内存态；引擎 M4 持有实例）。 */
 export interface TodoItem {
+  review?:DirectionReview;
   content: string;
   status: "pending" | "in_progress" | "completed";
 }
@@ -23,6 +25,7 @@ export class TodoStore {
   get(expID: number): TodoItem[] {
     return this.byExp.get(expID) ?? [];
   }
+  cache(expID:number,todos:TodoItem[]):void { this.byExp.set(expID,todos.slice(0,50)); }
   async set(expID: number, todos: TodoItem[]): Promise<void> {
     // 上限防御：planner 一次提交过多时只保留前 50 条。
     const bounded = todos.slice(0, 50);

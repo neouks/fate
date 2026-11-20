@@ -1,3 +1,4 @@
+import {directionReviewSchema,validateDirectionReviews} from '../agent/direction-review.js';
 import {INTENT_RETRY_GUIDANCE,intentRetryArgumentError} from './input-contracts.js';
 import type {WorkerCorrection} from '../agent/worker-correction.js';
 import {CONVERGENCE_ADD_INTENT_HINT} from '../agent/planner-convergence.js';
@@ -299,7 +300,7 @@ export function todoWriteTool(ctx: ToolRunContext) {
     {
       name: "todo_write",
       description:
-        "维护本任务的攻击链待办清单（跨规划轮保留）。规则：串行利用链逐条记录；每轮只对【前置已完成、" +
+        "维护本任务的待办与重要线索复核（跨规划轮保留）；review 记录证据范围、继续/暂缓/关闭及恢复条件。规则：串行利用链逐条记录；每轮只对【前置已完成、" +
         "依赖的 fact 已存在】的下一步派意图；已由 fact 满足的步骤标记 completed；不要重复派 pending/" +
         "in_progress 的步骤。",
       promptSnippet: "更新攻击链待办（跨轮共享）",
@@ -314,6 +315,7 @@ export function todoWriteTool(ctx: ToolRunContext) {
               type: "object",
               properties: {
                 content: { type: "string" },
+                review: {...directionReviewSchema,description:"重要线索的方向复核。关闭前读取引用证据与范围；暂缓填写恢复条件。普通待办可省略。"},
                 status: { type: "string", enum: ["pending", "in_progress", "completed"] },
               },
               required: ["content", "status"],
@@ -322,10 +324,17 @@ export function todoWriteTool(ctx: ToolRunContext) {
         },
         required: ["todos"],
       },
+      transactional:false,
       async run(args, c) {
-        if (c.todos) await c.todos.set(c.expID, args.todos as TodoItem[]);
-        else await c.db.query("UPDATE explorations SET planner_todos=$2::jsonb WHERE id=$1",[c.expID,JSON.stringify(args.todos)]);
-        return { saved: args.todos.length };
+        const reviews=args.todos.filter(t=>t.review).map(t=>({content:t.content,review:t.review}));
+        await c.db.transaction(async db=>{
+          await c.hooks.assertOwnership?.(db);
+          await validateDirectionReviews({...c,db},args.todos);
+          await db.query("UPDATE explorations SET planner_todos=$2::jsonb WHERE id=$1",[c.expID,JSON.stringify(args.todos)]);
+          if(reviews.length)await db.exploration(c.expID).appendActivity({worker:c.role,kind:'status',summary:'已记录方向复核 '+reviews.length+' 项',detail:JSON.stringify(reviews),metadata:{event_type:'direction_review',semantic_verification:false}});
+        });
+        c.todos?.cache(c.expID,args.todos);
+        return { saved: args.todos.length,reviewed:reviews.length,meaning:'已校验引用与关闭所需读取记录；不代表宿主验证了结论语义' };
       },
     },
     ctx,

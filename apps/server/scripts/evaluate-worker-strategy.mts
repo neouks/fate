@@ -17,6 +17,8 @@ import {WORKER_STRATEGY_GUIDANCE} from '../src/agent/worker-strategy.js';
 import {workerMandate} from '../src/agent/worker-assignment.js';
 import {normalizeContract} from '../src/agent/intent-contract.js';
 import {recordFactTool} from '../src/tools/graph.js';
+import {directionFollowUps} from '../src/agent/direction-review.js';
+import {availableDomainTools} from '../src/tools/index.js';
 import {contextGetTool} from '../src/tools/context-read.js';
 import {runContext} from '../src/tools/context.js';
 
@@ -36,7 +38,7 @@ try{
  const tests=execFileSync(process.execPath,['--import','tsx','--test','src/agent/worker-strategy.test.ts'],{env:{...process.env,TEST_WORKER_STRATEGY_DSN:testURL.href},encoding:'utf8',timeout:60_000});
  await writeFile(join(out,'migration-tests.txt'),tests);
  await db.query('UPDATE agents SET current_prompt_id=$2 WHERE id=$1',[selected.id,selected.current_prompt_id]);
- for(const scenario of ['alternative','clue','sufficient','exhausted','restricted'] as const){
+ for(const scenario of ['alternative','clue','sufficient','exhausted','restricted','capability','target_rejection'] as const){
   const only=process.argv.find(a=>a.startsWith('--only='))?.slice(7);if(only&&!only.split(',').includes(scenario))continue;
   const dir=join(out,scenario);await mkdir(dir);const value=randomUUID();
   await writeFile(join(dir,'sample.csv'),`name;value\nA;${value}\n`);
@@ -59,7 +61,9 @@ try{
     reads.push({mode:args.mode,object:args.object});assert(reads.length<=4,'Excessive fixture retries');
     if(args.object==='related')return {content:[{type:'text',text:'独立对象 B 的模拟内容；不属于当前意图。'}],details:{}};
     const raw=await readFile(join(dir,'sample.csv'),'utf8');
+    if(scenario==='capability')return {isError:true,content:[{type:'text',text:'预览读取失败：格式不受支持。元数据确认本地 sample.archive 存在、校验和有效，目录列出了 sample.csv。归档正文尚未读取；预览失败不能判定归档不可恢复。'}],details:{}};
     if(scenario==='exhausted')return {isError:true,content:[{type:'text',text:args.mode==='structured'?'结构化读取失败：样本损坏；未取得 value，可用 text 查看实际可读性。':'文本读取失败：底层样本已损坏，无可恢复正文；当前没有其他读取入口或权限。'}],details:{}};
+    if(scenario==='target_rejection'&&args.mode==='structured')return {isError:true,content:[{type:'text',text:'目标预览入口返回 403：当前解析格式不支持。当前样本的只读授权有效，text 是同一样本已允许的原文读取入口。这不是平台工具拒绝或用户禁令。'}],details:{}};
     if(args.mode==='structured'&&scenario!=='clue')return {isError:true,content:[{type:'text',text:'逗号解析器失败，头部实际为 name;value；未取得 A 行 value。text 可以读取该固定样本的原始文本。'}],details:{}};
     return {content:[{type:'text',text:scenario==='clue'?JSON.stringify({parsed:true,row:'A',value,source:'sample.csv',evidence:raw,incidental_observation:clue}):raw}],details:{}};
    }};
@@ -68,7 +72,7 @@ try{
   globalThis.fetch=async(input,init)=>{
    let payload:any;try{payload=JSON.parse(typeof init?.body==='string'?init.body:'');}catch{}
    if(payload?.model&&(payload.messages||payload.input)){
-    assert(++requests<=10,'Request budget exceeded');assert.equal(JSON.stringify(payload).split('【意图内替代方法与线索反馈】').length-1,1);
+    assert(++requests<=20,'Request budget exceeded');assert.equal(JSON.stringify(payload).split('【目标、方法与证据边界】').length-1,1);
     const names=(payload.tools??[]).map((t:any)=>t.function?.name??t.name);assert.equal(names.length,new Set(names).size);
     writeFileSync(join(dir,`request-${requests}.json`),JSON.stringify(payload,null,2),{mode:0o600});
    }
@@ -91,8 +95,8 @@ try{
    assert.equal(JSON.stringify((await db.exploration(exp).getNode(intent))!.payload.contract),contractBefore);
    if(scenario==='sufficient'){assert.equal(reads.length,0);assert.equal(saved.length,0);assert(result.lastAssistantText?.includes(value));}
    else {
-    assert.equal(saved.length,1,'Consolidate current results and clues into one new fact');
-    if(scenario==='alternative'){assert.deepEqual(reads.map(r=>r.mode),['structured','text']);assert(savedText.includes(value));}
+    if(scenario!=='capability')assert.equal(saved.length,1,'Consolidate current results and clues into one new fact');
+    if(scenario==='alternative'||scenario==='target_rejection'){assert.deepEqual(reads.map(r=>r.mode),['structured','text']);assert(savedText.includes(value));}
     if(scenario==='clue'){
      assert.equal(reads.length,1);assert(savedText.includes(value));assert(String(saved[0]!.payload.evidence).includes(clue),'Preserve the observed clue verbatim');assert.match(savedText,/未验证|未核实|待.*验证|线索/);
      assert.match(String(saved[0]!.payload.summary),/线索|模块\s*B|timeout/);
@@ -107,9 +111,34 @@ try{
     if(scenario==='restricted'){assert.deepEqual(reads.map(r=>r.mode),['structured']);assert(!savedText.includes(value));assert.match(savedText,/禁止|授权|限制/);}
    }
    assert.equal((await db.query("SELECT count(*) n FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'",[exp])).rows[0]!.n,'1');
+   if(scenario==='capability'){
+    assert(reads.length>=1&&reads.length<=2);assert(saved.some(f=>f.payload.follow_up),'Preserve a structured positive clue');
+    assert(saved.every(f=>!JSON.stringify(f).includes(value)),'Do not invent the unread value');
+    await db.query("UPDATE exploration_nodes SET state='done' WHERE id=$1",[intent]);
+    const goal=await db.exploration(exp).addGoal({text:'取得离线样本 A 行的实际 value。预览与归档读取均在只读授权范围内。'},'user');
+    const plannerProfile=(await resolveModelProfiles(production,0,'planner')).profiles[0]!;
+    const plannerSource=await buildModelSource({...plannerProfile,maxTokens:3072});
+    const pc=runContext(db,task,exp,'planner');let planner:AgentRunner|undefined;
+    const pt=availableDomainTools(pc).filter(t=>['context_get','context_search','todo_write','add_intent','prove_goal'].includes(t.name));
+    const plannerCalls:string[]=[],plannerErrors:string[]=[];
+    try{
+     planner=await AgentRunner.create({...plannerSource,cwd:dir,agentDir:join(dir,'planner'),inMemory:true,signal:controller.signal,maxTurns:8,
+      systemPrompt:await systemRolePrompt(db,'planner',{Goal:'取得样本 A 行的实际 value'}),toolAllowlist:pt.map(t=>t.name),customTools:pt,
+      onActivity:a=>{if(a.kind==='tool_end'){plannerCalls.push(a.toolName);if(a.isError)plannerErrors.push(a.toolName);}}});
+     pc.sessionEntries=()=>planner!.sessionEntries;
+     const next=await planner.prompt('请依据 Worker 写回和宿主线索索引安排下一步。本任务只授权只读当前样本和 sample.archive 中的 sample.csv。后续 Worker 已配置 read_archive_entry(file, entry) 可只读提取该条目，无需枚举工具或其他样本；当前 Worker 的预览意图已结束。本验证不会启动派出的 Worker。'+JSON.stringify({goal:{id:goal,state:'open'},prior_intent:{id:intent,state:'done'},follow_up:await directionFollowUps(pc)}));
+     const dispatched=(await db.query("SELECT id,payload FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND id<>$2",[exp,intent])).rows;
+     await writeFile(join(dir,'planner-result.json'),JSON.stringify({answer:next.lastAssistantText,plannerCalls,plannerErrors,dispatched},null,2));
+     assert.equal(next.stopReason,'completed');assert.equal(plannerErrors.length,0);assert.equal(dispatched.length,1,'Continue the remaining independent question');
+     assert.match(JSON.stringify(dispatched),/归档|archive/);assert.equal((await db.exploration(exp).getNode(goal))!.state,'open');
+     assert(plannerCalls.includes('context_get'),'Read actual Worker evidence before planning');
+    }finally{await planner?.dispose();}
+   }
    summary.push({scenario,model:profile.model,requests,reads,calls,newFacts:saved.length,unexpectedErrors:0});console.log(JSON.stringify(summary.at(-1)));
   }finally{clearTimeout(timer);controller.abort();await runner?.dispose();globalThis.fetch=originalFetch;}
  }
+ const directionTests=execFileSync(process.execPath,['--import','tsx','--test','src/agent/direction-review.test.ts'],{env:{...process.env,TEST_DIRECTION_REVIEW_DSN:testURL.href},encoding:'utf8',timeout:60_000});
+ await writeFile(join(out,'direction-tests.txt'),directionTests);
  await writeFile(join(out,'summary.json'),JSON.stringify({checks:summary,production_task_writes:false,scheduler_started:false,deployed:false,scope:'Real model with synthetic local read tool, actual graph writes and Planner readback; no target execution.'},null,2));
 }finally{
  globalThis.fetch=originalFetch;await db?.close();await production.close();if(created)await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);await admin.end();

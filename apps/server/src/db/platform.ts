@@ -1,3 +1,4 @@
+import {migrateDirectionReasoning} from '../agent/direction-reasoning-migration.js';
 import {migrateIntentGranularity} from '../agent/intent-granularity-migration.js';
 import {migratePlannerStrategy} from '../agent/planner-strategy-migration.js';
 import {migrateWorkerStrategy} from '../agent/worker-strategy-migration.js';
@@ -1039,6 +1040,7 @@ export async function seedBuiltins(db: Database): Promise<void> {
   await migrateIntentGranularity(db);
   await migratePlannerStrategy(db);
   await migrateWorkerStrategy(db);
+  await migrateDirectionReasoning(db);
 
   // 5. 内置 MCP 只是配置预设：disabled 且不授予任何 agent。ON CONFLICT 保证重启不覆盖用户改动。
   await db.query(

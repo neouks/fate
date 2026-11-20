@@ -1,3 +1,4 @@
+import {directionFollowUps} from './direction-review.js';
 import {nativeToolNames} from './native-tools.js';
 import {pendingHumanInputSources} from '../db/human-input.js';
 import {normalizeWorkerInstructions} from './worker-fact-policy.js';
@@ -477,7 +478,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
       const state=plannerCurrentState(await buildGraphOverview(ctx,{currentOnly:true}),todos.get(expID));
       const waiting=await pendingHumanInputSources(db,taskID);
       if(waiting.length)state.waiting_for_input=waiting;
-      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.display_status,paused:task.display_status==='paused',...state,grounding:plannerGroundingContext(await plannerGrounding(ctx,sessionEntries()))})+'\n【证据收敛与待确认状态】\n'+JSON.stringify(await plannerConvergenceState(db,taskID,expID))+'\n'+await contextNeedBoundary(ctx)+(waiting.length?'\nwaiting_for_input 中的执行正在等待用户回答；不要因等待而纠偏追加工作、重复派单或认定方向无意义。':'');
+      return await constraints.context()+'\n【宿主当前状态，优先于历史摘要】\n'+JSON.stringify({task_status:task.display_status,paused:task.display_status==='paused',...state,grounding:plannerGroundingContext(await plannerGrounding(ctx,sessionEntries()))})+'\n【证据收敛与待确认状态】\n'+JSON.stringify(await plannerConvergenceState(db,taskID,expID))+'\n【重要线索与方向复核】\n'+JSON.stringify(await directionFollowUps(ctx))+'\n'+await contextNeedBoundary(ctx)+(waiting.length?'\nwaiting_for_input 中的执行正在等待用户回答；不要因等待而纠偏追加工作、重复派单或认定方向无意义。':'');
     },
     agentDir: path.join(dataDir, "pi-agent"),
     modelRuntime: model.modelRuntime,
