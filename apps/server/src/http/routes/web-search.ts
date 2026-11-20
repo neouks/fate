@@ -9,10 +9,11 @@ export function registerWebSearchRoutes(app: FastifyInstance) {
   app.get('/api/settings/web-search', () => webSearchSettings(app.db));
   app.put('/api/settings/web-search', async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
+    const availableRoles=(await app.db.platform().listAgents()).map(a=>a.key);
     if (typeof body.web_search_enabled !== 'boolean' ||
         (body.api_key !== undefined && (typeof body.api_key !== 'string' || body.api_key.length > 4096 || /\s/.test(body.api_key.trim()))) ||
         (body.clear_key !== undefined && typeof body.clear_key !== 'boolean') ||
-        (body.agent_roles !== undefined && (!Array.isArray(body.agent_roles) || body.agent_roles.some(role => !(WEB_SEARCH_ROLES as readonly unknown[]).includes(role))))) {
+        (body.agent_roles !== undefined && (!Array.isArray(body.agent_roles) || body.agent_roles.some(role => !availableRoles.includes(String(role)))))) {
       return reply.code(400).send({ error: '请提供有效的搜索开关和 API Key' });
     }
     let prefs;
@@ -25,7 +26,7 @@ export function registerWebSearchRoutes(app: FastifyInstance) {
       if (changes) await db.platform().setSetting('public_reference_sources', JSON.stringify(changes));
       if (Array.isArray(body.agent_roles)) {
         const roles = [...new Set(body.agent_roles as string[])];
-        await db.query('UPDATE agents SET web_search=(key=ANY($1::text[])) WHERE key=ANY($2::text[])', [roles, [...WEB_SEARCH_ROLES]]);
+        await db.query('UPDATE agents SET web_search=(key=ANY($1::text[])) WHERE key=ANY($2::text[])', [roles, availableRoles]);
         await db.query(`INSERT INTO tools(key,system,kind,description,schema,agents,enabled)
           VALUES('web_search',true,'builtin','DeepSeek 官方网络搜索','{}',$1::jsonb,true)
           ON CONFLICT(key) DO NOTHING`, [JSON.stringify([...WEB_SEARCH_ROLES])]);

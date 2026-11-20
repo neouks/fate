@@ -1,7 +1,6 @@
 import type { Database } from '../db/index.js';
 import { profileFetch } from '../pi/providerFromProfile.js';
 import { readPreferences } from './sources.js';
-import { WEB_SEARCH_ROLES } from './policy.js';
 
 export interface SearchResult { title: string; url: string; summary: string; snippet: string; date: string | null }
 export interface SearchInput { query: string; count?: number }
@@ -32,7 +31,7 @@ export async function webSearchSettings(db: Database) {
   const prefs = await readPreferences(db);
   const credentials = await searchCredentials(db);
   const ready = prefs.default_source === 'auto' ? prefs.sources.some(s => s !== 'deepseek' || !!credentials) : prefs.default_source !== 'deepseek' || !!credentials;
-  const agents = await Promise.all(WEB_SEARCH_ROLES.map(async role => ({role, agent: await db.platform().getAgentByKey(role)})));
+  const agents = (await db.platform().listAgents()).map(agent=>({role:agent.key,agent}));
   const binding = (await db.query('SELECT enabled,agents FROM tools WHERE key=$1', ['web_search'])).rows[0];
   const selected = agents.filter(({agent}) => agent?.webSearch === true);
   const enabled = await db.platform().getBool('web_search_enabled', false);

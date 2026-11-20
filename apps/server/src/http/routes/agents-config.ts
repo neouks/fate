@@ -14,7 +14,6 @@ import {textSize} from '../../agent/prompt-diagnostics.js';
 // 内置默认提示词/收尾词 import 自 src/agent/prompts.ts（只读）。
 
 import type { FastifyInstance } from "fastify";
-import { GOALS_PROMPT, MAIN_PROMPT, PLANNER_PROMPT, WORKER_PROMPT } from "../../agent/prompts.js";
 import {
   MAIN_WRAPUP,
   PLANNER_TASK_TIMEOUT_WRAPUP,
@@ -144,7 +143,6 @@ export function registerAgentConfigRoutes(app: FastifyInstance): void {
         sets.push(`${col}=$${params.length}`);
       }
     }
-    if (!['planner','worker','mainagent'].includes(key) && b.web_search === true) return reply.code(400).send({ error: '此角色不使用网络搜索' });
     for (const col of ["web_search", "interactive_shell", "enabled"] as const) {
       if (typeof b[col] === "boolean") {
         params.push(b[col]);

@@ -6,7 +6,6 @@ import {workerMandate,plannerDispatchReminder,WORK_COORDINATION_GUIDANCE} from '
 import {plannerConvergenceState} from './planner-convergence.js';
 import {resolveShell} from '../config/execution.js';
 import {targetProxy} from '../egress/upstream.js';
-import {roleToolRejection} from './planner-capabilities.js';
 import {withRuntimeResources,type RuntimeResourceLease} from '../engine/runtime-resources.js';
 import {ConstraintBoundary} from './constraint-boundary.js';
 import {PLANNER_TITLE_PROTOCOL} from './planner-title.js';
@@ -15,7 +14,6 @@ import {roleContextPolicy} from './context-policy.js';
 import {beginPlannerDisplayRound,finishPlannerDisplayRound} from '../db/planner-rounds.js';
 import {goalsBootstrap,activeBootstrap,saveBootstrapGoals,noteGoalsToolResult,SERIES_GOALS_POLICY,type GoalsPhase} from '../db/goals-bootstrap.js';
 import {GOALS_STAGE_TOOLS,GOALS_STAGE_PROTOCOL,goalsStageVariables} from './goals-policy.js';
-import {legacyReadCandidates} from '../tools/legacy-reads.js';
 import {assertActiveRole} from '../agent/retired-roles.js';
 import {plannerGrounding,plannerGroundingContext,plannerReceipt,projectPlannerReceipts} from './planner-grounding.js';
 import {readPlannerDispatchPage} from '../db/planner-receipts.js';
@@ -25,7 +23,6 @@ import {journalTools} from '../pi/operation-tools.js';
 import {contextNeedBoundary,CONTEXT_RETENTION_RULES} from './context-needs.js';
 import {terminalExtension,TERMINAL_TOOLS} from '../pi/terminal.js';
 import { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
-export { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
 import { CONTEXT_LAYOUT_VERSION } from './prompt-context.js';
 import {plannerSessionFile,lockPlannerSession,selectPlannerDelivery,selectIndexedPlannerDelivery,plannerCurrentState,plannerInvalidations,PLANNER_READING_RULES,PLANNER_COMPACTION_RULES} from './planner-memory.js';
 import {syncPlannerHistory,type PlannerHistorySnapshot} from '../db/planner-history.js';
@@ -40,13 +37,14 @@ import {resolveGraphNode} from '../db/graph_view.js';
 import {clampOutput} from '../tools/define.js';
 import { customWorkerTools } from "../tools/custom.js";
 import { roleResources } from "./resources.js";
+export { applyToolBindings, disabledBuiltinTools } from './tool-bindings.js';
 // 四角色装配：把提示词 + 领域工具 + 预算/guard 接到 AgentRunner 上。
 // 角色不感知引擎的调度细节，引擎不感知提示词内容——只经由本文件的四个入口函数交互。
 
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { AgentRunner, type RunnerActivity, type ToolGuard, type ToolGuardContext } from "../pi/runner.js";
-import { type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Database } from "../db/index.js";
 import type { Node } from "../db/exploration.js";
 import { runContext, type EngineHooks, type ToolRunContext, type TodoStore } from "../tools/context.js";
@@ -224,9 +222,8 @@ export async function executionTools(ctx:ToolRunContext,cwd:string,input:{egress
     names:interactive?TERMINAL_TOOLS:[],extensions:interactive?[terminalExtension(cwd,env,input.signal,shell)]:[]};
 }
 /** Main and Planner use the same execution lifecycle boundary as Worker. */
-function roleExecutionGuard(ctx:ToolRunContext,extra?:ToolGuard):ToolGuard{
+export function roleExecutionGuard(ctx:ToolRunContext,extra?:ToolGuard):ToolGuard{
   return async g=>{
-    const rejection=roleToolRejection(ctx.role,g.toolName);if(rejection)return {block:true,reason:rejection};
     await ctx.hooks.assertOwnership?.(ctx.db);
     const decision=await extra?.(g);if(decision?.block)return decision;
     if(g.toolName==='ask_user'||GUARD_SKIP_TOOLS.has(g.toolName)||['read','read_tool_output','read_attachment','traffic_body','shell_read','shell_list','shell_close'].includes(g.toolName))return;
@@ -312,7 +309,6 @@ async function runWorkerSession(input:WorkerRunInput,active:NativeRunSession):Pr
     streaming: model.streaming,
     systemPrompt: system+'\n\n'+CONTEXT_RETENTION_RULES,
     customTools: tools,
-    legacyTools: legacyReadCandidates(ctx),
     extensionFactories:execution.extensions,
     ...await roleResources(db, "worker", agentEnv.skillsDir),
     signal: input.signal, maxTurns, maxDurationMs,
@@ -459,7 +455,8 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
 
   const workDir = path.resolve(dataDir, "tasks", String(taskID));
   mkdirSync(workDir, { recursive: true });
-  // Planner never initializes terminal, custom executable or MCP capabilities.
+  const execution=await executionTools(ctx,workDir,input);
+  tools.push(...execution.tools);
   const plannerCounter = withUsageCounter(input.onActivity);
   let dispatchReminded=false;
   let sessionEntries:()=>readonly import('@earendil-works/pi-coding-agent').SessionEntry[]=()=>[];
@@ -469,7 +466,7 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     turnID:input.planningRoundID,
     contextLayout: CONTEXT_LAYOUT_VERSION,
     cwd: workDir,
-    extensionFactories:[],
+    extensionFactories:execution.extensions,
     projectMessages:messages=>projectPlannerReceipts(messages,sessionEntries(),sessionEntries),
     guard:async g=>{await active?.flush();return (await constraints.guard(g.toolName))??await executionGuard(g);},
     settlementTools:[...GUARD_SKIP_TOOLS,"read","read_tool_output","read_attachment","traffic_body","shell_read","shell_list","shell_close"],
@@ -490,10 +487,9 @@ async function runPlannerSession(input:PlannerRoundInput,history?:PlannerHistory
     streaming: model.streaming,
     systemPrompt: system+'\n\n'+CONTEXT_RETENTION_RULES,
     customTools: tools,
-    legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db, "planner", agentEnv.skillsDir),
     signal: input.signal, ...plannerBudget,
-    toolAllowlist: [...nativeToolNames("planner"), "mcp__*", ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
+    toolAllowlist: [...nativeToolNames("planner"), "mcp__*", ...execution.names, ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
     resumeSessionPath:active?.file??plannerSessionFile(dataDir,expID),
     canonicalSessionPath:plannerSessionFile(dataDir,expID),flushNativeSession:active?.flush,
     onSessionCompacted:async manager=>{await active?.rebase(manager,()=>syncPlannerHistory(db,taskID,expID,plannerSessionFile(dataDir,expID),input.signal));},
@@ -634,7 +630,6 @@ async function runMainSession(input:MainChatInput,active:NativeRunSession):Promi
     streaming: model.streaming,
     systemPrompt: system,
     customTools: tools,
-    legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db, "mainagent", agentEnv.skillsDir),
     signal: input.signal, ...agentBudgets(rc,{maxTurns:input.maxTurns,maxDurationMs:120_000}),
     toolAllowlist: [...nativeToolNames("mainagent"),"mcp__*",...execution.names, ...tools.map((t) => t.name)].filter((name) => !disabled.has(name)),
@@ -702,6 +697,8 @@ async function runLegacyGoalsDecompose(input: GoalsRunInput): Promise<WorkerRunR
   const system = await systemRolePrompt(db, "goals");
   const workDir = path.resolve(dataDir, "tasks", String(taskID));
   mkdirSync(workDir, { recursive: true });
+  const execution=await executionTools(ctx,workDir,{signal:input.signal});
+  tools.push(...execution.tools);
   let turns = 0;
   let goalsSaved = false;
   const runner = await createTrackedRunner(db,taskID,"goals",{
@@ -717,9 +714,9 @@ async function runLegacyGoalsDecompose(input: GoalsRunInput): Promise<WorkerRunR
     streaming: model.streaming,
     systemPrompt: system,
     customTools: tools,
-    legacyTools: legacyReadCandidates(ctx),
     ...await roleResources(db,"goals",agentEnv.skillsDir),
-    toolAllowlist: [...nativeToolNames('goals'),...tools.map((t) => t.name)].filter(name=>!disabled.has(name)),
+    extensionFactories:execution.extensions,
+    toolAllowlist: [...nativeToolNames('goals'),'mcp__*',...execution.names,...tools.map((t) => t.name)].filter(name=>!disabled.has(name)),
     signal: input.signal, ...agentBudgets(gc,{maxTurns:input.maxTurns??8,maxDurationMs:120_000}),
     inMemory: true,
     wrapup: () => goalsSaved ? undefined : {prompt:gc.wrapupPrompt||hostProtocol('goals')},
@@ -810,10 +807,13 @@ async function runCombinedGoals(input:GoalsRunInput):Promise<WorkerRunResult>{
   await agentRunConfig(db,'goals');
   const tools=await applyToolBindings(db,'goals',goalsTools(ctx));
   if(!tools.some(t=>t.name==='set_goals'))throw new Error('Goals 的 set_goals 已禁用，初始化暂停');
-  return tools.filter(t=>(GOALS_STAGE_TOOLS.combined as readonly string[]).includes(t.name));
+  return tools;
  };
  const tools=await requireWriter(),config=await agentRunConfig(db,'goals');
  const cwd=path.resolve(dataDir,'tasks',String(taskID),'goals','combined');mkdirSync(cwd,{recursive:true});
+ const execution=await executionTools(ctx,cwd,{signal:input.signal});
+ tools.push(...execution.tools);
+ const disabled=await disabledBuiltinTools(db,'goals');
  const file=path.join(cwd,'session.jsonl');
  const protocol=GOALS_STAGE_PROTOCOL.combined;
  const prematureGoalCalls=new Set<string>();
@@ -822,8 +822,9 @@ async function runCombinedGoals(input:GoalsRunInput):Promise<WorkerRunResult>{
     resourceLease:input.resourceLease,nativeActivity:input.nativeActivity,
   turnID:input.turnID,...model,cwd,agentDir:path.join(dataDir,'pi-agent'),goalsPhase:'combined',
   systemPrompt:await systemRolePrompt(db,'goals',goalsStageVariables(state.goal,state.description,'combined'),false,hostProtocol('goals')+'\n'+protocol),
-  customTools:tools,toolAllowlist:tools.map(t=>t.name),signal:input.signal,resumeSessionPath:file,
-  extensionFactories:[pi=>{
+  ...await roleResources(db,'goals',agentEnv.skillsDir),
+  customTools:tools,toolAllowlist:[...nativeToolNames('goals'),'mcp__*',...execution.names,...tools.map(t=>t.name)].filter(name=>!disabled.has(name)),signal:input.signal,resumeSessionPath:file,
+  extensionFactories:[...execution.extensions,pi=>{
    pi.on('message_end',async event=>{
     if(event.message.role==='toolResult'&&(GOALS_STAGE_TOOLS.combined as readonly string[]).includes(event.message.toolName)){
      await noteGoalsToolResult(ctx,event.message.toolName,event.message.isError?'工具保存未成功，请核对工具返回后纠正':undefined);

@@ -1,7 +1,6 @@
 import type {FastifyInstance} from 'fastify';
 import {builtinDefinitions,previewRoleTools} from '../../agent/tool-catalog.js';
 import {isCoreTool,TOOL_ALIASES,toolIdentity} from '../../agent/tool-registry.js';
-import {roleToolRejection} from '../../agent/planner-capabilities.js';
 import {nativeToolRejection} from '../../agent/native-tools.js';
 import {parseToolLoadingOverrides,readToolLoadingOverrides,toolLoadingSettingKey} from '../../agent/tool-loading-preferences.js';
 import {assertActiveRole} from '../../agent/retired-roles.js';
@@ -13,7 +12,7 @@ export function registerAgentToolLoadingRoutes(app:FastifyInstance) {
     const preview=await previewRoleTools(app.db,role);
     const definitions=builtinDefinitions(app.db),rows=(await app.db.query('SELECT key,kind FROM tools')).rows;
     const editable_tools=[...new Set([...definitions.keys(),...rows.map(r=>String(r.key))])].filter(name=>
-      name!=='tool_search'&&!name.startsWith('mcp__')&&!roleToolRejection(role,name)&&!nativeToolRejection(role,name)&&
+      name!=='tool_search'&&!name.startsWith('mcp__')&&!nativeToolRejection(role,name)&&
       toolIdentity(name,String(rows.find(r=>r.key===name)?.kind??'builtin')).implementation_status==='active');
     return {overrides,resident:preview.resident,deferred:preview.deferred,
       editable_tools,
@@ -40,7 +39,7 @@ export function registerAgentToolLoadingRoutes(app:FastifyInstance) {
       if(name==='tool_search'||identity.implementation_status==='compatibility')return reply.code(400).send({error:`${name} 使用固定加载规则，请配置规范工具入口`});
       if(name.startsWith('mcp__')||!row&&!definitions.has(name)||['retired','unsupported'].includes(identity.implementation_status))
         return reply.code(400).send({error:`工具 ${name} 不存在或不支持加载配置`});
-      const rejection=roleToolRejection(role,name)??nativeToolRejection(role,name);
+      const rejection=nativeToolRejection(role,name);
       if(rejection)return reply.code(400).send({error:rejection});
       if(mode==='deferred'&&policy.fallback)
         return reply.code(400).send({error:'请先启用 tool_search 并绑定此 Agent，再设置按需检索工具'});

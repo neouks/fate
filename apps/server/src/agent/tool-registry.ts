@@ -1,6 +1,5 @@
 import {NATIVE_TOOLS,RESIDENT_NATIVE_TOOLS,nativeToolRejection} from './native-tools.js';
 export {NATIVE_TOOLS} from './native-tools.js';
-import {roleAllowsTool,roleToolRejection} from './planner-capabilities.js';
 /** Catalog identity and exposure policy. Execution implementations remain native pi/domain tools. */
 export const TOOL_POLICY_VERSION = 'lean-tools-v1';
 export const ACTIVE_ROLES = ['goals','planner','mainagent','worker','auto','pentest','reporter'] as const;
@@ -10,7 +9,7 @@ export const TOOL_ALIASES: Record<string,string> = {
   read_tool_output:'context_get',read_attachment:'context_get',traffic_body:'context_get',
   list_assets:'asset_search',list_untested_assets:'asset_search',
 };
-export const RETIRED_TOOLS = new Set(['get_finding_retest_context','record_finding_retest_result','checkpoint_intent','complete_intent']);
+export const RETIRED_TOOLS = new Set(['get_finding_retest_context','record_finding_retest_result','checkpoint_intent','complete_intent',...Object.keys(TOOL_ALIASES)]);
 export const DOMAIN_TOOL_NAMES = [
   'ask_user',
   'traffic_search','search_finding_traffic','bind_finding_traffic','web_search','web_read','context_search','context_get','graph_overview','asset_search','asset_get','insert_assets',
@@ -23,7 +22,7 @@ export const DOMAIN_TOOL_NAMES = [
 const supported = new Set([...NATIVE_TOOLS,...DOMAIN_TOOL_NAMES,...Object.keys(TOOL_ALIASES),'tool_search',
   'list_mcp_resources','list_mcp_resource_templates','read_mcp_resource']);
 // Keep frequent evidence read/write contracts available through corrections,
-// idle turns and resume. Loadouts still filter role permissions and bindings;
+// idle turns and resume. Loadouts still filter user switches and bindings;
 // residency never grants a tool. Goals retains its fixed bootstrap protocol.
 const common = ['context_search','ask_user','context_get','record_fact'];
 const core:Record<string,string[]>={
@@ -45,18 +44,20 @@ export function toolIdentity(name:string,kind='builtin') {
     aliases:Object.entries(TOOL_ALIASES).filter(([,target])=>target===name).map(([alias])=>alias)};
 }
 
-/** Sub-capabilities keep their old switches after entrypoints are merged. */
+/** Check the user-configured binding of each canonical capability. */
 export async function assertToolBinding(db:import('../db/index.js').Database,role:string,key:string) {
-  const rejection=roleToolRejection(role,key)??nativeToolRejection(role,key);if(rejection)throw new Error(rejection);
+  // Internal readers may still refer to a historical sub-capability. Its user
+  // binding is now the canonical tool; the alias itself is never registered.
+  if(TOOL_ALIASES[key])return assertToolBinding(db,role,TOOL_ALIASES[key]!);
+  const rejection=nativeToolRejection(role,key);if(rejection)throw new Error(rejection);
   if(RETIRED_TOOLS.has(key))throw new Error(`工具 ${key} 已移除`);
-  if(TOOL_ALIASES[key])await assertToolBinding(db,role,TOOL_ALIASES[key]!);
   const row=(await db.query('SELECT enabled,agents FROM tools WHERE key=$1',[key])).rows[0];
   if(row&&(row.enabled===false||!Array.isArray(row.agents)||!row.agents.includes(role)))
-    throw new Error(`当前角色无 ${key} 读取或执行权限`);
+    throw new Error(`工具 ${key} 已禁用或未绑定此 Agent，请检查工具配置`);
 }
 
-/** The same ceiling and session grant apply to registration, discovery and calls. */
+/** The same implementation check and user grant apply to discovery and calls. */
 export function toolAllowedInSession(name:string,declared:readonly string[],role?:string,taskBound=true){
-  return !nativeToolRejection(role,name,taskBound)&&roleAllowsTool(role,name)&&!RETIRED_TOOLS.has(name)&&
+  return !nativeToolRejection(role,name,taskBound)&&!RETIRED_TOOLS.has(name)&&
     (declared.includes(name)||name.startsWith('mcp__')&&declared.includes('mcp__*'));
 }

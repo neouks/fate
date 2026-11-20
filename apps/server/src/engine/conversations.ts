@@ -1,11 +1,7 @@
+import { availableDomainTools } from '../tools/index.js';
 import {nativeToolNames} from '../agent/native-tools.js';
-import {trafficSearchTool} from '../tools/traffic-search.js';
 import {acquireRuntimeResources,type RuntimeResourceLease} from './runtime-resources.js';
 import type {ActivityJournal} from './activity-outbox.js';
-import {assetGetTool} from '../tools/assets.js';
-import {mergedAssetSearchTool} from '../tools/asset-search-compat.js';
-import {legacyReadCandidates} from '../tools/legacy-reads.js';
-import {conversationDomainTools} from '../tools/conversations.js';
 import {assertActiveRole} from '../agent/retired-roles.js';
 import {randomUUID} from 'node:crypto';
 import {prepareAgentRunSession,type NativeRunSession} from '../agent/native-run-session.js';
@@ -18,23 +14,13 @@ import type {Database} from '../db/index.js';
 import type {Engine,ModelResolver} from './engine.js';
 import {acquireSessionLease} from './session-lease.js';
 import {AgentRunner,type RunnerActivity} from '../pi/runner.js';
-import {agentRunConfig,agentBudgets,applyToolBindings,disabledBuiltinTools,executionTools} from '../agent/roles.js';
+import { agentRunConfig,agentBudgets,applyToolBindings,disabledBuiltinTools,executionTools,roleExecutionGuard } from '../agent/roles.js';
 import {systemRolePrompt,constraintBlock,hostProtocol} from '../agent/prompts.js';
 import {roleResources} from '../agent/resources.js';
 import {skillDir} from '../config/index.js';
 import {runContext,type AgentRole} from '../tools/context.js';
-import {domainTool} from '../tools/define.js';
-import {listAssetsTool} from '../tools/assets.js';
-import {reportFindingTool,listFindingsTool} from '../tools/findings.js';
-import {recordFactTool,nodeDetailTool} from '../tools/graph.js';
-import {graphOverviewTool} from '../tools/overview.js';
-import {httpRequestTool,trafficBodyTool,readAttachmentTool} from '../tools/evidence.js';
-import {customWorkerTools} from '../tools/custom.js';
 import {loadConstraints} from '../tools/index.js';
-import {findingEvidence} from '../evidence/store.js';
 import {prepareAttachments} from '../evidence/attachments.js';
-import {toolOutputTool} from '../tools/output.js';
-import {contextSearchTool,contextGetTool} from '../tools/context-read.js';
 
 const ORCHESTRATORS=new Set(['goals','planner','mainagent','worker','retester']);
 export class ConversationService {
@@ -172,10 +158,8 @@ export class ConversationService {
    const model=await this.resolve(taskID,role,{conversationID:id,profileID:Number(claimed.llm_profile_id)||undefined});
    const cwd=path.join(this.dataDir,'conversations',String(id));await mkdir(cwd,{recursive:true});
    activeSession=await prepareAgentRunSession(this.db,{taskID,expID:task?.exploration_id??0,role,conversationID:id},path.join(cwd,'session.jsonl'),controller.signal);
-   const ctx=runContext(this.db,taskID,task?.exploration_id??0,role as AgentRole,{conversationID:id,hooks:{assertOwnership:lease.assert}});
+   const ctx=runContext(this.db,taskID,task?.exploration_id??0,role as AgentRole,{conversationID:id,hooks:{assertOwnership:lease.assert,platform:this.engine,dispatchIntent:(_exp,intent)=>this.engine.dispatchIntent(taskID,intent),killWork:(_exp,intent,reason,source)=>this.engine.killWork(taskID,intent,reason,source),steerWork:async(_exp,intent,correction,source)=>{await this.engine.steerWork(taskID,intent,correction,source);},notifyIntent:()=>this.engine.notify(taskID),notifyGoalMet:()=>this.engine.notify(taskID),goalsChanged:async()=>{this.engine.notify(taskID);},constraintsChanged:()=>this.engine.notify(taskID)},userMessage:String(claimed.run.message??'')});
    ctx.agentSessionState=activeSession.snapshot;
-   const tools:import('@earendil-works/pi-coding-agent').ToolDefinition[]=[contextGetTool(ctx),readAttachmentTool(ctx),toolOutputTool(ctx)];
-   if(task)tools.push(trafficSearchTool(ctx),contextSearchTool(ctx),mergedAssetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),listFindingsTool(ctx),nodeDetailTool(ctx),graphOverviewTool(ctx),trafficBodyTool(ctx));
    const pendingReports=new Set<number>();
    // Trigger metadata is authoritative; model prose cannot silently skip a queued report.
    if(role==='reporter'&&Array.isArray(claimed.run.event_keys)){
@@ -185,9 +169,9 @@ export class ConversationService {
     for(const row of expected.rows){pendingReports.add(Number(row.id));await this.db.query('INSERT INTO finding_report_jobs(finding_id,conversation_id,run_id,evidence_version,report_revision) SELECT id,$2,$3,evidence_version,report_revision FROM findings WHERE id=$1 ON CONFLICT DO NOTHING',[row.id,id,claimed.run.id]);}
    }
    let reportSaved=false;
-   tools.push(...conversationDomainTools(ctx,this.engine,{profileID:Number(claimed.llm_profile_id)||0,pendingReports,onSaved:()=>{reportSaved=true;}}));
-   const execution=role==='pentest'&&task?await executionTools(ctx,cwd,{egressAddr:this.egress,egressScope:`conversation:${id}:${lease.token}`,signal:controller.signal}):undefined;
-   if(role==='pentest'&&task){const pentestTools:unknown[]=[Object.assign(recordFactTool(ctx),{name:'record_conversation_fact'}),Object.assign(reportFindingTool(ctx),{name:'report_conversation_finding'}),httpRequestTool(ctx),...(execution?.tools??[])];tools.push(...pentestTools as never[]);}
+   const tools=availableDomainTools(ctx,{profileID:Number(claimed.llm_profile_id)||0,pendingReports,onSaved:()=>{reportSaved=true;}});
+   const execution=await executionTools(ctx,cwd,{egressAddr:this.egress,egressScope:`conversation:${id}:${lease.token}`,signal:controller.signal});
+   tools.push(...execution.tools);
    const bound=await applyToolBindings(this.db,role,tools),disabled=await disabledBuiltinTools(this.db,role),resources=await roleResources(this.db,role,skillDir());
    if(role==='reporter'&&(!bound.some(t=>t.name==='get_finding')||!bound.some(t=>t.name==='update_finding_report')))throw new Error('Reporter 的必要读取或保存工具已禁用');
    const attachment=await prepareAttachments(this.db,this.dataDir,id,claimed.run.attachments,'conversation');
@@ -201,9 +185,9 @@ export class ConversationService {
     ...agentBudgets(config,{maxTurns:30,maxDurationMs:1200_000}),maxWrapupTurns:config.wrapupMaxTurns||2,
     wrapup:()=>role==='reporter'&&pendingReports.size?{prompt:config.wrapupPrompt||hostProtocol('reporter')}:undefined,
     extensionFactories:execution?.extensions,
-    systemPrompt:prompt+taskContext+(task?constraintBlock(await loadConstraints(this.db,task.exploration_id)):''),customTools:bound,legacyTools:task?legacyReadCandidates(ctx):[],
-    toolAllowlist:[...(execution?.names??[]),...bound.map(t=>t.name),...nativeToolNames(role,!!task).filter(n=>!disabled.has(n)),...(role!=='reporter'&&(role==='auto'||task)&&resources.mcpEntries?.length?['mcp__*']:[])],
-    guard:async g=>{await activeSession!.flush();await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return;},onActivity:persist},id);
+    systemPrompt:prompt+taskContext+(task?constraintBlock(await loadConstraints(this.db,task.exploration_id)):''),customTools:bound,
+    toolAllowlist:[...(execution?.names??[]),...bound.map(t=>t.name),...nativeToolNames(role,!!task).filter(n=>!disabled.has(n)),...(resources.mcpEntries?.length?['mcp__*']:[])],
+    guard:async g=>{await activeSession!.flush();await lease.assert();await agentRunConfig(this.db,role);const permitted=await applyToolBindings(this.db,role,[{name:g.toolName}]);if(!permitted.length)return {block:true,reason:'工具已禁用或解除绑定'};return task?roleExecutionGuard(ctx)(g):undefined;},onActivity:persist},id);
    await this.db.query('UPDATE conversations SET session_file=$2 WHERE id=$1',[id,runner.sessionFile??path.join(cwd,'session.jsonl')]);
    const triggerEvents=claimed.run.trigger_id?(await this.db.query('SELECT event_key,kind,task_id,payload FROM agent_trigger_events WHERE event_key=ANY($1::text[]) ORDER BY id',[claimed.run.event_keys??[]])).rows:null;
    const message=triggerEvents?JSON.stringify(triggerEvents.map(event=>({source:'blackboard',kind:event.kind,task_id:event.task_id,event_key:event.event_key,

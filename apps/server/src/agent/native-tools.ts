@@ -21,7 +21,7 @@ export const NATIVE_TOOL_CATALOG = [
 export const NATIVE_TOOLS = NATIVE_TOOL_CATALOG.map(t=>t.name);
 export const RESIDENT_NATIVE_TOOLS = NATIVE_TOOL_CATALOG.filter(t=>t.resident).map(t=>t.name);
 export function nativeToolNames(role:string, taskBound=true):string[] {
-  return NATIVE_TOOL_CATALOG.filter(t=>t.roles.includes(role)&&(role!=='pentest'||taskBound||t.name==='read')).map(t=>t.name);
+  return [...NATIVE_TOOLS];
 }
 export function nativeToolDefinitions(cwd:string):ToolDefinition[] {
   return NATIVE_TOOL_CATALOG.map(t=>t.create(cwd) as ToolDefinition);
@@ -29,5 +29,4 @@ export function nativeToolDefinitions(cwd:string):ToolDefinition[] {
 export function nativeToolRejection(role:string|undefined,name:string,taskBound=true):string|undefined {
   if(!SDK_NATIVE_TOOLS.includes(name))return;
   if(!NATIVE_TOOLS.includes(name))return `原生工具 ${name} 尚未接入平台，不能注册或调用`;
-  if(role&&!nativeToolNames(role,taskBound).includes(name))return `当前角色或会话范围不提供 ${name}`;
 }

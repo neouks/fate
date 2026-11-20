@@ -5,7 +5,6 @@ import {authorizeEvidence} from '../evidence/authorization.js';
 import {bindEvidence} from '../evidence/store.js';
 export const REPORTER_TRAFFIC_TOOLS=['search_finding_traffic','bind_finding_traffic'];
 export function reporterTrafficTools(ctx:ToolRunContext){
- if(ctx.role!=='reporter')return [];
  async function finding(c:ToolRunContext,id:number){
   if(!await c.db.platform().getBool('agent_traffic_binding',false))throw new Error('Agent 自动绑定流量已关闭');
   const f=(await c.db.query('SELECT id,task_id,evidence_version FROM findings WHERE id=$1 AND ($2::bigint=0 OR task_id=$2) AND finding_readable(id)',[id,c.taskID])).rows[0];

@@ -21,8 +21,8 @@ test('Worker declarations stay small even when prompt/Skill mentions writes and 
   const names=[...NATIVE_TOOLS,'context_get','context_search','ask_user','insert_assets','record_fact','report_finding','http_request','web_search','custom_probe'];
   const db={platform:()=>({getBool:async()=>true,getSetting:async()=>null,getAgentByKey:async()=>({webSearch:true})}),query:async(sql:string)=>({rows:names.concat('node_detail').map(key=>({key,kind:key==='custom_probe'?'custom':'builtin',enabled:key!=='http_request',agents:['worker']})).filter(r=>!sql.includes("kind='builtin'")||r.kind==='builtin')})} as unknown as Database;
   const customTools=names.filter(n=>!NATIVE_TOOLS.includes(n)).map(tool);
-  const loaded=await prepareToolLoading(db,'worker',{toolAllowlist:names,customTools,legacyTools:[tool('node_detail')],systemPrompt:WORKER_PROMPT,skillsDir:dir,allowedSkills:['fixture']},false);
-  assert.deepEqual(loaded.toolLoading.initialActive,[...RESIDENT_NATIVE_TOOLS,'context_get','context_search','ask_user','record_fact','node_detail']);
+  const loaded=await prepareToolLoading(db,'worker',{toolAllowlist:names,customTools,systemPrompt:WORKER_PROMPT,skillsDir:dir,allowedSkills:['fixture']},false);
+  assert.deepEqual(loaded.toolLoading.initialActive,[...RESIDENT_NATIVE_TOOLS,'context_get','context_search','ask_user','record_fact']);
   assert.ok(!loaded.toolAllowlist.includes('http_request'));
   for(const name of ['insert_assets','report_finding','web_search','custom_probe']){
    assert.ok(loaded.toolLoading.deferred.includes(name));
@@ -32,7 +32,8 @@ test('Worker declarations stay small even when prompt/Skill mentions writes and 
    assert.ok(!loaded.toolLoading.deferred.includes(name));
    assert.notEqual(loaded.customTools.find(t=>t.name===name)?.exposure,'deferred');
   }
-  assert.deepEqual(loaded.toolLoading.referencedActive,['node_detail']);
+  assert.deepEqual(loaded.toolLoading.referencedActive,[]);
+  assert.ok(!loaded.toolAllowlist.includes('node_detail'));
   const direct=await prepareToolLoading(db,'worker',{toolAllowlist:names,customTools},true);
   assert.deepEqual(direct.toolLoading.deferred,[]);assert.ok(!direct.toolAllowlist.includes('http_request'));
  }finally{await rm(dir,{recursive:true,force:true});}

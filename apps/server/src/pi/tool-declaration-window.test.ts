@@ -56,7 +56,7 @@ test('all task roles defer large schemas while direct loading retains the full c
       assert(!lazy.toolLoading.deferred.includes(name),role+' must not retire '+name);
       if(lazy.toolAllowlist.includes(name))assert(lazy.toolLoading.initialActive.includes(name),role+' must declare '+name);
     }
-    if(role==='planner')assert(!lazy.toolAllowlist.includes('record_fact'),'residency must not expand Planner permissions');
+    assert(lazy.toolAllowlist.includes('record_fact'),'explicit configuration can enable writeback for every role');
     if(['planner','mainagent'].includes(role))assert(lazy.toolLoading.deferred.includes('add_intent'),role);
     assert.equal(lazy.toolLoading.idleToolRequests,2);
     assert.equal(direct.toolLoading.idleToolRequests,undefined);assert.deepEqual(direct.toolLoading.deferred,[]);

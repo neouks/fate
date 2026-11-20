@@ -7,14 +7,14 @@ import {humanInputUI,maskedHumanResult,type HumanInputHandler} from './human-inp
 import {ActiveClock} from './active-clock.js';
 import {projectRecallHistory} from './recall-history.js';
 import {formatSkillsForPrompt} from '@earendil-works/pi-coding-agent';
-import {roleAllowsTool,roleToolRejection,PLANNER_CAPABILITY_PROTOCOL} from '../agent/planner-capabilities.js';
+import { PLANNER_CAPABILITY_PROTOCOL } from '../agent/planner-capabilities.js';
 import {classifyResourceCall,NATIVE_RESOURCE_CALL,type ResourceCall,type McpOwner} from './resource-usage.js';
 import {loadBoundSkills} from '../agent/skill-files.js';
 import {ActivityDelivery} from './activity-delivery.js';
 import type {WorkerTokenBudget} from '../db/worker-token-budget.js';
 import {nativeStreamID,withNativeActivity,type NativeActivityIdentity,type NativeActivityReference} from './native-activity.js';
 import type {ToolLoading} from '../agent/tool-loading.js';
-import {platformMcpExtension,hasDeferredMcp,declaredToolNames,toolDiscoveryInstructions} from './platform-mcp.js';
+import { platformMcpExtension,declaredToolNames,toolDiscoveryInstructions } from './platform-mcp.js';
 import {nativeCompactionExtension,type CompactionHealth} from './native-compaction.js';
 import {validatePlatformRunner,type PlatformPolicy} from './platform-policy.js';
 import {requestSize,systemPromptSize,textSize} from '../agent/prompt-diagnostics.js';
@@ -110,8 +110,6 @@ function closingToolError(name: string, text: string | undefined, closing: Closi
     ? `${CLOSING_RULE}\n原始工具错误：${text}` : text;
 }
 function toolAvailabilityError(name:string,text:string|undefined,closing:ClosingState,opts:AgentRunnerOptions){
-  const rejection=roleToolRejection(opts.platform?.role,name);
-  if(rejection&&text===`Tool ${name} not found`)return `${rejection}\n原始工具错误：${text}`;
   const result=closingToolError(name,text,closing,opts.settlementTools);
   if(result!==text||text!==`Tool ${name} not found`||!opts.toolLoading?.deferred.includes(name))return result;
   return `工具 ${name} 尚未在当前声明中激活；先用 tool_search(query=${JSON.stringify(name)}) 检索，成功加载后再调用。若已禁用或撤销则停止，不能绕过。\n原始工具错误：${text}`;
@@ -199,7 +197,6 @@ export interface AgentRunnerOptions {
 	/** 服务端自定义工具 */
 	customTools?: ToolDefinition[];
 	/** Read-only compatibility candidates; the host filters these before registration. */
-	legacyTools?: ToolDefinition[];
   extensionFactories?: ExtensionFactory[];
 	/** 工具门控（等价 norma 的 guard） */
 	guard?: ToolGuard;
@@ -282,15 +279,8 @@ export class AgentRunner {
 	// -------------------------------------------------------------------------
 
 	static async create(opts: AgentRunnerOptions): Promise<AgentRunner> {
-    if(opts.platform?.role==='planner'){
-      const allowed=(name:string)=>roleAllowsTool('planner',name);
-      const filter=(names:string[]|undefined)=>names?.filter(allowed)??[];
-      opts={...opts,toolAllowlist:filter(opts.toolAllowlist),
-        customTools:opts.customTools?.filter(t=>allowed(t.name)),
-        systemPrompt:(opts.systemPrompt??'').includes(PLANNER_CAPABILITY_PROTOCOL)?opts.systemPrompt:(opts.systemPrompt??'')+'\n'+PLANNER_CAPABILITY_PROTOCOL,
-        toolLoading:opts.toolLoading?{...opts.toolLoading,initialActive:filter(opts.toolLoading.initialActive),
-          deferred:filter(opts.toolLoading.deferred),compatibility:filter(opts.toolLoading.compatibility),referencedActive:filter(opts.toolLoading.referencedActive)}:undefined};
-    }
+    if(opts.platform?.role==='planner'&&!(opts.systemPrompt??'').includes(PLANNER_CAPABILITY_PROTOCOL))
+      opts={...opts,systemPrompt:(opts.systemPrompt??'')+'\n'+PLANNER_CAPABILITY_PROTOCOL};
     const closing: ClosingState = { active: false };
     const domainCompletion = {done:false};
     const finalResponse = {done:false};
@@ -477,8 +467,6 @@ export class AgentRunner {
 					pi.on('tool_call', async (event, context): Promise<ToolCallEventResult | undefined> => {
             if(opts.toolAllowlist&&!permitted(event.toolName))return {block:true,reason:`工具 ${event.toolName} 未获当前会话授权`,terminate:false};
             try{await opts.discoveryGuard?.(event.toolName);}catch(error){return {block:true,reason:String(error),terminate:false};}
-            const rejection=roleToolRejection(opts.platform?.role,event.toolName);
-            if(rejection)return {block:true,reason:rejection,terminate:false};
             if(await opts.stopWhen?.())return {block:true,reason:'本角色的最终结果已提交，不能继续操作',terminate:false};
             if (closing.active && opts.settlementTools && (!opts.settlementTools.includes(event.toolName) || closing.control?.excludedTool === event.toolName))
               return {block:true,reason:CLOSING_RULE,terminate:false};

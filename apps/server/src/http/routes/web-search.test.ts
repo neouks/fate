@@ -18,7 +18,7 @@ function fixture() {
   let binding: {key: string; enabled: boolean; agents: string[]} | undefined;
   let profile: any = null;
   const profiles: any[] = [];
-  const platform = { getSetting: async (key: string) => settings.get(key) ?? null,
+  const platform = { listAgents:async()=>[...agents].map(([key,agent])=>({...agent,key})), getSetting: async (key: string) => settings.get(key) ?? null,
     setSetting: async (key: string, value: string) => { settings.set(key, value); },
     getBool: async (key: string, fallback: boolean) => settings.has(key) ? settings.get(key) === 'true' : fallback,
     activeProfile: async () => profile, listProfiles: async () => profiles, profileByID: async (id: number) => profiles.find(p => p.id === id) ?? null, getAgentByKey: async (role: string) => agents.get(role) ?? null };
@@ -135,14 +135,15 @@ test('empty results succeed while upstream failures, malformed data and cancella
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test('manual scoped references work while reporter search stays revoked', async t => {
+test('manual references and explicitly configured reporter search honor live switches', async t => {
   const f = fixture(), app = Fastify();
   app.decorate('db', f.db);
   registerConfigRoutes(app);
   t.after(() => app.close());
   const save = (body: object) => app.inject({method: 'PUT', url: '/api/settings/web-search', payload: {web_search_enabled: true, ...body}});
   assert.equal((await save({sources:['cnblogs'], default_source:'cnblogs'})).statusCode, 400);
-  assert.equal((await save({agent_roles:['reporter']})).statusCode,400);
+  assert.equal((await save({agent_roles:['reporter']})).statusCode,200);
+  assert.equal((await save({agent_roles:['missing_agent']})).statusCode,400);
   const saved = await save({sources:['bing','cnblogs'], default_source:'cnblogs', agent_roles:[]});
   assert.equal(saved.json().ready, true);
   assert.deepEqual(saved.json().effective_agent_roles, []);
@@ -165,12 +166,15 @@ test('manual scoped references work while reporter search stays revoked', async 
   await f.db.query('INSERT INTO tools', [JSON.stringify(['reporter'])]);
   await f.db.query('UPDATE agents SET web_search', [['reporter']]);
   const tool = webSearchTool(runContext(f.db,0,0,'reporter',{conversationID:42}));
-  assert.deepEqual(await applyToolBindings(f.db,'reporter',[tool]),[]);
-  assert.ok((await tool.execute('already-loaded',args)).isError);
-  assert.equal(requests, 1);
+  assert.equal((await applyToolBindings(f.db,'reporter',[tool])).length,1);
+  assert.ok(!(await tool.execute('already-loaded',args)).isError);
+  assert.equal(requests, 2);
+  await f.db.query('UPDATE agents SET web_search',[[]]);
+  assert.ok((await tool.execute('revoked',args)).isError);
+  assert.equal(requests,2);
 });
 
-test('all three execution roles share multi-source search while reporter cannot load either tool',async t=>{
+test('all three execution roles share multi-source search and configured roles share the same live authorization',async t=>{
  const f=fixture();f.settings.set('web_search_enabled','true');
  f.settings.set('public_reference_sources',JSON.stringify({sources:['github'],default_source:'github'}));
  let requests=0;

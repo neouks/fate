@@ -1,7 +1,6 @@
 import {nativeToolRejection} from './native-tools.js';
 import {REPORTER_TRAFFIC_TOOLS} from '../tools/reporter-traffic.js';
 import {webSearchAllowed} from '../tools/web-search.js';
-import {roleAllowsTool} from './planner-capabilities.js';
 import {RETIRED_TOOLS,TOOL_ALIASES} from './tool-registry.js';
 import { effectiveToolDescription } from './tool-descriptions.js';
 import {roleToolDescription} from './tool-description-policy.js';
@@ -25,7 +24,7 @@ export async function applyToolBindings<T extends { name: string }>(db: import("
   return tools.filter((t) => {
     if(REPORTER_TRAFFIC_TOOLS.includes(t.name)&&!autoTraffic)return false;
     if(['web_search','web_read'].includes(t.name)&&!searchAllowed)return false;
-    if(!roleAllowsTool(role,t.name)||nativeToolRejection(role,t.name)||RETIRED_TOOLS.has(t.name))return false;
+    if(nativeToolRejection(role,t.name)||RETIRED_TOOLS.has(t.name))return false;
     if(t.name==='web_read'){const search=byKey.get('web_search');if(search&&(search.enabled===false||!Array.isArray(search.agents)||!search.agents.includes(role)))return false;}
     const canonical=byKey.get(TOOL_ALIASES[t.name]??'');
     if(canonical&&(canonical.enabled===false||!Array.isArray(canonical.agents)||!canonical.agents.includes(role)))return false;

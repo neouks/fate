@@ -9,7 +9,6 @@ import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi
 import {AgentRunner,type AgentRunnerOptions} from './runner.js';
 import {askUserTool,maskedHumanResult,type HumanReply,type HumanPrompt} from './human-input.js';
 import {nativeToolActivities} from './native-activity.js';
-import {roleAllowsTool} from '../agent/planner-capabilities.js';
 import {isCoreTool,toolIdentity} from '../agent/tool-registry.js';
 import {workerTools,plannerTools,mainTools} from '../tools/index.js';
 
@@ -24,13 +23,13 @@ async function fixture(options:Partial<AgentRunnerOptions>={}){
    const abort=()=>reject(new Error('aborted'));signal.addEventListener('abort',abort,{once:true});
    pending.push({prompt,reply:r=>{signal.removeEventListener('abort',abort);resolve(r);}});
   }),...options});
- return {runner,faux,pending,activities,async close(){await runner.abort();await runner.dispose();await rm(dir,{recursive:true,force:true});}};
+ return {runner,faux,pending,activities,async close(){await runner.abort();await runner.dispose();await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});}};
 }
 async function until(check:()=>boolean){for(let n=0;n<200;n++){if(check())return;await delay(10);}throw new Error('Fixture did not reach the expected boundary');}
 
 test('all three task roles expose the native question tool as a resident capability',()=>{
- for(const role of ['worker','planner','mainagent']){assert.equal(roleAllowsTool(role,'ask_user'),true);assert.equal(isCoreTool(role,'ask_user'),true);}
- for(const factory of [workerTools,plannerTools,mainTools])assert.ok(factory({} as any).some(t=>t.name==='ask_user'));
+ for(const role of ['worker','planner','mainagent']){assert.equal(isCoreTool(role,'ask_user'),true);}
+ for(const factory of [workerTools,plannerTools,mainTools])assert.ok(factory({hooks:{},taskID:1,expID:1} as any).some(t=>t.name==='ask_user'));
  assert.equal(toolIdentity('ask_user').source,'platform');
 });
 

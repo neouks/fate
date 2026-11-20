@@ -14,7 +14,6 @@ import {skillDir} from '../config/index.js';
 export async function workerCapabilities(ctx: ToolRunContext) {
   // Lazy import avoids a module initialization cycle through graph_overview/add_intent.
   const {workerTools} = await import('../tools/index.js');
-  const {legacyReadCandidates} = await import('../tools/legacy-reads.js');
   const [tools, disabled, custom, resources, agent, policy, prompt] = await Promise.all([
     applyToolBindings(ctx.db, 'worker', workerTools({...ctx, role:'worker'})),
     disabledBuiltinTools(ctx.db), boundCustomTools(ctx.db, 'worker'),
@@ -28,7 +27,7 @@ export async function workerCapabilities(ctx: ToolRunContext) {
     ...(resources.mcpEntries?.length ? resources.mcpResourceTools ?? [] : []),
   ])].sort();
   const loadout=await prepareToolLoading(ctx.db,'worker',{
-    customTools:tools,toolAllowlist:candidates,legacyTools:legacyReadCandidates({...ctx,role:'worker'}),
+    customTools:tools,toolAllowlist:candidates,
     systemPrompt:prompt.template,...resources,
   },policy.builtinLoading==='direct',policy.fallback);
   const names=[...loadout.toolAllowlist,...(loadout.toolLoading.deferred.length||hasDeferredMcp(resources)?['tool_search']:[])];

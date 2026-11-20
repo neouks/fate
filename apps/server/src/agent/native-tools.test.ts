@@ -30,10 +30,9 @@ test('native directory, role ceilings, bindings and effective explanations agree
     assert(!loaded.toolAllowlist.includes('powershell'));
     for(const name of searches.filter(n=>loaded.toolAllowlist.includes(n)))assert(loaded.toolLoading.deferred.includes(name));
   }
-  assert.deepEqual(nativeToolNames('pentest',false),['read']);
-  const planner={role:'planner',scope:'task_bound',resident:['read'],deferred:[],enabled:true,interactive_shell:true};
-  assert.equal(effectiveToolState(rows.find(t=>t.key==='bash')!,planner).status,'unavailable');
-  assert.match(effectiveToolState(rows.find(t=>t.key==='bash')!,planner).reason!,/Planner/);
+  assert.deepEqual(nativeToolNames('pentest',false),nativeToolNames('worker'));
+  const planner={role:'planner',scope:'task_bound',resident:['read','bash'],deferred:[],enabled:true,interactive_shell:true};
+  assert.equal(effectiveToolState(rows.find(t=>t.key==='bash')!,planner).status,'resident');
   const worker={...planner,role:'worker',resident:['read'],deferred:['ls']};
   assert.deepEqual(effectiveToolState(rows.find(t=>t.key==='ls')!,worker),{configured_bound:true,status:'deferred'});
   assert.match(effectiveToolState(rows.find(t=>t.key==='grep')!,worker).reason!,/禁用/);

@@ -1,3 +1,5 @@
+import { cleanupToolCatalog } from '../agent/tool-catalog-cleanup.js';
+import { toolIdentity } from '../agent/tool-registry.js';
 import {NATIVE_TOOL_CATALOG} from '../agent/native-tools.js';
 import {migrateSeriesGoals} from '../agent/goals-series-migration.js';
 import {migrateDirectionWriteback} from '../agent/direction-migration.js';
@@ -886,6 +888,7 @@ export async function seedBuiltinTools(db: Database): Promise<void> {
     ["register_user_target", "登记用户明确授权的目标", G],
   ];
   for (const [key, desc, agents] of seeds) {
+    if(toolIdentity(key).implementation_status!=='active')continue;
     await db.query(
       `INSERT INTO tools(key, system, description, schema, agents, enabled, kind) VALUES ($1, true, $2, '{}'::jsonb, $3::jsonb, true, 'builtin') ON CONFLICT (key) DO NOTHING`,
       [key, desc, JSON.stringify(agents)],
@@ -925,11 +928,11 @@ export async function seedBuiltins(db: Database): Promise<void> {
    ['read_attachment','分页读取当前会话附件',['worker','mainagent','auto','pentest','reporter']],
    ['get_finding','读取漏洞和证据版本',['reporter','auto','pentest']],
    ['update_finding_report','以证据版本更新报告',['reporter','auto']],
-   ['list_tasks','列出平台任务',['auto']],['get_task','查询任务状态',['auto']],
+   ['list_llm_profiles','列出模型配置',['auto']],['list_tasks','列出平台任务',['auto']],['get_task','查询任务状态',['auto']],
    ['record_conversation_fact','绑定任务的 Pentest 写回有来源的事实',['pentest']],['report_conversation_finding','绑定任务的 Pentest 原子提交有证据的漏洞',['pentest']],['resume_task','恢复任务并查询准入结果',['auto']],
    ['spawn_task','创建任务',['auto']],['pause_task','暂停任务',['auto']],['add_task_hint','给任务追加提示',['auto']],
   ];
-  for(const [key,description,agents] of extensionTools)await db.query(`INSERT INTO tools(key,system,description,schema,agents,enabled,kind) VALUES($1,true,$2,'{}',$3::jsonb,true,'builtin') ON CONFLICT(key) DO NOTHING`,[key,description,JSON.stringify(agents)]);
+  for(const [key,description,agents] of extensionTools.filter(([key])=>toolIdentity(key).implementation_status==='active'))await db.query(`INSERT INTO tools(key,system,description,schema,agents,enabled,kind) VALUES($1,true,$2,'{}',$3::jsonb,true,'builtin') ON CONFLICT(key) DO NOTHING`,[key,description,JSON.stringify(agents)]);
   if(await store.getSetting('pi_extra_role_bindings_v1')!=='true'){
     const legacyShared=['planner','worker','mainagent'],legacyAll=[...legacyShared,'goals'];
     const bindings:Array<[string[],string[],string[]]>=[
@@ -1029,6 +1032,7 @@ export async function seedBuiltins(db: Database): Promise<void> {
   await migrateSeriesGoals(db);
   await migrateRetiredExplorationPolicy(db);
   await migratePlannerContinuation(db);
+  await cleanupToolCatalog(db);
 
   // 5. 内置 MCP 只是配置预设：disabled 且不授予任何 agent。ON CONFLICT 保证重启不覆盖用户改动。
   await db.query(

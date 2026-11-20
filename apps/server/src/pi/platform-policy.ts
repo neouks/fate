@@ -1,5 +1,4 @@
 import {nativeToolRejection} from '../agent/native-tools.js';
-import {roleToolRejection} from '../agent/planner-capabilities.js';
 import {assertActiveRole} from '../agent/retired-roles.js';
 import type { Database } from '../db/index.js';
 import path from 'node:path';
@@ -44,11 +43,5 @@ export function validatePlatformRunner(role: string, options: {systemPrompt?:str
   const serverRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
   if([serverRoot,path.resolve(serverRoot,'../..')].includes(path.resolve(options.cwd)))
     throw new Error(`${role} 必须使用任务或会话目录，不能使用平台源码根目录`);
-  for(const name of options.toolAllowlist){const rejection=roleToolRejection(role,name)??nativeToolRejection(role,name,taskID>0);if(rejection)throw new Error(rejection);}
-  const execution = ['bash','write','edit','mcp__*'];
-  const forbidden = ['worker','planner','mainagent'].includes(role) || (role === 'pentest' && taskID > 0) ? []
-    : role === 'auto' ? ['bash','write','edit'] : execution;
-  if (options.toolAllowlist.some(name => forbidden.includes(name) || (forbidden.includes('mcp__*') && name.startsWith('mcp__')))) {
-    throw new Error(`${role} 装配了超出角色边界的执行工具`);
-  }
+  for(const name of options.toolAllowlist){const rejection=nativeToolRejection(role,name,taskID>0);if(rejection)throw new Error(rejection);}
 }

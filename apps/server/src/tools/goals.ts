@@ -92,15 +92,14 @@ export function setConstraintsTool(ctx: ToolRunContext) {
       },
       transactional: false,
       async run(args, c) {
-        if(c.role!=='goals'&&c.role!=='mainagent')throw new Error('只有 Goals 或处理用户请求的 Main 可以提取操作约束');
-        if(args.replace&&c.role!=='mainagent')throw new Error('Goals 只能追加用户原文要求，不能替换已有约束');
+        if(args.replace&&!c.userMessage)throw new Error('替换约束必须依据本轮用户明确要求');
         const ids=await c.db.transaction(async tx=>{
           await c.hooks.assertOwnership?.(tx);
           await tx.query("SELECT pg_advisory_xact_lock($1)", [c.expID]);
           const task=await tx.tasks().getTask(c.taskID);
           if(!task||task.exploration_id!==c.expID)throw new Error('约束所属任务不匹配');
           if(c.role==='goals'&&await goalsBootstrap(tx,c.taskID)){const state=await activeBootstrap(c,tx);if(!(c.goalsPhase==='constraints'||c.goalsPhase==='combined'&&state.policy===SERIES_GOALS_POLICY)||state.phase!=='constraints')throw new Error('当前阶段不能写入约束');}
-          const sources=c.role==='goals'?{goal:task.goal,description:task.description}:{user_message:c.userMessage};
+          const sources=c.userMessage?{user_message:c.userMessage}:{goal:task.goal,description:task.description};
           // Validate the whole batch before replacement; an invalid call leaves existing rules intact.
           const grounded=args.constraints.map(k=>groundConstraint(k,sources));
           if(args.replace&&!grounded.length)throw new Error('不能通过空模型提取删除全部约束；请使用用户约束管理入口');
@@ -148,9 +147,8 @@ export function registerUserTargetTool(ctx: ToolRunContext) {
       },
       transactional: false,
       async run(args, c) {
-        if (c.role !== 'goals') throw new Error('只有 Goals 可登记用户明确目标');
         return c.db.transaction(async db => {
-          const bootstrap = await goalsBootstrap(db, c.taskID) ? await activeBootstrap(c, db) : undefined;
+          const bootstrap = c.goalsPhase && await goalsBootstrap(db, c.taskID) ? await activeBootstrap(c, db) : undefined;
           const task = bootstrap ?? await db.tasks().getTask(c.taskID);
           if (!task || ('exploration_id' in task && task.exploration_id !== c.expID))
             throw new Error('目标所属任务不匹配');

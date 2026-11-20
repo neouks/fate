@@ -1,6 +1,5 @@
 import {SDK_NATIVE_TOOLS,nativeToolRejection} from '../agent/native-tools.js';
 import {createMcpExtension,createToolSearchExtension,type ExtensionAPI,type ExtensionFactory,type ToolDefinition} from '@earendil-works/pi-coding-agent';
-import {roleToolRejection} from '../agent/planner-capabilities.js';
 import {toolIdentity,toolAllowedInSession} from '../agent/tool-registry.js';
 import {discoverTools,discoveryReceipt,type DiscoveryArgs} from './tool-discovery.js';
 import {createServerTransport} from './mcpTransport.js';
@@ -129,7 +128,7 @@ export function platformMcpExtension(opts:AgentRunnerOptions):ExtensionFactory {
       pi.setActiveTools(pi.getActiveTools().filter(name=>next.has(name)));
       const found=await discoverTools(args[1] as DiscoveryArgs,{tools,active:pi.getActiveTools(),denied,unavailable:notReady,
         known:name=>SDK_NATIVE_TOOLS.includes(name)||toolIdentity(name).implementation_status!=='unsupported'||(opts.toolAllowlist??[]).includes(name),
-        reason:name=>roleToolRejection(opts.platform?.role,name)??nativeToolRejection(opts.platform?.role,name,opts.platform?opts.platform.taskID>0:true),unavailableServers:unavailable});
+        reason:name=>nativeToolRejection(opts.platform?.role,name,opts.platform?opts.platform.taskID>0:true),unavailableServers:unavailable});
       args[2]?.throwIfAborted();
       if(found.loaded.length)pi.setActiveTools([...new Set([...pi.getActiveTools(),...found.loaded])]);
       const result=discoveryReceipt(found);

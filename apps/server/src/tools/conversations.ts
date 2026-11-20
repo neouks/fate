@@ -1,6 +1,5 @@
 import {ToolResultError} from './errors.js';
 import {reporterTrafficTools} from './reporter-traffic.js';
-import {webSearchTool,webReadTool} from './web-search.js';
 import {archiveReport,prepareReproduction,attachStepTraffic,assembleReport,reproductionSchema,expandTrafficPackets} from '../evidence/reproduction.js';
 import {reportSections,reportSectionsSchema} from '../evidence/report-sections.js';
 import {requireTaskGoal} from "../agent/task-goal.js";
@@ -10,13 +9,12 @@ import type {ToolRunContext} from './context.js';
 import type {Engine} from '../engine/engine.js';
 import {findingEvidence} from '../evidence/store.js';
 import {reporterFindingInput,REPORTER_PAGE_CHARACTERS} from '../evidence/reporter-input.js';
-export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'admitTask'|'pause'|'notify'>,options:{profileID?:number;pendingReports?:Set<number>;onSaved?:()=>void}={}){
+export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'admitTask'|'pause'|'notify'>|undefined,options:{profileID?:number;pendingReports?:Set<number>;onSaved?:()=>void}={}){
  const tools:ToolDefinition[]=[],role=ctx.role,taskID=ctx.taskID,id=ctx.conversationID??0,profileID=options.profileID??0;
- if(role==='mainagent'||role==='worker'||role==='planner')tools.push(webSearchTool(ctx),webReadTool(ctx));
  tools.push(...reporterTrafficTools(ctx));
  const reads=new Map<number,{evidence:number;revision:number;ranges:Array<[number,number]>;total:number;complete:boolean}>();
  const pendingReports=options.pendingReports??new Set<number>(),onSaved=options.onSaved??(()=>{});
-   if(role==='auto'){
+   if(engine){
     const make=(name:string,description:string,properties:Record<string,unknown>,run:(a:Record<string,unknown>)=>Promise<Record<string,unknown>>,required:string[]=[])=>domainTool({name,description,transactional:false,parameters:{type:'object',properties,required},run},ctx);
     tools.push(make('list_tasks','分页列出平台任务',{after_id:{type:'integer'}},async a=>({tasks:(await ctx.db.query('SELECT id,name,goal,status,paused,queued FROM tasks WHERE deleted_at IS NULL AND id>$1 ORDER BY id LIMIT 10',[Number(a.after_id)||0])).rows})),
      make('get_task','查询任务状态',{task_id:{type:'integer'}},async a=>({task:await ctx.db.tasks().getTask(Number(a.task_id))}),['task_id']),
@@ -31,7 +29,7 @@ export function conversationDomainTools(ctx:ToolRunContext,engine:Pick<Engine,'a
      make('resume_task','恢复指定任务并返回实际准入状态',{task_id:{type:'integer'}},async a=>{const n=Number(a.task_id);await engine.admitTask(n);return {task:await ctx.db.tasks().getTask(n)};},['task_id']),
      make('add_task_hint','追加任务提示',{task_id:{type:'integer'},message:{type:'string'}},async a=>{const n=Number(a.task_id),t=await ctx.db.tasks().getTask(n);if(!t)throw new Error('任务不存在');const node=await ctx.db.exploration(t.exploration_id).addNode('hint',{text:String(a.message),source:'user_request',conversation_id:id},0,'open','auto',[]);engine.notify(n);await ctx.db.query("WITH saved AS (INSERT INTO blackboard_wakeups(exploration_id,event_key,kind,node_id) VALUES($1,$2,'control_changed',$3) ON CONFLICT DO NOTHING RETURNING id) UPDATE explorations SET published_revision=published_revision+1 WHERE id=$1 AND EXISTS(SELECT 1 FROM saved)",[t.exploration_id,`hint:${node}`,node]);return {saved:true,node_id:node};},['task_id','message']));
    }
-   if(['reporter','auto'].includes(role)){
+   {
      const reporter=role==='reporter';
      tools.push(domainTool<{finding_id:number;offset?:number;evidence_version?:number;report_revision?:number}>({name:'get_finding',description:'读取漏洞、证据版本及绑定；报告正文使用 offset 续读。',readOnly:true,parameters:{type:'object',properties:{finding_id:{type:'integer',minimum:1},offset:{type:'integer',minimum:0,description:'Unicode 字符偏移；将返回的 next 原样续读以保留版本'},evidence_version:{type:'integer',minimum:0,description:'续读使用返回的证据版本'},report_revision:{type:'integer',minimum:0,description:'续读使用返回的报告版本'}},required:['finding_id'],dependencies:{evidence_version:['report_revision'],report_revision:['evidence_version']}},async run(a,c){return c.db.transaction(async db=>{c={...c,db};
      const f=(await c.db.query('SELECT * FROM findings WHERE id=$1 AND ($2::bigint=0 OR task_id=$2) AND finding_readable(id) FOR SHARE',[a.finding_id,taskID])).rows[0];if(!f)throw new Error('漏洞不存在或未获当前任务授权');if(role==='reporter'&&(!f.report||f.report_evidence_version==null||Number(f.report_evidence_version)!==Number(f.evidence_version)))pendingReports.add(Number(f.id));

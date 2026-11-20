@@ -33,6 +33,8 @@ export class TodoStore {
 
 /** 引擎注入的回调面（M4 实装；M3 期由测试注入桩）。 */
 export interface EngineHooks {
+  /** Host platform operations; supplied independently of the agent role. */
+  platform?: Pick<import('../engine/engine.js').Engine,'admitTask'|'pause'|'notify'>;
   assertOwnership?: (db:Database)=>Promise<void>;
   /** worker 报洞 → 立即唤醒 planner。 */
   notifyFinding?: (expID: number, findingNodeID: number) => void;

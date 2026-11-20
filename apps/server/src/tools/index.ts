@@ -1,76 +1,41 @@
+import { conversationDomainTools } from './conversations.js';
 import {askUserTool} from '../pi/human-input.js';
 import {trafficSearchTool} from './traffic-search.js';
 import {webSearchTool,webReadTool} from './web-search.js';
 import {mergedAssetSearchTool as assetSearchTool} from './asset-search-compat.js';
-import {httpRequestTool,trafficBodyTool,readAttachmentTool} from "./evidence.js";
-import {toolOutputTool} from './output.js';
+import { httpRequestTool } from "./evidence.js";
 import {contextSearchTool,contextGetTool} from './context-read.js';
-import { graphIndexTool, expandDigestTool } from "./graph_read.js";
 // 角色工具装配：每次 run 构造 ToolRunContext 后按角色产出工具集。
 // 本地文件/命令工具不在领域层——由 pi 内置 bash/read/write/edit 承担（引擎层并入 allowlist）。
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ToolRunContext } from "./context.js";
-import { recordFactTool, nodeDetailTool, searchWorkerTracesTool, getWorkerTraceTool } from "./graph.js";
-import { assetGetTool, insertAssetsTool, listAssetsTool, listUntestedAssetsTool, addTaskScopeTool } from "./assets.js";
+import { recordFactTool } from "./graph.js";
+import { assetGetTool,insertAssetsTool,addTaskScopeTool } from "./assets.js";
 import { reportFindingTool, listFindingsTool, proveGoalTool } from "./findings.js";
 import { addIntentTool, dispatchIntentsTool, killWorkTool, steerWorkTool, todoWriteTool } from "./intents.js";
 import { setGoalsTool, setConstraintsTool, registerUserTargetTool } from "./goals.js";
 import { graphOverviewTool } from "./overview.js";
 
-/** 共享读集：三类 agent 都可用；worker 视角不带 coverage（Go 语义：只看方向不看度量）。 */
-function sharedReadTools(ctx: ToolRunContext, forWorker = false): ToolDefinition[] {
-  return [
-    trafficSearchTool(ctx),contextSearchTool(ctx),contextGetTool(ctx),
-    toolOutputTool(ctx),
-    readAttachmentTool(ctx),
-    graphOverviewTool(ctx, { forWorker }),
-  ];
+/** All implemented tools share one candidate inventory. User bindings decide
+ * availability; task-dependent tools require a bound task, not a role name. */
+export function availableDomainTools(ctx: ToolRunContext, conversationOptions: Parameters<typeof conversationDomainTools>[2] = {}): ToolDefinition[] {
+  const tools: ToolDefinition[] = [askUserTool(), webSearchTool(ctx), webReadTool(ctx), contextGetTool(ctx),
+    ...conversationDomainTools(ctx, ctx.hooks.platform, conversationOptions)];
+  if (ctx.taskID > 0 && ctx.expID > 0) tools.push(
+    trafficSearchTool(ctx), contextSearchTool(ctx), graphOverviewTool(ctx, {forWorker: ctx.role === 'worker'}),
+    httpRequestTool(ctx), recordFactTool(ctx), insertAssetsTool(ctx), reportFindingTool(ctx),
+    {...recordFactTool(ctx), name:'record_conversation_fact'}, {...reportFindingTool(ctx), name:'report_conversation_finding'},
+    assetSearchTool(ctx), assetGetTool(ctx), listFindingsTool(ctx), addIntentTool(ctx), proveGoalTool(ctx),
+    killWorkTool(ctx), steerWorkTool(ctx), addTaskScopeTool(ctx), todoWriteTool(ctx), dispatchIntentsTool(ctx),
+    setGoalsTool(ctx), setConstraintsTool(ctx), registerUserTargetTool(ctx),
+  );
+  return tools;
 }
-
-/** worker：一条意图的执行者（三通道写回 + 查重 + 过程复用）。 */
-export function workerTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [askUserTool(),webSearchTool(ctx),webReadTool(ctx), httpRequestTool(ctx), trafficBodyTool(ctx),
-    ...sharedReadTools(ctx, true),
-    recordFactTool(ctx),
-    insertAssetsTool(ctx),
-    reportFindingTool(ctx),
-    assetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),
-  ];
-}
-
-/** Planner：读取已有证据、派单、监督及目标证明，不执行目标请求。 */
-export function plannerTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [askUserTool(),webSearchTool(ctx),webReadTool(ctx), trafficBodyTool(ctx),
-    ...sharedReadTools(ctx),
-    addIntentTool(ctx),
-    proveGoalTool(ctx),
-    killWorkTool(ctx), steerWorkTool(ctx),
-    addTaskScopeTool(ctx),
-    listUntestedAssetsTool(ctx),
-    assetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),
-    todoWriteTool(ctx),
-  ];
-}
-
-/** Main：用户驱动的执行、写回、派单和纠偏入口。 */
-export function mainTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [askUserTool(),webSearchTool(ctx),webReadTool(ctx),httpRequestTool(ctx),trafficBodyTool(ctx),recordFactTool(ctx),reportFindingTool(ctx),insertAssetsTool(ctx),
-    ...sharedReadTools(ctx),
-    setGoalsTool(ctx),
-    setConstraintsTool(ctx),
-    addIntentTool(ctx),
-    dispatchIntentsTool(ctx),
-    killWorkTool(ctx), steerWorkTool(ctx),
-    assetSearchTool(ctx),assetGetTool(ctx),listAssetsTool(ctx),
-    listUntestedAssetsTool(ctx),
-  ];
-}
-
-/** goals：任务创建时的目标分解（一次性 run）。 */
-export function goalsTools(ctx: ToolRunContext): ToolDefinition[] {
-  return [contextSearchTool(ctx),contextGetTool(ctx),toolOutputTool(ctx),setGoalsTool(ctx), setConstraintsTool(ctx), registerUserTargetTool(ctx)];
-}
+export const workerTools = availableDomainTools;
+export const plannerTools = availableDomainTools;
+export const mainTools = availableDomainTools;
+export const goalsTools = availableDomainTools;
 
 export { buildGraphOverview, renderOverviewText } from "./overview.js";
 export { loadConstraints } from "./goals.js";

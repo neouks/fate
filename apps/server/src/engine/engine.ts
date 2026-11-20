@@ -1371,6 +1371,7 @@ export class Engine {
   private engineHooks(rt: TaskRuntime, segment?: number) {
     const token=rt.lease;
     return {
+      platform: this,
       assertOwnership: segment===undefined && token ? async(tx:Database)=>{
         if(rt.stopped)throw new ExecutionControlStop('stopped');
         if(rt.paused)throw new ExecutionControlStop('paused');

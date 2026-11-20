@@ -202,7 +202,6 @@ export function dispatchIntentsTool(ctx: ToolRunContext) {
       transactional:false,
       async run(args, c) {
         validateDispatchArgs(args);
-        if (c.role !== "mainagent") throw new Error("仅任务主 Agent 可以下发意图");
         const s = c.db.exploration(c.expID);
         const ids = args.all_open
           ? (await s.frontier(50)).map(node => node.id)
@@ -321,8 +320,8 @@ export function todoWriteTool(ctx: ToolRunContext) {
         required: ["todos"],
       },
       async run(args, c) {
-        if (!c.todos) throw new Error("todo_write 仅 planner 可用");
-        await c.todos.set(c.expID, args.todos as TodoItem[]);
+        if (c.todos) await c.todos.set(c.expID, args.todos as TodoItem[]);
+        else await c.db.query("UPDATE explorations SET planner_todos=$2::jsonb WHERE id=$1",[c.expID,JSON.stringify(args.todos)]);
         return { saved: args.todos.length };
       },
     },

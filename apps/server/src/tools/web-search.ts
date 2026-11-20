@@ -5,10 +5,9 @@ import { readPublicPage } from "../search/pages.js";
 import { domainTool } from "./define.js";
 import type { ToolRunContext } from "./context.js";
 import { assertToolBinding } from "../agent/tool-registry.js";
-import { WEB_SEARCH_ROLES, WEB_SEARCH_DESCRIPTION } from "../search/policy.js";
+import { WEB_SEARCH_DESCRIPTION } from "../search/policy.js";
 
 export async function webSearchAllowed(db: ToolRunContext["db"], role: string) {
-	if (!(WEB_SEARCH_ROLES as readonly string[]).includes(role)) return false;
 	if (!(await db.platform().getBool("web_search_enabled", false))) return false;
 	const agent = await db.platform().getAgentByKey(role);
 	return agent?.webSearch === true && agent.enabled !== false;
