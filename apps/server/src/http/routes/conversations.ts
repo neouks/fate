@@ -2,6 +2,8 @@ import {serveActivityStream,conversationReadable} from '../activity-stream.js';
 import {activityDTO} from '../../engine/live-stream.js';
 import {readActivityPage,readActivityContent,readSnapshotContent} from '../../db/activity-content.js';
 import type { FastifyInstance } from 'fastify';
+import {taskSession} from './task-session.js';
+import {aggregateUsage} from '../../db/usage-ledger.js';
 
 const activity = activityDTO;
 function conversationDTO(row: Record<string, unknown>) {
@@ -13,6 +15,32 @@ function conversationDTO(row: Record<string, unknown>) {
 export function registerConversationRoutes(app: FastifyInstance) {
   const service = () => app.engine.conversations;
   const db = () => app.db;
+
+  app.get('/api/tasks/:id/session-usage', async req => {
+    const taskID=Number((req.params as {id:string}).id);
+    const q=req.query as {session?:string;segment?:string};
+    const session=await taskSession(db(),taskID,q.session??`main:${q.segment??0}`);
+    const [totals,models,latest]=await Promise.all([
+      aggregateUsage(db(),session.scope),aggregateUsage(db(),session.scope,'model'),
+      db().query(`SELECT model,profile_id,usage,quality,status,purpose,input_semantics,created_at,finished_at FROM llm_usage_ledger
+        WHERE ${session.filter} AND source IN ('provider','request_audit')
+        ORDER BY created_at DESC,request_id DESC LIMIT 1`,session.params),
+    ]);
+    return usageSnapshot(totals[0],models,latest.rows[0]);
+  });
+  app.get('/api/conversations/:id/usage', async (req, reply) => {
+    const id = Number((req.params as {id:string}).id);
+    if (!Number.isSafeInteger(id) || id < 1 || !await conversationReadable(db(), id))
+      return reply.code(404).send({error:'conversation not found'});
+    const [totals, models, latest] = await Promise.all([
+      aggregateUsage(db(), {conversationID:id}),
+      aggregateUsage(db(), {conversationID:id}, 'model'),
+      db().query(`SELECT model,profile_id,usage,quality,status,purpose,input_semantics,created_at,finished_at FROM llm_usage_ledger
+        WHERE conversation_id=$1 AND source IN ('provider','request_audit')
+        ORDER BY created_at DESC,request_id DESC LIMIT 1`, [id]),
+    ]);
+    return usageSnapshot(totals[0],models,latest.rows[0]);
+  });
 
   app.get('/api/conversations', async req => {
     const value = (req.query as {task?: string}).task;
@@ -129,4 +157,26 @@ export function registerConversationRoutes(app: FastifyInstance) {
     await service().assertWritable(id);
     return service().stop(id);
   });
+}
+
+export function usageSnapshot(total:unknown, models:unknown[], last?:Record<string,unknown>) {
+  // A summarization receipt is billed, but its context is NOT the conversation.
+  // After any compaction attempt, only a new conversation receipt can calibrate it.
+  const usage = (last?.usage ?? {}) as Record<string,unknown>;
+  const count=(v:unknown):number|null=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0?v:null;
+  const inputTotal=count(usage.inputTotal),output=count(usage.output);
+  const parts=[usage.input,usage.cacheRead,usage.cacheWrite].map(count);
+  const exclusive=last?.input_semantics===undefined||last.input_semantics==='exclusive_cache';
+  const input=usage._input_total_known===true ? inputTotal
+    :last?.quality==='complete'&&exclusive&&parts.every(v=>v!==null)?parts.reduce<number>((sum,v)=>sum+v!,0):null;
+  let state='unavailable';
+  if(!last)state='empty';
+  else if(last.status==='running')state='pending';
+  else if(last.purpose==='compaction')state='compacted';
+  else if(last.status==='completed'&&input!==null&&output!==null&&
+    (last.quality==='complete'||Array.isArray(usage._known_fields)&&usage._known_fields.includes('output')))state='recorded';
+  const capacity=count(usage._context_window);
+  return {total,models,context:{tokens:state==='recorded'?input!+output!:null,state,
+    capacity:capacity&&capacity>0?capacity:null,model:last?.model??null,
+    profile_id:last?.profile_id==null?null:Number(last.profile_id),at:last?.finished_at??last?.created_at??null}};
 }

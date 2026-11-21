@@ -1,6 +1,6 @@
 import type {Database} from './index.js';
 
-export type UsageScope={taskIDs?:number[];taskID?:number;conversationID?:number;intentID?:number;mainSegment?:number;runtimeID?:string;turnID?:string;turnIDs?:string[]};
+export type UsageScope={roles?:string[];taskOnly?:boolean;taskIDs?:number[];taskID?:number;conversationID?:number;intentID?:number;mainSegment?:number;runtimeID?:string;turnID?:string;turnIDs?:string[]};
 export const USAGE_VERSION='usage-v2';
 
 /** One-way import. No business record is rewritten; reruns and deleted logs cannot remove receipts. */
@@ -120,6 +120,8 @@ export async function aggregateUsage(db:Database,scope:UsageScope&{days?:number;
  for(const [key,col] of [['taskID','task_id'],['conversationID','conversation_id'],['runtimeID','runtime_id'],['turnID','turn_id'],['intentID','intent_id'],['mainSegment','main_seg']] as const)
   if(scope[key]!==undefined){params.push(scope[key]);where.push(`${col}=$${params.length}`);}
  if(scope.taskIDs!==undefined){params.push(scope.taskIDs);where.push(`task_id=ANY($${params.length}::bigint[])`);}
+ if(scope.roles){params.push(scope.roles);where.push(`role=ANY($${params.length}::text[])`);}
+ if(scope.taskOnly)where.push('conversation_id IS NULL');
  const identityWhere=where.join(' AND ');
  let cte=CANONICAL_USAGE_CTE.replace('/* usage_scope */',identityWhere?'WHERE '+identityWhere:'');
  if(scope.turnIDs!==undefined){

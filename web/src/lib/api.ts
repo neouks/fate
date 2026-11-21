@@ -1044,6 +1044,8 @@ export const api = {
   deleteAgent: (key: string) => del<{ deleted: string }>(`/agents/${key}`),
 
   // ---- conversations (chat page) ----
+  taskSessionUsage: (id: string, session: string | number, signal?: AbortSignal) => get<import('./session-usage').SessionUsage>(`/tasks/${id}/session-usage?${new URLSearchParams({session:typeof session==='number'?`main:${session}`:session})}`, {signal}),
+  conversationUsage: (id: number, signal?: AbortSignal) => get<import('./session-usage').SessionUsage>(`/conversations/${id}/usage`, {signal}),
   conversations: (task?: string) => get<{ conversations: Conversation[] }>(`/conversations${task ? `?${new URLSearchParams({task})}` : ""}`).then((r) => arr(r.conversations)),
   createConversation: (agent_key: string, title = "", llm_profile_id?: number | null, task_id?: number | null) =>
     post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null, task_id: task_id ?? null }),

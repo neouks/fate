@@ -58,7 +58,7 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
    let budgetCeiling:number|undefined;
    let requestModel=model;
    let lastMessage:AssistantMessage|undefined;
-   const reservation=()=>({...(budgetCeiling===undefined?{}:{_budget_ceiling:budgetCeiling})});
+   const reservation=()=>({_context_window:model.contextWindow,...(budgetCeiling===undefined?{}:{_budget_ceiling:budgetCeiling})});
    const snapshot=()=>{const value=observation.result(undefined);return {...value,...reservation(),_quality:value._quality==='complete'?'partial':value._quality,_receipt_seq:++sequence};};
    const record=async(message:AssistantMessage)=>{
     if(saved)return;saved=true;lastMessage=message;
