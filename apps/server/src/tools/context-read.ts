@@ -182,8 +182,8 @@ function checkReadVersion(item:RecallItem,version:number|undefined,view:string){
   throw new ReadVersionChanged(item.version,version,{ref:item.ref,view,version,field:item.field??'',offset:0,...(item.max_chars!==undefined?{max_chars:item.max_chars}:{})});
 }
 export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({name:'context_get',readOnly:true,
-  description:'批量读取 node:ID、activity:ID、operation:ID、output:UUID、attachment:URL编码路径、traffic:UUID:request|response；证据引用按返回 offset_unit/next_item 续读；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。field 使用 JSON Pointer；offset 按 Unicode 字符续读，沿用返回的 next_offset。来源任务只读。',
-  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^((node|activity|operation):[1-9][0-9]*|session:[a-zA-Z0-9_-]+|(output|attachment|traffic):.+)$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string',description:'JSON Pointer，例如 /payload/evidence、历史会话 /content。首次省略时读取整个视图 JSON 的第一页；续读使用 next_item 的明确字段和偏移。空字符串选择整个视图 JSON，其偏移不能用于内嵌证据字段。'},offset:{type:'integer',minimum:0},max_chars:{type:'integer',minimum:1,maximum:24000,description:'本条 Unicode 字符上限，同时受顶层总上限约束。'+CONTEXT_ITEM_LIMIT_GUIDANCE},version:{type:'integer',minimum:0,description:'图节点版本；session: 原文引用不使用此参数。'},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref'],allOf:[{not:{required:['ref','max_chars'],properties:{ref:{pattern:'^(output|attachment|traffic):'}}}}]}},max_chars:{type:'integer',minimum:256,maximum:24000,description:'本次批量读取的总字符上限；items 内可另设每条上限。'}},required:['items']},
+  description:'批量读取 node:ID、activity:ID、operation:ID、output:UUID、attachment:URL编码路径、traffic:UUID:request|response；证据引用按返回 offset_unit/next_item 续读；detail 为完整证据，output 为最终输出，parents 为上游，members 为冷图成员。推荐原样复制 next_item（含 field/version/offset）续读。field 使用 JSON Pointer；省略 field 或 field="" 均读取整个视图 JSON，所有分页语义一致；切换字段须从 offset=0 开始。fact 证据通常为 /payload/evidence，finding 证据通常为 /finding_detail/evidence，以 read_options 为准。offset 按 Unicode 字符计数。来源任务只读。',
+  parameters:{type:'object',properties:{items:{type:'array',minItems:1,maxItems:5,items:{type:'object',properties:{ref:{type:'string',pattern:'^((node|activity|operation):[1-9][0-9]*|session:[a-zA-Z0-9_-]+|(output|attachment|traffic):.+)$'},view:{type:'string',enum:['summary','detail','output','parents','members']},field:{type:'string',default:'',description:'JSON Pointer，例如 /payload/evidence、历史会话 /content。省略或空字符串始终选择整个视图 JSON，包括 offset>0 的续页；其偏移不能用于内嵌证据字段。推荐原样使用 next_item 续读。'},offset:{type:'integer',minimum:0},max_chars:{type:'integer',minimum:1,maximum:24000,description:'本条 Unicode 字符上限，同时受顶层总上限约束。'+CONTEXT_ITEM_LIMIT_GUIDANCE},version:{type:'integer',minimum:0,description:'图节点版本；session: 原文引用不使用此参数。'},cursor:{type:'string',description:'parents/members 关系页游标；按 next_cursor 续读，页内先读完 next_offset'}},required:['ref'],allOf:[{not:{required:['ref','max_chars'],properties:{ref:{pattern:'^(output|attachment|traffic):'}}}}]}},max_chars:{type:'integer',minimum:256,maximum:24000,description:'本次批量读取的总字符上限；items 内可另设每条上限。'}},required:['items']},
   prepareArguments(input) {
     const args=input as RecallArgs;
     if(Array.isArray(args?.items))for(const [index,item] of args.items.entries()){
@@ -285,10 +285,8 @@ export function contextGetTool(c:ToolRunContext){return domainTool<RecallArgs>({
         }
         const text=sliced?'':typeof value==='string'?value:JSON.stringify(value??null);
         const total=sliced?.total??unicodeLength(text);
-        if(item.field===undefined&&!['parents','members'].includes(view)&&!dispatchPage&&offset>0){
-          const options=fieldReadOptions(data,{ref:item.ref,view,version});
-          throw new ReadSelectionRequired('未返回正文：请明确 field 后分段读取。整个视图 JSON 与其证据字段使用不同字符坐标；不要把一个偏移用于另一字段。确需原始视图 JSON 时显式传 field=""。',options);
-        }
+        // pointer(data, undefined) and pointer(data, '') select the same root on every page.
+        // Keep the returned coordinate explicit; never infer a nested field from an offset.
         const content=sliced?.content??unicodeSlice(text,offset,offset+take),returnedChars=unicodeLength(content);budget-=returnedChars;bytes-=Buffer.byteLength(JSON.stringify(content));
         const nextOffset=offset+take<total?offset+take:null;
         const coordinate:ReadCoordinate={ref:item.ref,view,field:item.field??'',...(version!==undefined?{version}:{}),...(pageCursor?{cursor:pageCursor}:{}),unit:'unicode_codepoints',format:sliced||typeof value==='string'?'text':'json'};

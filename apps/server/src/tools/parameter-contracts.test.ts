@@ -40,6 +40,18 @@ test('native evidence references cannot opt into node character paging',()=>{
  assert.doesNotThrow(()=>validate(tool,{items:[{ref:'node:1',max_chars:100}]}));
 });
 
+test('root continuation accepts omitted or empty field without rewriting input',()=>{
+ for(const role of ['worker','planner','reporter'] as const){
+  const tool=contextGetTool(runContext({} as never,1,1,role));
+  assert.equal((tool.parameters as any).properties.items.items.properties.field.default,'');
+  for(const field of [undefined,'','/payload/evidence']){
+   const args={items:[{ref:'node:39112',view:'detail',version:0,offset:3000,...(field===undefined?{}:{field})}]};
+   const before=structuredClone(args);
+   assert.doesNotThrow(()=>validate(tool,args));assert.deepEqual(args,before);
+  }
+ }
+});
+
 test('HTTP rejects invalid and undeclared inputs before transport or storage',async()=>{
  const tool=httpRequestTool(ctx);
  for(const args of [{url:'not a URL'},{url:'https://'},{url:'http://?x'},{url:'http:///a'},{url:'file:///tmp/fixture'},{url:'https://example.test',timeout_ms:1},{url:'https://example.test',method:'GET\nBad'}]){

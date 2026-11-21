@@ -43,11 +43,16 @@ export const PREVIOUS_REQUIRED_TOOL_CONTRACTS:Record<string,string> = {
   context_get: ' 首次省略 field 返回整个视图 JSON 的有界分页；将返回的 next_item 原样放入 items 续读，不只复制 offset。切换字段或版本时按 read_options 从 offset=0 重读，不混用坐标。version 可选，只使用返回的实际版本，不猜测。任一项失败则调用标为失败，成功项仍保留，只重试失败项。',
 };
 
+export const CONTEXT_READ_PAGING_GUIDANCE = '省略 field 或 field="" 始终读取整个视图 JSON，包括 offset>0 的续页；显式非空 field 只读取该字段。将返回的 next_item 原样放入 items 续读，保留字段、版本及游标。切换字段或版本时按 read_options 从 offset=0 重读，不混用坐标。证据引用按返回的 offset_unit 解释偏移。version 可选，只使用返回的实际版本，不猜测。任一项失败则调用标为失败，成功项仍保留，只重试失败项。';
+
 /** Runtime requirements cannot be replaced by editable business guidance. */
 export function mandatoryToolContract(name: string, description: string): string {
   const contract = name === 'context_get' ? CONTEXT_ITEM_LIMIT_GUIDANCE : name === 'add_intent' ? INTENT_RETRY_GUIDANCE : undefined;
   if(!contract)return description;
-  for(const part of [PREVIOUS_REQUIRED_TOOL_CONTRACTS[name]!.trim(),contract,...(name==='add_intent'?[INTENT_GRANULARITY_GUIDANCE]:[])])
+  // Replace only the exact shipped suffix; retain user-authored business guidance.
+  if(name==='context_get')description=description.replace(PREVIOUS_REQUIRED_TOOL_CONTRACTS.context_get!.trim(),CONTEXT_READ_PAGING_GUIDANCE);
+  const paging=name==='context_get'?CONTEXT_READ_PAGING_GUIDANCE:PREVIOUS_REQUIRED_TOOL_CONTRACTS[name]!.trim();
+  for(const part of [paging,contract,...(name==='add_intent'?[INTENT_GRANULARITY_GUIDANCE]:[])])
     if(!description.includes(part))description+=' '+part;
   return description;
 }

@@ -7,7 +7,7 @@ import {fauxProvider,fauxAssistantMessage,fauxToolCall,validateToolArguments} fr
 import {ModelRuntime,type ToolDefinition} from '@earendil-works/pi-coding-agent';
 import {openDatabase,type Database} from '../db/index.js';
 import {effectiveToolDescription,TOOL_DESCRIPTIONS} from '../agent/tool-descriptions.js';
-import {mandatoryToolContract,PREVIOUS_REQUIRED_TOOL_CONTRACTS} from '../agent/tool-description-policy.js';
+import {mandatoryToolContract,PREVIOUS_REQUIRED_TOOL_CONTRACTS,CONTEXT_READ_PAGING_GUIDANCE} from '../agent/tool-description-policy.js';
 import {compactToolSchema,toolLoadout} from '../agent/tool-loading.js';
 import {applyToolBindings} from '../agent/tool-bindings.js';
 import {previewRoleTools} from '../agent/tool-catalog.js';
@@ -17,6 +17,7 @@ import {runContext} from './context.js';
 import {contextGetTool} from './context-read.js';
 import {addIntentTool} from './intents.js';
 import {CONTEXT_ITEM_LIMIT_GUIDANCE,INTENT_RETRY_GUIDANCE} from './input-contracts.js';
+import {INTENT_GRANULARITY_GUIDANCE} from '../agent/intent-granularity.js';
 
 const ctx=(role:'worker'|'planner')=>runContext({} as Database,1,1,role);
 const validate=(tool:ToolDefinition,args:Record<string,unknown>,prepare=true)=>validateToolArguments(tool,{
@@ -38,7 +39,12 @@ test('custom descriptions retain mandatory contracts exactly once',()=>{
     const historical=effectiveToolDescription(name!,'unused',TOOL_DESCRIPTIONS[name!]+PREVIOUS_REQUIRED_TOOL_CONTRACTS[name!]);
     assert.equal(historical.source,'builtin');assert(historical.description.includes(contract!));
     const oldCustom=custom+PREVIOUS_REQUIRED_TOOL_CONTRACTS[name!];
-    assert.equal(effectiveToolDescription(name!,'unused',oldCustom).description,oldCustom+' '+contract);
+    const currentCustom=name==='context_get'?custom+' '+CONTEXT_READ_PAGING_GUIDANCE:oldCustom;
+    const expected=currentCustom+' '+contract+(name==='add_intent'?' '+INTENT_GRANULARITY_GUIDANCE:'');
+    assert.equal(effectiveToolDescription(name!,'unused',oldCustom).description,expected);
+    const withLimit=effectiveToolDescription(name!,'unused',oldCustom+' '+contract);
+    assert.equal(withLimit.description,expected);
+    assert.equal(mandatoryToolContract(name!,withLimit.description),withLimit.description);
 
   }
 });
@@ -180,15 +186,18 @@ test('retry and paging recovery use isolated records with no model or target req
       const read=contextGetTool(runContext(db,task,exp,role)),ref='traffic:'+id+':request';
       assert.throws(()=>validate(read,{items:[{ref,max_chars:3000}]}),/items\[0\]\.max_chars/);
       const first=await invoke(read,{items:[{ref}]});
-      if(role==='planner'){
-        assert.equal(first.error,true);assert.match(first.body.items[0].error,/无 traffic_body 读取或执行权限/);
-        continue; // Parameter recovery must not grant a disabled sub-capability.
-      }
       assert.equal(first.error,false,JSON.stringify(first.body));
       const page=first.body.items[0];assert.equal(page.offset_unit,'byte');assert.equal(page.content,body.subarray(0,400).toString());
       assert.equal(page.next_item.max_chars,undefined);
       const next=await invoke(read,{items:[page.next_item]});assert.equal(next.error,false,JSON.stringify(next.body));
       assert.equal(next.body.items[0].offset,400);assert.equal(next.body.items[0].content,body.subarray(400,800).toString());
+      // traffic_body now shares the canonical context_get binding. Disable that
+      // binding explicitly instead of assuming the planner lacks the old alias.
+      await db.query("UPDATE tools SET enabled=false WHERE key='context_get'");
+      try{
+        const denied=await invoke(read,{items:[page.next_item]});assert.equal(denied.error,true);
+        assert.match(denied.body.items[0].error,/无 context_get 读取权限/);
+      }finally{await db.query("UPDATE tools SET enabled=true WHERE key='context_get'");}
     }
   });
 });

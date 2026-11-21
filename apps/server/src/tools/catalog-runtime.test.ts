@@ -38,6 +38,7 @@ test('catalog, native declarations and partial-read outcomes share one contract'
   const preview=await previewRoleTools(db,role);
   assert(preview.resident.includes('tool_search'));
   assert.match(preview.descriptions.context_get!,/next_item 原样放入 items/);
+  assert.match(preview.descriptions.context_get!,/省略 field 或 field="" 始终读取整个视图 JSON/);
   assert.match(preview.descriptions.context_get!,/版本时按 read_options 从 offset=0/);
   assert.doesNotMatch(preview.descriptions.context_get!,/正文只需|冲突重新检索|长正文需选择 field/);
   assert.deepEqual(preview.schemas.tool_search,searchDefinition().parameters);
@@ -65,20 +66,29 @@ test('catalog, native declarations and partial-read outcomes share one contract'
    for(const name of ['tool_search',...bound.filter(t=>t.name!=='asset_get').map(t=>t.name)]){
     assert(declared.has(name),name);assert.deepEqual(declared.get(name).parameters,preview.schemas[name]);assert.equal(declared.get(name).description,preview.descriptions[name]);
    }
+   // Reproduce task 4902: schema-valid root continuation without field.
+   return fauxAssistantMessage([fauxToolCall('context_get',{items:[{ref:'node:'+long,offset:3000,version:0,view:'detail'}]})]);
+  },context=>{
+   requests++;
+   const result=(context.messages as any[]).filter(m=>m.role==='toolResult').at(-1);
+   assert(result);assert.notEqual(result.isError,true);
    return fauxAssistantMessage([fauxToolCall('context_get',args)]);
   },()=>{requests++;return fauxAssistantMessage('Read failed item reported; no automatic retry.');}]);
   const runner=await AgentRunner.create({cwd:dir,agentDir:dir,modelRuntime:runtime,model:faux.getModel(),systemPrompt:'Local contract test.',customTools:bound,toolAllowlist:bound.map(t=>t.name),
    toolLoading:{version:'lean-tools-v1',initialActive:bound.filter(t=>t.name!=='asset_get').map(t=>t.name),deferred:['asset_get'],compatibility:[]},onActivity:a=>{activities.push(a);}});
   try{await runner.prompt('Read local fixtures once.');}finally{await runner.dispose();}
-  assert.equal(requests,2);
+  assert.equal(requests,3);
   const results=activities.filter((a):a is Extract<RunnerActivity,{kind:'tool_end'}>=>a.kind==='tool_end');
-  assert.equal(results.length,1);assert.equal(results[0]!.isError,true);
-  const partial=JSON.parse(results[0]!.text!);assert.match(partial.error,/1\/2/);
+  assert.equal(results.length,2);assert.equal(results[0]!.isError,false);assert.equal(results[1]!.isError,true);
+  const rootContinuation=JSON.parse(results[0]!.text!).items[0];
+  assert.equal(rootContinuation.read_receipt.start,3000);assert.equal(rootContinuation.field,'');
+  const partial=JSON.parse(results[1]!.text!);assert.match(partial.error,/1\/2/);
   assert.equal(partial.items[0].error_code,'READ_SELECTION_REQUIRED');assert(partial.items[0].read_options.some((o:any)=>o.field==='/payload/evidence'));
   assert.match(partial.items[1].content,/saved local evidence/);assert(partial.items[1].read_receipt);
   const tool=contextGetTool(ctx);
   const invoke=async(items:unknown[],max_chars?:number)=>tool.execute('read',validateToolArguments(tool,{type:'toolCall',id:'read',name:tool.name,arguments:{items,...(max_chars?{max_chars}:{})}}),undefined,undefined,{} as never);
-  const allFailed=await invoke([{ref:'node:'+long,offset:100}]);assert.equal(allFailed.isError,true);assert.match((allFailed.content[0] as {text:string}).text,/1\/1/);
+  const explicit=await invoke([{ref:'node:'+long,offset:3000,version:0,view:'detail',field:''}]);assert.notEqual(explicit.isError,true);
+  assert.deepEqual(rootContinuation,JSON.parse((explicit.content[0] as {text:string}).text).items[0]);
   const first=await invoke([{ref:'node:'+long},{ref:'node:'+short}]);assert.notEqual(first.isError,true);
   const pages=JSON.parse((first.content[0] as {text:string}).text);assert.equal(pages.items[0].field,'');assert.equal(pages.items[0].read_receipt.coordinate.field,'');
   assert(pages.items[0].next_item);assert.equal(pages.items[0].next_item.field,'');assert.match(pages.items[1].content,/saved local evidence/);
@@ -92,6 +102,28 @@ test('catalog, native declarations and partial-read outcomes share one contract'
    assert.equal(part.read_receipt.start,Array.from(complete).length);complete+=part.content;cursor=part.next_item;
   }
   assert.equal(cursor,undefined);assert.equal(JSON.parse(complete).payload.evidence,'中文😀'.repeat(5000));
+  // Omitted field has the same coordinate throughout, including emoji boundaries.
+  let implicit='',offset=0;
+  for(let n=0;n<100;n++){
+   const result=await invoke([{ref:'node:'+long,view:'detail',version:0,offset,max_chars:257}]);assert.notEqual(result.isError,true);
+   const part=JSON.parse((result.content[0] as {text:string}).text).items[0];
+   assert.equal(part.field,'');assert.equal(part.read_receipt.start,Array.from(implicit).length);
+   assert.equal(part.read_receipt.source_hash,rootContinuation.read_receipt.source_hash);
+   implicit+=part.content;
+   if(part.next_offset===null)break;
+   assert.equal(part.next_item.field,'');offset=part.next_offset;
+  }
+  assert.equal(implicit,complete);
+  // Explicit field selection remains a distinct coordinate, never guessed from the offset.
+  const evidence=await invoke([{ref:'node:'+long,field:'/payload/evidence',version:0,offset:3001,max_chars:257}]);assert.notEqual(evidence.isError,true);
+  const evidencePage=JSON.parse((evidence.content[0] as {text:string}).text).items[0];
+  assert.equal(evidencePage.content,Array.from('中文😀'.repeat(5000)).slice(3001,3258).join(''));
+  assert.equal(evidencePage.read_receipt.coordinate.field,'/payload/evidence');
+  assert.notEqual(evidencePage.read_receipt.source_hash,rootContinuation.read_receipt.source_hash);
+  const relation=await invoke([{ref:'node:'+long,view:'parents',offset:1}]);assert.equal(relation.isError,true);
+  assert.match((relation.content[0] as {text:string}).text,/page_cursor/);
+  const staleRoot=await invoke([{ref:'node:'+long,version:1,offset:3000}]);assert.equal(staleRoot.isError,true);
+  assert.equal(JSON.parse((staleRoot.content[0] as {text:string}).text).items[0].error_code,'READ_VERSION_CHANGED');
   const bounded=await invoke([{ref:'node:'+long},{ref:'node:'+short}],256);assert.notEqual(bounded.isError,true);
   assert(JSON.parse((bounded.content[0] as {text:string}).text).items.reduce((n:number,i:any)=>n+Array.from(i.content).length,0)<=256);
   const stale=await invoke([{ref:'node:'+long,version:1,field:'/payload/evidence',offset:100}]);assert.equal(stale.isError,true);
