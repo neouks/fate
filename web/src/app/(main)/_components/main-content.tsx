@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { usePathname } from "next/navigation";
 
@@ -23,7 +23,7 @@ function isFullBleed(pathname: string) {
     }
   })();
   const normalized = p.length > 1 ? p.replace(/\/+$/, "") : p;
-  return normalized === "/function/tasks/detail";
+  return normalized === "/function/tasks/detail" || normalized === "/chat";
 }
 
 export function MainContent({ children }: { children: ReactNode }) {
@@ -37,7 +37,7 @@ export function MainContent({ children }: { children: ReactNode }) {
     <>
       <header
         className={cn(
-          "flex h-14 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-14",
+          "workbench-topbar flex h-11 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-11",
           "[html[data-navbar-style=sticky]_&]:sticky [html[data-navbar-style=sticky]_&]:top-0 [html[data-navbar-style=sticky]_&]:z-50 [html[data-navbar-style=sticky]_&]:overflow-hidden [html[data-navbar-style=sticky]_&]:rounded-t-[inherit] [html[data-navbar-style=sticky]_&]:bg-background/50 [html[data-navbar-style=sticky]_&]:backdrop-blur-md",
         )}
       >
@@ -51,13 +51,13 @@ export function MainContent({ children }: { children: ReactNode }) {
             <SearchDialog />
           </div>
           <div className="flex items-center gap-2">
-            <span className="font-medium text-muted-foreground text-xs">GOLDENSHEILD</span>
+            <span className="font-medium text-muted-foreground text-xs">SERIES</span>
             <ThemeSwitcher />
             <AccountSwitcher users={[currentUser]} />
           </div>
         </div>
       </header>
-      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden p-5 has-data-[content-padding=false]:p-0 md:p-8 md:has-data-[content-padding=false]:p-0">
+      <div className="workbench-content min-h-0 min-w-0 flex-1 overflow-x-hidden has-data-[content-padding=false]:p-0">
         <div className="workspace-page">{children}</div>
       </div>
     </>

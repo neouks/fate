@@ -78,6 +78,14 @@ let mockRetryPolicy: LLMRetryPolicy = {
 const mockTaskTemplates = structuredClone(D.taskTemplates);
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
+const mockChatMessages = structuredClone(D.conversationMessages);
+const mockSessionModels = new Map<string, number>();
+function mockSessionUsage(profileID?:number|null) {
+  const profile=D.llmProfiles.find(p=>Number(p.id)===profileID)??D.llmProfiles[0];
+  const total={input_tokens:215881,uncached_input_tokens:13641,output_tokens:3827,cache_read_tokens:202240,cache_write_tokens:0,
+    input_semantics:'inclusive_cache',input_complete:true,usage_complete:true,calls:5};
+  return {total,models:[{...total,model:profile.model}],context:{tokens:17468,model:profile.model,profile_id:Number(profile.id),at:new Date().toISOString()}};
+}
 const mockRetests: FindingRetest[] = [];
 const mockRetestMessages: Record<number, Activity[]> = {};
 const mockMainSessions = new Map<string, { seq: number; created_at: string }[]>();
@@ -1123,7 +1131,38 @@ function broadcastSummary(node: (typeof D.explorationGraph.nodes)[number]) {
   return { ...node, payload: JSON.stringify({ summary: Array.from(summary).slice(0, 500).join("") }) };
 }
 
+const mockControls = new Map<string, {thinking_level:string;tool_preset:string;compacting:boolean}>();
 function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Record<string, unknown>): unknown {
+  if ((seg[0]==='tasks' && seg[2]==='session-controls') || (seg[0]==='conversations' && seg[2]==='controls')) {
+    const key=`${seg[0]}:${seg[1]}:${q.get('session')??''}`;
+    const value=mockControls.get(key)??{thinking_level:'auto',tool_preset:'configured',compacting:false};
+    if(seg[3]==='compact') return {status:seg[4]==='stop'?'stopping':'compacted'};
+    if(m==='PATCH') {
+      if(typeof b.thinking_level==='string')value.thinking_level=b.thinking_level;
+      if(typeof b.tool_preset==='string')value.tool_preset=b.tool_preset;
+      mockControls.set(key,value);
+    }
+    return {...value,can_compact:true,effective:'next_run',thinking_options:['auto','off','minimal','low','medium','high','xhigh'].map(level=>({value:level,label:level==='minimal'?'low':level,original:level==='minimal'?'minimal':null}))};
+  }
+
+  if(seg[0]==='tasks' && seg[2]==='session-model') {
+    const key=`${seg[1]}:${m==='GET'?q.get('session'):b.session}`;
+    if(m==='PATCH') {
+      if(b.profile_id===null)mockSessionModels.delete(key);else mockSessionModels.set(key,Number(b.profile_id));
+      return {profile_id:mockSessionModels.get(key)??null,effective:'next_run'};
+    }
+    const profile=D.llmProfiles.find(p=>Number(p.id)===mockSessionModels.get(key))??D.llmProfiles[0];
+    return {profile_id:mockSessionModels.get(key)??null,resolution:{profile_id:Number(profile.id),name:profile.name,model:profile.model,format:profile.format,source:'task_session',available:true}};
+  }
+  if(seg[0]==='tasks' && seg[2]==='session-usage') return mockSessionUsage(mockSessionModels.get(`${seg[1]}:${q.get('session')}`));
+  if(seg[0]==='conversations' && seg[2]==='usage') return mockSessionUsage(mockConversations.find(c=>c.id===Number(seg[1]))?.llm_profile_id);
+  if(seg[0]==='conversations' && seg[2]==='profile' && m==='PATCH') {
+    const conversation=mockConversations.find(c=>c.id===Number(seg[1]));
+    if(!conversation)throw new Error('会话不存在');
+    conversation.llm_profile_id=b.llm_profile_id==null?undefined:Number(b.llm_profile_id);
+    return {ok:true};
+  }
+
   if (m === "GET" && path === "/tasks/notifications") {
     const queries = JSON.parse(q.get("queries") ?? "[]") as NotificationQuery[];
     const records: MockNotificationRecord[] = mockFindings.map((row) => ({
@@ -2977,18 +3016,26 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     return { items };
   }
   if (seg[0] === "conversations" && seg[2] === "messages" && seg.length === 3 && m === "GET") {
-    const items = mockRetestMessages[Number(seg[1])] ?? D.conversationMessages[Number(seg[1])] ?? [];
+    const items = mockRetestMessages[Number(seg[1])] ?? mockChatMessages[Number(seg[1])] ?? [];
     const running = mockRetests.some(
       (item) => item.conversation_id === Number(seg[1]) && ["pending", "running"].includes(item.status),
     );
     return { items, cursor: items.length ? items[items.length - 1].seq : 0, running };
   }
   if (seg[0] === "conversations" && seg[2] === "messages" && seg.length === 4) {
-    const msgs = mockRetestMessages[Number(seg[1])] ?? D.conversationMessages[Number(seg[1])] ?? [];
+    const msgs = mockRetestMessages[Number(seg[1])] ?? mockChatMessages[Number(seg[1])] ?? [];
     const a = msgs.find((x) => x.seq === Number(seg[3]));
     return { detail: a?.detail ?? a?.summary ?? "" };
   }
-  if (seg[0] === "conversations" && seg[2] === "messages" && m === "POST") return { status: "ok" };
+  if (seg[0] === "conversations" && seg[2] === "messages" && m === "POST") {
+    const id=Number(seg[1]),items=mockChatMessages[id]??[];
+    const seq=Math.max(0,...items.map(a=>a.seq))+1,ts=new Date().toISOString(),turn_id=String(b.request_id??`mock-${seq}`);
+    const message=String(b.message??'');
+    items.push({seq,ts,turn_id,kind:'user',worker:'user',summary:message,detail:message},
+      {seq:seq+1,ts,turn_id,kind:'text',worker:'assistant',summary:'已收到你的消息（Mock 演示，无模型请求）。',detail:'已收到你的消息（Mock 演示，无模型请求）。'});
+    mockChatMessages[id]=items;
+    return {status:'completed'};
+  }
   if (seg[0] === "conversations" && seg[2] === "stop") {
     stopMockRetest(Number(seg[1]));
     return { status: "stopped" };

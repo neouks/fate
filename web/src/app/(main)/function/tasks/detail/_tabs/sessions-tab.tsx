@@ -20,9 +20,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { SourceTranscript } from "@/components/source-transcript";
 
 import {
-  ArrowUpIcon,
+  ArrowRightIcon,
   SlidersHorizontalIcon,
-  GaugeIcon,
   BrainIcon,
   CircleCheckIcon,
   CircleSlashIcon,
@@ -62,7 +61,7 @@ import { MentionTextarea } from "@/components/mention-textarea";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldLabel } from "@/components/ui/field";
-import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
+import { InputGroupButton } from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -85,12 +84,15 @@ import type {
 import { cn } from "@/lib/utils";
 
 import { RelatedSessions, RelatedSessionDetail } from "./related-sessions";
+import { TaskSessionFooter } from "@/components/session-insights";
+import { ConversationComposer, ConversationPane } from "@/components/conversation-composer";
+import { InputGroupTextarea } from "@/components/ui/input-group";
 import { SessionTranscript, SessionWorkspace, type TranscriptPositions } from "./session-workspace";
 import { WorkerQueue } from "./worker-queue";
-
-// fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
 import { PlannerTodos } from "./planner-todos";
 import type { PlannerTodo } from "@/lib/planner-todos";
+
+// fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
 function fmtBytes(n: number): string {
   if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
   if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`;
@@ -374,10 +376,11 @@ function SessionItem({
           aria-label={`选择 Worker #${s.intent_id}`}
         />
       )}
-      <button
+      <Button variant="ghost"
         type="button"
         onClick={onClick}
-        className="flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5 text-left text-sm"
+        size="sm"
+        className="h-auto min-w-0 flex-1 justify-start gap-1 px-2 py-1.5 text-left"
       >
         {icon ?? <span className="size-3.5 shrink-0" />}
         {s.intent_id && (
@@ -411,7 +414,7 @@ function SessionItem({
             实时
           </span>
         )}
-      </button>
+      </Button>
       {onDelete && (
         <Button
           variant="ghost"
@@ -524,10 +527,10 @@ export function SessionsTab({
   const [confirmNewMain, setConfirmNewMain] = React.useState(false);
   // Per-session lazily-loaded caches, keyed by session_key (main | plan | intent:<id>).
   const [store, setStore] = React.useState<SessionStore>({});
+  const [plannerTodos, setPlannerTodos] = React.useState<PlannerTodo[] | null>(null);
   // Worker sessions derived from exploration intents (paged past the old 300 cap).
   const [intents, setIntents] = React.useState<TaskNode[]>([]);
   const [intentAssets, setIntentAssets] = React.useState<IntentAsset[]>([]);
-  const [plannerTodos, setPlannerTodos] = React.useState<PlannerTodo[] | null>(null);
   const [olderIntentAssets, setOlderIntentAssets] = React.useState<IntentAsset[]>([]);
   const [olderIntents, setOlderIntents] = React.useState<TaskNode[]>([]);
   const [firstIntentsHasMore, setFirstIntentsHasMore] = React.useState(false);
@@ -846,10 +849,10 @@ export function SessionsTab({
   // ID) resumes from the DB, so a dropped realtime link self-heals; seq-merge dedups.
   React.useEffect(() => {
     setStore({});
+    setPlannerTodos(null);
     setIntents([]);
     setIntentAssets([]);
     setOlderIntentAssets([]);
-    setPlannerTodos(null);
     setOlderIntents([]);
     setFirstIntentsHasMore(false);
     setOlderIntentsHasMore(false);
@@ -923,10 +926,10 @@ export function SessionsTab({
 
     // MOCK demo: no SSE backend — pull one activity snapshot and bucket by session.
     if (MOCK) {
+      setPlannerTodos([]);
       api
         .activity(taskId)
         .then((r) => {
-      setPlannerTodos([]);
           if (!alive) return;
           const buckets: SessionStore = {};
           for (const a of r.items) {
@@ -1000,9 +1003,6 @@ export function SessionsTab({
         let streamCursor=r.snapshotCursor;
         esRef.current = openActivityStream(
           ()=>sseUrl(`/api/exploration/activity/stream?task=${encodeURIComponent(taskId)}&since=${streamCursor}`), es=>{
-        es.addEventListener("human_inputs",event=>{if(alive){try{humanInputs.receive(JSON.parse((event as MessageEvent).data).items,'snapshot');}catch{/* snapshot reconnect repairs */}}});
-        es.addEventListener("open",()=>{if(alive)void humanInputs.refresh();});
-        es.addEventListener("turn_summary",event=>{if(alive){try{notifyTurnSummaries(`task:${taskId}`,JSON.parse((event as MessageEvent).data));}catch{/* history repairs */}}});
         es.addEventListener("planner_todos", event => {
           if (!alive) return;
           try {
@@ -1010,6 +1010,9 @@ export function SessionsTab({
             if (Array.isArray(items)) setPlannerTodos(items);
           } catch { /* The next snapshot on reconnect repairs malformed frames. */ }
         });
+        es.addEventListener("human_inputs",event=>{if(alive){try{humanInputs.receive(JSON.parse((event as MessageEvent).data).items,'snapshot');}catch{/* snapshot reconnect repairs */}}});
+        es.addEventListener("open",()=>{if(alive)void humanInputs.refresh();});
+        es.addEventListener("turn_summary",event=>{if(alive){try{notifyTurnSummaries(`task:${taskId}`,JSON.parse((event as MessageEvent).data));}catch{/* history repairs */}}});
         es.addEventListener("streams", event => {
           if(!alive)return;
           try {
@@ -1536,7 +1539,8 @@ export function SessionsTab({
     active.role === "worker" && active.intent_id ? intentAssetsByID.get(active.intent_id) : undefined;
 
   const composer=(
-<div className="task-composer">
+    <ConversationComposer
+      attachments={<>
                 {attachments.length > 0 && (
                   <div className="mb-2 flex flex-wrap gap-1.5">
                     {attachments.map((a) => (
@@ -1548,14 +1552,16 @@ export function SessionsTab({
                         <PaperclipIcon className="size-3 shrink-0 text-primary" />
                         <span className="max-w-[160px] truncate">{a.name}</span>
                         <span className="text-muted-foreground">{fmtBytes(a.size)}</span>
-                        <button
+                        <Button variant="ghost"
                           type="button"
-                          className="ml-0.5 text-muted-foreground hover:text-foreground"
+                          size="icon-xs"
+                          className="ml-0.5"
+                          aria-label={`移除附件 ${a.name}`}
                           onClick={() => setAttachments((p) => p.filter((x) => x.path !== a.path))}
                           title="移除"
                         >
                           <XIcon className="size-3" />
-                        </button>
+                        </Button>
                       </div>
                     ))}
                   </div>
@@ -1567,15 +1573,8 @@ export function SessionsTab({
                   className="hidden"
                   onChange={(e) => void pickFiles(e.target.files)}
                 />
-                <InputGroup className="min-h-9 has-disabled:opacity-100">
-                  {onOpenSettings && (
-                    <InputGroupAddon align="block-start">
-                      <InputGroupButton variant="outline" className="composer-config" onClick={onOpenSettings}>
-                        <GaugeIcon data-icon="inline-start" />
-                        任务配置
-                      </InputGroupButton>
-                    </InputGroupAddon>
-                  )}
+      </>}
+      editor={
                   <MentionTextarea
                     inputGroup
                     rows={1}
@@ -1593,7 +1592,10 @@ export function SessionsTab({
                     }}
                     className="max-h-36 min-h-9 overflow-y-auto"
                   />
-                  <InputGroupAddon align="block-end">
+      }
+      leading={<>
+
+
                     {onOpenSettings && <InputGroupButton size="icon-sm" variant="ghost" onClick={onOpenSettings} aria-label="打开任务设置"><SlidersHorizontalIcon/></InputGroupButton>}
                     <InputGroupButton
                       size="icon-xs"
@@ -1605,11 +1607,8 @@ export function SessionsTab({
                     >
                       {uploading ? <Loader2Icon className="animate-spin" /> : <PaperclipIcon />}
                     </InputGroupButton>
-                    {false && (
-                      <InputGroupButton size="icon-xs" onClick={send} aria-label="发送旁路问题">
-                        <ArrowUpIcon />
-                      </InputGroupButton>
-                    )}
+      </>}
+      actions={<>
                     {mainBusy ? (
                       <InputGroupButton
                         className="composer-send ml-auto"
@@ -1625,19 +1624,20 @@ export function SessionsTab({
                     ) : (
                       <InputGroupButton
                         className="composer-send ml-auto"
-                        size="icon-sm"
-                        variant="default"
+                        size="sm"
+                        variant="secondary"
                         onClick={send}
                         disabled={(!input.trim() && attachments.length === 0) || !mainLoaded || sending}
                         title="发送消息"
                         aria-label="发送消息"
                       >
-                        {sending ? <Loader2Icon className="animate-spin" /> : <ArrowUpIcon />}
+                        {sending ? <Loader2Icon className="animate-spin" /> : <ArrowRightIcon />}发送
                       </InputGroupButton>
                     )}
-                  </InputGroupAddon>
-                </InputGroup>
-              </div>
+      </>}
+      footer={<TaskSessionFooter key={`${taskId}:${mainKey}`} taskId={taskId} session={mainKey} draft={input}
+        running={mainSeg===currentSeg && !!mainBusy} readOnly={mainSeg!==currentSeg} />}
+    />
   );
   const agentList=(
 
@@ -1702,13 +1702,14 @@ export function SessionsTab({
                       <Meta.icon className="size-3.5" />
                       {Meta.label}
                       {role === "mainagent" && (
-                        <button
+                        <Button variant="ghost"
                           type="button"
                           onClick={() => setConfirmNewMain(true)}
                           disabled={creatingMain}
                           title="新建主 Agent 会话（清空上下文，任务状态保留）"
                           aria-label="新建主 Agent 会话"
-                          className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-50"
+                          size="xs"
+                          className="ml-auto"
                         >
                           {creatingMain ? (
                             <Loader2Icon className="size-3.5 animate-spin" />
@@ -1716,7 +1717,7 @@ export function SessionsTab({
                             <PlusIcon className="size-3.5" />
                           )}
                           新建
-                        </button>
+                        </Button>
                       )}
                       {role === "worker" && (
                         <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -1853,11 +1854,12 @@ export function SessionsTab({
                       );
                     })}
                     {role === "worker" && intentsHasMore && (
-                      <button
+                      <Button variant="ghost"
                         type="button"
                         onClick={loadOlderIntents}
                         disabled={loadingOlderIntents}
-                        className="mt-0.5 flex items-center justify-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50"
+                        size="xs"
+                        className="mt-0.5"
                       >
                         {loadingOlderIntents ? (
                           <Loader2Icon className="size-3.5 animate-spin" />
@@ -1865,7 +1867,7 @@ export function SessionsTab({
                           <RotateCwIcon className="size-3.5" />
                         )}
                         加载更早的 Worker
-                      </button>
+                      </Button>
                     )}
                   </div>
                 );
@@ -1886,10 +1888,25 @@ export function SessionsTab({
   );
   const activityWithStreams = (key:string, items:Activity[]) =>
     withLiveStreams(items,streaming.filter(s=>sessionKeyOf({...s,seq:-1,kind:s.channel,summary:s.text})===key));
+  const workerControl = (active.role === "worker" &&
+              !active.inherited && !focused && !invalidFocus &&
+              (active.status === "running" || active.status === "paused") && (
+              <div className="ml-auto flex items-center gap-3">
+                <span className="text-sm text-muted-foreground" role="status">
+                  {workerExiting || pausingIntent === active.intent_id ? "正在暂停 Worker…" : controllingIntent === active.intent_id || workerResuming ? "正在恢复 Worker…" : active.status === "paused" ? "Worker 已暂停" : "Worker 正在执行"}
+                </span>
+                <Button size="sm" variant="outline"
+                  disabled={controllingIntent !== null || workerExiting || workerResuming || (active.status === "paused" && !workerExecutionAllowed)}
+                  onClick={() => void controlWorker(active, active.status === "running" ? "pause" : "resume")}
+                  aria-label={active.status === "running" ? "暂停当前 Worker" : "恢复当前 Worker"}>
+                  {controllingIntent === active.intent_id || workerExiting || workerResuming ? <Spinner data-icon="inline-start" /> : active.status === "running" ? <SquareIcon data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
+                  {workerExiting || pausingIntent === active.intent_id ? "正在暂停" : workerResuming ? "正在恢复" : active.status === "running" ? "暂停" : "恢复"}
+                </Button>
+              </div>
+            ));
   const processDetail=(
-
-          <div className="flex h-full min-h-0 flex-1 min-w-0 flex-col overflow-hidden">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 sm:px-4 sm:py-2.5">
+    <ConversationPane label={active.title} header={<>
+      {!isMain && <Button variant="ghost" size="sm" onClick={()=>{setActiveId(mainSessionId(currentSeg));setRelatedSession(null);if(focused||invalidFocus)clearFocus();}}>主对话</Button>}
               {(() => {
                 const isWorker = active.role === "worker";
                 const meta = isWorker ? sessionMeta.get(active.id) : undefined;
@@ -1940,7 +1957,8 @@ export function SessionsTab({
                 )}
                 {isMain && <span>{active.seg === currentSeg ? "当前会话" : "历史会话 · 只读"}</span>}
               </div>
-            </div>
+      {workerControl}
+    </>}>
             {(() => {
               const dm = active.role === "worker" ? sessionMeta.get(active.id) : undefined;
               if (!dm?.executionCancelled) return null;
@@ -1996,7 +2014,7 @@ export function SessionsTab({
               ) : (
                 <SessionTranscript key={activeKey} sessionKey={activeKey} positions={transcriptPositions}
                   taskId={taskId} items={activityWithStreams(activeKey,activity)} live={active.live}
-                  chat={isMain} stopping={isMain && active.seg === currentSeg && stopping}
+                  chat={!isSystem} stopping={isMain && active.seg === currentSeg && stopping}
                   loading={showLoader} loadingMore={activeState?.loadingMore} error={activeState?.error}
                   hasMore={activeState?.hasMore} onEarlier={node=>loadEarlier(activeKey,()=>node)}
                   onRetry={()=>loadSession(activeKey)} />
@@ -2004,25 +2022,15 @@ export function SessionsTab({
             {active.role === "worker" && active.intent_id && !active.inherited && !focused && !invalidFocus && (
               <WorkerComposer key={`${taskId}:${active.intent_id}`} taskId={taskId} intentId={active.intent_id}
                 disabledReason={!workerExecutionAllowed ? "任务未运行，暂不能发送。" : workerExiting || workerResuming || controllingIntent === active.intent_id ? "Worker 状态变更中，请稍后发送。" : active.status === "paused" ? "Worker 已暂停，请先恢复后发送。" : active.status !== "running" ? "Worker 已结束或尚未开始，当前会话只读。" : undefined}
-                onSent={()=>loadSession(activeKey)} />
+                onSent={()=>loadSession(activeKey)}
+                footer={(draft)=><TaskSessionFooter key={`${taskId}:${activeKey}`} taskId={taskId} session={activeKey} draft={draft} running={active.live} />} />
             )}
-            {active.role === "worker" &&
-              !active.inherited && !focused && !invalidFocus &&
-              (active.status === "running" || active.status === "paused") && (
-              <div className="flex items-center justify-between gap-3 border-t p-3">
-                <span className="text-sm text-muted-foreground" role="status">
-                  {workerExiting || pausingIntent === active.intent_id ? "正在暂停 Worker…" : controllingIntent === active.intent_id || workerResuming ? "正在恢复 Worker…" : active.status === "paused" ? "Worker 已暂停" : "Worker 正在执行"}
-                </span>
-                <Button size="sm" variant="outline"
-                  disabled={controllingIntent !== null || workerExiting || workerResuming || (active.status === "paused" && !workerExecutionAllowed)}
-                  onClick={() => void controlWorker(active, active.status === "running" ? "pause" : "resume")}
-                  aria-label={active.status === "running" ? "暂停当前 Worker" : "恢复当前 Worker"}>
-                  {controllingIntent === active.intent_id || workerExiting || workerResuming ? <Spinner data-icon="inline-start" /> : active.status === "running" ? <SquareIcon data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
-                  {workerExiting || pausingIntent === active.intent_id ? "正在暂停" : workerResuming ? "正在恢复" : active.status === "running" ? "暂停" : "恢复"}
-                </Button>
-              </div>
-            )}
-          </div>
+            {isPlanner && !focused && !invalidFocus && <ConversationComposer
+              editor={<InputGroupTextarea disabled aria-label="Planner 对话" placeholder="Planner 按任务目标自动规划，调整要求请与主 Agent 对话。" rows={2} />}
+              footer={<TaskSessionFooter key={`${taskId}:${activeKey}`} taskId={taskId} session="plan" draft="" running={active.live} readOnly={active.inherited} />}
+            />}
+
+</ConversationPane>
 
   );
   const detail = relatedSession && !focused
@@ -2038,11 +2046,7 @@ export function SessionsTab({
       sessionKey={relatedSession ? `related:${relatedSession.id}` : activeKey}
       primaryDetailLabel={relatedSession ? "执行会话" : isPlanner ? "Planner 会话" : isSystem ? "系统事件时间线" : "Worker 会话"}
       main={
-        <section aria-label="主 Agent 对话" className="task-main-conversation flex h-full min-h-0 min-w-0 flex-col">
-          <div className="flex min-h-12 shrink-0 items-center justify-between gap-3 px-6 py-2 text-sm text-muted-foreground">
-            <span>{mainSeg === currentSeg ? "主 Agent · 当前会话" : `主 Agent · 历史会话 ${mainSeg + 1}`}</span>
-            {!MOCK && <span className="text-xs">{sseLive ? "实时连接" : "正在重连，已保留内容"}</span>}
-          </div>
+        <ConversationPane label="主 Agent 对话" header={<span>{mainSeg === currentSeg ? "主 Agent · 当前会话" : `主 Agent · 历史会话 ${mainSeg + 1}`}</span>}>
           {isMain && (focused || invalidFocus) ? processDetail : (
             <SessionTranscript key={mainKey} sessionKey={mainKey} positions={transcriptPositions} taskId={taskId}
               items={activityWithStreams(mainKey,mainState?.items ?? [])} live={mainSeg === currentSeg && !!mainBusy}
@@ -2052,7 +2056,7 @@ export function SessionsTab({
               onEarlier={node=>loadEarlier(mainKey,()=>node)} onRetry={()=>loadSession(mainKey)} />
           )}
           {composer}
-        </section>
+        </ConversationPane>
       }
       onBack={() => {
         if (focused || invalidFocus) clearFocus();

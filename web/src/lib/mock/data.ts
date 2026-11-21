@@ -3130,6 +3130,7 @@ export const llmConfig = {
 
 // ── Agents ───────────────────────────────────────────────────────────────────
 export const agents: Agent[] = [
+  {id:"1002",key:"auto",name:"自动助手",role:"assistant",builtin:true,enabled:true,description:"独立对话助手",max_turns:0,mcp_count:0,skill_count:0,tool_count:0},
   {
     id: "1001",
     key: "retester",
@@ -3531,7 +3532,7 @@ export const llmPool: LLMPoolStatus = {
 export const conversations: Conversation[] = [
   {
     id: 1,
-    agent_key: "mainagent",
+    agent_key: "auto",
     title: "acme 后台切入点讨论",
     llm_profile_id: 1,
     pinned: true,
@@ -3541,7 +3542,7 @@ export const conversations: Conversation[] = [
   },
   {
     id: 2,
-    agent_key: "mainagent",
+    agent_key: "auto",
     title: "API 越权面梳理",
     llm_profile_id: 2,
     created_at: T("2026-07-24T16:00:00Z"),
@@ -3549,7 +3550,7 @@ export const conversations: Conversation[] = [
   },
   {
     id: 3,
-    agent_key: "mainagent",
+    agent_key: "auto",
     title: "内网横向 · DMZ→域控攻击路径规划",
     llm_profile_id: 1,
     created_at: T("2026-07-25T15:45:00Z"),

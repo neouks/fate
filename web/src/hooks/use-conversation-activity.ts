@@ -1,4 +1,5 @@
 "use client";
+import {MOCK} from "@/lib/mock/enabled";
 import {notifyTurnSummaries} from '@/lib/turn-summary';
 import * as React from 'react';
 import { openActivityStream } from '@/lib/activity-event-source';
@@ -21,13 +22,22 @@ export function useConversationActivity(id:number|null){
   const generation=React.useRef(0);
   const currentID=React.useRef(id);currentID.current=id;
   React.useEffect(()=>{
-    const token=++generation.current;let alive=true;let transport:ReturnType<typeof openActivityStream>|undefined;
+    const token=++generation.current;let alive=true;let transport:ReturnType<typeof openActivityStream>|undefined;let mockTimer:ReturnType<typeof setInterval>|undefined;
     setScope(id);setRecords([]);setStreams([]);setStatus('idle');setConnected(false);setError('');setHasMore(false);setHistoryFailed(false);setLoading(id!==null);
     if(!id)return;
     void api.conversationHistory(id).then(history=>{
       if(!alive)return;
       setRecords(rows=>mergeConversationActivities(history.items,rows));setHasMore(history.hasMore);
       setStatus(history.running?'running':'idle');
+      if(MOCK){
+        setConnected(true);let pending=false;
+        mockTimer=setInterval(()=>{
+          if(document.hidden||pending)return;pending=true;
+          void api.conversationHistory(id).then(next=>{if(alive){setRecords(rows=>mergeConversationActivities(next.items,rows));setStatus(next.running?'running':'idle');}})
+            .catch(e=>{if(alive)setError(e.message);}).finally(()=>{pending=false;});
+        },1000);
+        return;
+      }
       let cursor=history.cursor;
       transport=openActivityStream(()=>sseUrl(`/api/conversations/${id}/messages/stream?since=${cursor}`),es=>{
       es.onmessage=e=>{if(!alive)return;try{const a=JSON.parse(e.data) as Activity;cursor=Math.max(cursor,a.seq);setRecords(rows=>mergeConversationActivities(rows,[a]));}catch{/* replay repairs malformed frames */}};
@@ -37,7 +47,7 @@ export function useConversationActivity(id:number|null){
       es.addEventListener('access_revoked',()=>{if(alive){setRecords([]);setStreams([]);setError('会话已删除或当前授权已撤销');setStatus('idle');transport?.close();}});
       },value=>{if(alive)setConnected(value);});
     }).catch(e=>{if(alive){setError(e.message);setHistoryFailed(true);}}).finally(()=>{if(alive&&generation.current===token)setLoading(false);});
-    return()=>{alive=false;transport?.close();};
+    return()=>{alive=false;transport?.close();clearInterval(mockTimer);};
   },[id,historyAttempt]);
   const loadEarlier=React.useCallback(async(viewport?:HTMLElement|null)=>{
     if(!id||loading||!hasMore)return;

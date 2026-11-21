@@ -3,7 +3,10 @@
 import type { ReactNode } from "react";
 import * as React from "react";
 
+import { usePathname } from "next/navigation";
+
 import { AppSidebar } from "@/app/(main)/_components/sidebar/app-sidebar";
+import { SystemSettingsHost } from "@/components/system-settings/host";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { auth } from "@/lib/auth";
 import { getClientCookie } from "@/lib/cookie.client";
@@ -15,8 +18,6 @@ import {
 } from "@/lib/preferences/layout";
 import { PREFERENCE_DEFAULTS } from "@/lib/preferences/preferences-config";
 import { cn } from "@/lib/utils";
-
-import { SystemSettingsHost } from "@/components/system-settings/host";
 
 import { MainContent } from "./_components/main-content";
 
@@ -35,6 +36,8 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
   // disables. No token → bounce to /login; render nothing until confirmed so no
   // protected UI (or its API calls) flashes for a logged-out visitor.
   const [authed, setAuthed] = React.useState(false);
+  const pathname = usePathname();
+  const isPiWebChat = pathname.replace(/\/+$/, "") === "/chat";
   React.useEffect(() => {
     if (auth.getToken()) {
       setAuthed(true);
@@ -66,11 +69,11 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
       defaultOpen={defaultOpen}
       style={
         {
-          "--sidebar-width": "264px",
+          "--sidebar-width": "280px",
         } as React.CSSProperties
       }
     >
-      <AppSidebar variant={variant} collapsible={collapsible} />
+      {!isPiWebChat && <AppSidebar variant={variant} collapsible={collapsible} />}
       <SidebarInset
         className={cn(
           "[html[data-content-layout=centered]_&>*]:mx-auto",
@@ -79,6 +82,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           "peer-data-[variant=inset]:border",
           "[--dashboard-header-height:56px]",
           "min-w-0 overflow-x-hidden",
+          isPiWebChat && "w-full border-0",
         )}
       >
         <MainContent>{children}</MainContent>
