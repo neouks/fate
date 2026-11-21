@@ -20,7 +20,6 @@ import {registerUserTargetTool} from './goals.js';
 import {recordFactTool} from './graph.js';
 import {addIntentTool, dispatchIntentsTool} from './intents.js';
 import {domainTool} from './define.js';
-import {workerTools} from './index.js';
 
 function validate(tool: ToolDefinition, args: Record<string, unknown>) {
   return validateToolArguments(tool, {
@@ -305,13 +304,17 @@ test('Worker closes repeated permission errors in one batch and can still write 
     const faux = fauxProvider({provider:'worker-tool-retries'});
     runtime.registerNativeProvider(faux.provider);
     faux.setResponses([
-      fauxAssistantMessage([fauxToolCall('asset_search',{limit:5}),fauxToolCall('asset_search',{limit:10})]),
+      context=>{
+        // The shared candidate inventory contains every tool. The effective
+        // declaration/allowlist, not that inventory, controls this worker.
+        assert.ok(!context.tools?.some(tool=>tool.name==='add_intent'));
+        return fauxAssistantMessage([fauxToolCall('asset_search',{limit:5}),fauxToolCall('asset_search',{limit:10})]);
+      },
       fauxAssistantMessage([fauxToolCall('asset_search',{limit:20}),fauxToolCall('record_fact',{})]),
       fauxAssistantMessage('已保存本地观察，执行受阻。'),
       fauxAssistantMessage('不应继续请求'),
     ]);
     const ctx = runContext(noDB,1,1,'worker');
-    assert.ok(!workerTools(ctx).some(tool=>tool.name==='add_intent'));
     let attempts=0,writes=0;
     const activities: RunnerActivity[] = [];
     const runner = await AgentRunner.create({

@@ -9,7 +9,7 @@ import {blackboardRevision,markWorkerReleased,recoverWorkerSettlements} from '..
 import {WorkerReleaseQueue} from './worker-release-queue.js';
 import {LiveStreamWriter,runnerActivityMetadata} from './live-stream.js';
 import {recoverExpiredRuntimes} from './runtime-config.js';
-import {workerStopReceipt,failureReason,persistedWorkerAbortCause,type WorkerStopReason} from './worker-outcome.js';
+import {workerStopReceipt,workerStopIsError,failureReason,persistedWorkerAbortCause,type WorkerStopReason} from './worker-outcome.js';
 import {ConversationService} from './conversations.js';
 import {normalizeContract,validateResult,type IntentResult} from '../agent/intent-contract.js';
 import {correctionIdentity,correctionMessage,stoppedWorkerCriteria,validateWorkerCorrection,type WorkerCorrection} from '../agent/worker-correction.js';
@@ -839,7 +839,7 @@ export class Engine {
         terminal='open';
         await db.query("UPDATE exploration_nodes SET owner='',payload=payload||'{\"resume_requested\":true}'::jsonb WHERE id=$1",[intent.id]);
       }
-      const id=await store.appendActivity({node_id:intent.id,worker:name,kind:'result',metadata:{...turn.metadata,status:terminal==='open'?'paused':terminal,event_type:'outcome',execution_stop:receipt},summary:summary||`意图 #${intent.id} ${terminal}`,detail:summary,
+      const id=await store.appendActivity({node_id:intent.id,worker:name,kind:'result',is_error:workerStopIsError(reason),metadata:{...turn.metadata,status:terminal==='open'?'paused':terminal,event_type:'outcome',execution_stop:receipt},summary:summary||`意图 #${intent.id} ${terminal}`,detail:summary,
         ...(u?{input_tokens:u.input,output_tokens:u.output,cache_read_tokens:u.cacheRead,cache_write_tokens:u.cacheWrite}:{})});
       if(alreadyCommitted)await db.query('UPDATE worker_settlements SET activity_id=$2 WHERE intent_id=$1 AND released_at IS NULL',[intent.id,id]);
       if(!externallyStopped&&!alreadyCommitted)await store.compareAndSetIntentState(intent.id,'running',terminal);

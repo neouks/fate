@@ -25,7 +25,12 @@ const labels:Record<WorkerStopReason,string> = {
 export function failureReason(message:string):WorkerStopReason {
   if (message.includes(TOKEN_LIMIT_REACHED)) return 'token_limit';
   if (message.includes(TOKEN_USAGE_UNCERTAIN)) return 'token_usage_unknown';
-  return /connection error|fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|network error/i.test(message)?'model_connection_error':'model_error';
+  return /connection error|fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EADDRNOTAVAIL|EPIPE|UND_ERR_|socket|network error|timed?\s*out/i.test(message)?'model_connection_error':'model_error';
+}
+
+/** Lifecycle controls and accepted domain blockers are not execution errors. */
+export function workerStopIsError(reason:WorkerStopReason):boolean {
+  return ['missing_result','invalid_result','token_usage_unknown','model_connection_error','model_error','aborted','operation_uncertain','basis_unavailable','tool_retries_exhausted'].includes(reason);
 }
 
 /** A pending human tool can observe durable control before the engine heartbeat.

@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import type {Database} from '../db/index.js';
 import type {UsageObservation} from './usage-meter.js';
 
-export type UsageReceipt={requestID:string;auditID:number;status:string;usage:ReturnType<UsageObservation['result']>;finishedAt:string|null};
+export type UsageReceipt={requestID:string;auditID:number;status:string;usage:ReturnType<UsageObservation['result']>&{_budget_ceiling?:number};finishedAt:string|null};
 const MAX_BYTES=16*1024,MAX_ENTRIES=64,MAX_RECEIPTS=16;
 const uuid='[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const filePattern=new RegExp(`^(${uuid})(?:\\.(\\d+|legacy-${uuid}))?\\.json$`);
@@ -22,7 +22,7 @@ function validateReceipt(value:unknown,file:string,identity:string):UsageReceipt
  const r=value as UsageReceipt & {_outbox_version?:number;_database_identity?:string};
  const match=file.match(filePattern),u=r?.usage;
  if(!r||!match||match[1]!==r.requestID||!safeInt(r.auditID)||r.auditID<1||!u||
-   !safeInt(u._receipt_seq)||u._receipt_seq<1||match[2]&&!match[2].startsWith('legacy-')&&Number(match[2])!==u._receipt_seq||
+   !safeInt(u._receipt_seq)||u._receipt_seq<1||u._budget_ceiling!==undefined&&(!safeInt(u._budget_ceiling)||u._budget_ceiling<1)||match[2]&&!match[2].startsWith('legacy-')&&Number(match[2])!==u._receipt_seq||
    !['running','completed','aborted','failed'].includes(r.status)||
    !(r.finishedAt===null||typeof r.finishedAt==='string'&&Number.isFinite(Date.parse(r.finishedAt)))||
    !['input','output','cacheRead','cacheWrite','inputTotal','totalTokens'].every(k=>safeInt(u[k as keyof typeof u]))||

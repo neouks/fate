@@ -1,4 +1,5 @@
 import {toolAllowedInSession} from '../agent/tool-registry.js';
+import {toolFailureLimit} from './tool-failure-policy.js';
 import {SDK_NATIVE_TOOLS,nativeToolDefinitions,nativeToolRejection} from '../agent/native-tools.js';
 import {projectWebHistory,webReadingReminder} from '../search/context.js';
 import {WORKER_FACT_GUIDANCE} from '../agent/worker-fact-policy.js';
@@ -309,7 +310,7 @@ export class AgentRunner {
       const budget = await opts.modelPolicy?.workerTokenBudget?.();
       if (!budget?.closing) return;
       const decision = await opts.wrapup?.(wrapupContext('token_limit'));
-      tokenClosingPrompt = `Worker token 总预算 ${budget.limit}，进入收尾时已用 ${budget.used}，剩余 ${budget.remaining}。预留收尾额度 ${budget.reserve}，收尾及压缩均计入同一总预算。停止新操作。${WORKER_FACT_GUIDANCE}先用 record_fact 和 report_finding 写回尚未保存的已有事实与已验证发现，已有记录不要重复；finding 仅简述并关联证据，不生成完整报告。最后简述已保存记录和未完成事项。\n${decision?.prompt ?? ''}`;
+      tokenClosingPrompt = `Worker token 总预算 ${budget.limit}，进入收尾时预算占用 ${budget.used}，其中未知用量保守预留 ${budget.unverifiedReserve??0}，剩余 ${budget.remaining}。预留收尾额度 ${budget.reserve}，收尾及压缩均计入同一总预算。停止新操作。${WORKER_FACT_GUIDANCE}先用 record_fact 和 report_finding 写回尚未保存的已有事实与已验证发现，已有记录不要重复；finding 仅简述并关联证据，不生成完整报告。最后简述已保存记录和未完成事项。\n${decision?.prompt ?? ''}`;
       closing.reason = 'token_limit';
       tokenClosingLimit = turns + compactionHealth.requests + (afterResponse ? 1 : 0) + Math.max(1, opts.maxWrapupTurns ?? 2);
       tokenNeedsWrapup = afterResponse;
@@ -521,7 +522,7 @@ export class AgentRunner {
 
     let budgetAnnounced = false;
     let rejectedIntentTurns = 0;
-    const failedCalls = new Map<string,string>();
+    const failedCalls = new Map<string,{name:string;count:number}>();
     const worker = opts.platform?.role === 'worker';
 		const budgetExtension: ExtensionFactory = (pi) => {
       enterClosing=()=>{if(!closing.active)clearWorkerQueue();closing.active=true;if(opts.settlementTools)pi.setActiveTools(pi.getAllTools().map(tool=>tool.name)
@@ -552,12 +553,12 @@ export class AgentRunner {
         const intentSucceeded = intentResults.some(result => !result.isError);
         if (intentSucceeded) {
           rejectedIntentTurns = 0;
-          for (const [key, name] of failedCalls) if (name === 'add_intent') failedCalls.delete(key);
+          for (const [key, failure] of failedCalls) if (failure.name === 'add_intent') failedCalls.delete(key);
         } else if (intentResults.length) rejectedIntentTurns++;
         const calls = _event.message.role === 'assistant'
           ? new Map(_event.message.content.flatMap(b => b.type === 'toolCall' ? [[b.id, b] as const] : []))
           : new Map();
-        const newFailures = new Map<string,string>();
+        const newFailures = new Map<string,{name:string;count:number}>();
         let repeatedTool: {name:string; denied:boolean} | undefined;
         for (const result of _event.toolResults) {
           if (!worker && (result.toolName !== 'add_intent' || intentSucceeded)) continue;
@@ -569,8 +570,9 @@ export class AgentRunner {
           // A role/intent denial persists even when the model varies the inputs.
           const denial = error.match(/^(?:\{"error":")?(当前角色无 [a-zA-Z0-9_]+ 读取或执行权限|工具不在当前意图 allowed_tools 内|工具(?:或规范入口)?已禁用或解除角色绑定)/u)?.[1];
           const key = denial ? operationFingerprint(result.toolName, denial) : signature;
-          if (failedCalls.has(key) || newFailures.has(key)) repeatedTool ??= {name:result.toolName, denied:!!denial};
-          newFailures.set(key,result.toolName);
+          const count=(newFailures.get(key)?.count??failedCalls.get(key)?.count??0)+1;
+          if(count>=(denial?2:toolFailureLimit(result.toolName,call.arguments,error)))repeatedTool ??= {name:result.toolName, denied:!!denial};
+          newFailures.set(key,{name:result.toolName,count});
         }
         for (const [key, name] of newFailures) {
           failedCalls.set(key,name);

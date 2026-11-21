@@ -20,6 +20,8 @@ export interface WorkerTokenBudget {
   remaining: number;
   reserve: number;
   closing: boolean;
+  /** Conservative extra budget held for failed/aborted requests; not measured usage. */
+  unverifiedReserve?: number;
 }
 
 /** Reserve 10%, or three full requests for writeback/compaction with large contexts.
@@ -29,18 +31,27 @@ export async function readWorkerTokenBudget(tx: Database, scope: UsageScope & {r
   const limit = await workerTokenLimit(tx);
   if (limit === 0) return;
   const ledger = CANONICAL_USAGE_CTE.replace('/* usage_scope */', 'WHERE task_id=$1 AND intent_id=$2');
-  const {rows: [row]} = await tx.query<{input_tokens: string; output_tokens: string; pending_calls: string; uncertain: string}>(`WITH ${ledger} SELECT ${USAGE_SUM_SQL},
-    count(*) FILTER (WHERE history_gap OR (quality NOT IN ('complete','not_sent')
+  const {rows: [row]} = await tx.query<{input_tokens: string; output_tokens: string; pending_calls: string; uncertain: string; unverified_reserve:string}>(`WITH ${ledger}, bounded AS (
+    SELECT *, CASE WHEN source='provider' AND status IN ('failed','aborted') AND NOT history_gap
+      AND jsonb_typeof(usage->'_budget_ceiling')='number'
+      AND (usage->>'_budget_ceiling') ~ '^[1-9][0-9]{0,15}$'
+      THEN CASE WHEN (usage->>'_budget_ceiling')::numeric<=9007199254740991 THEN (usage->>'_budget_ceiling')::bigint END END budget_ceiling
+    FROM measured
+  ) SELECT ${USAGE_SUM_SQL},
+    COALESCE(sum(GREATEST(0,budget_ceiling-(CASE WHEN usage->>'_input_total_known'='true' THEN (usage->>'inputTotal')::bigint ELSE i+cr+cw END)-o))
+      FILTER (WHERE quality NOT IN ('complete','not_sent')),0) unverified_reserve,
+    count(*) FILTER (WHERE history_gap OR (quality NOT IN ('complete','not_sent') AND budget_ceiling IS NULL
       AND NOT (status='completed' AND COALESCE(usage->>'_input_total_known'='true'
         AND (usage->'_known_fields') ? 'output',false)))) AS uncertain
-    FROM measured`, [scope.taskID, scope.intentID]);
-  const used = BigInt(row!.input_tokens) + BigInt(row!.output_tokens);
+    FROM bounded`, [scope.taskID, scope.intentID]);
+  const unverifiedReserve=Number(row!.unverified_reserve??0);
+  const used = BigInt(row!.input_tokens) + BigInt(row!.output_tokens) + BigInt(row!.unverified_reserve??0);
   if (Number(row!.pending_calls) || Number(row!.uncertain)) {
     throw new Error(TOKEN_USAGE_UNCERTAIN + '：' + UNSETTLED_WORKER_USAGE);
   }
   const remaining = Math.max(0, limit - Number(used));
   const reserve = Math.min(limit, Math.max(Math.ceil(limit * 0.1), 3 * requestCeiling));
-  return {limit, used: Number(used), remaining, reserve, closing: remaining <= reserve + requestCeiling};
+  return {limit, used: Number(used), remaining, reserve, closing: remaining <= reserve + requestCeiling,unverifiedReserve};
 }
 
 // Called inside the same transaction that inserts the running request. A concurrent
@@ -51,7 +62,7 @@ export async function checkWorkerTokenBudget(tx: Database, scope: UsageScope & {
     `worker-token-budget:${scope.taskID}:${scope.intentID}`,
   ]);
   const budget = await readWorkerTokenBudget(tx, scope);
-  if (budget && budget.used >= budget.limit) throw new Error(`${TOKEN_LIMIT_REACHED}（${budget.used} / ${budget.limit}）`);
+  if (budget && budget.used >= budget.limit) throw new Error(`${TOKEN_LIMIT_REACHED}（预算占用 ${budget.used} / ${budget.limit}，含未知用量保守预留 ${budget.unverifiedReserve??0}）`);
   return budget;
 }
 
@@ -60,7 +71,7 @@ export async function checkWorkerTokenBudget(tx: Database, scope: UsageScope & {
 export function workerRequestMaxTokens(budget: WorkerTokenBudget, model: {contextWindow: number; maxTokens: number}, requested?: number) {
   const maxTokens = Math.floor(Math.min(model.maxTokens, requested ?? model.maxTokens, budget.remaining - model.contextWindow));
   if (!Number.isSafeInteger(maxTokens) || maxTokens < 1) {
-    throw new Error(`${TOKEN_LIMIT_REACHED}：剩余额度不足以容纳下一次请求（${budget.used} / ${budget.limit}）`);
+    throw new Error(`${TOKEN_LIMIT_REACHED}：剩余额度不足以容纳下一次请求（预算占用 ${budget.used} / ${budget.limit}，含未知用量保守预留 ${budget.unverifiedReserve??0}）`);
   }
   return maxTokens;
 }

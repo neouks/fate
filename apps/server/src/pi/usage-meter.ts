@@ -55,13 +55,15 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
    const stream=createAssistantMessageEventStream(),scope={...context()},requestID=randomUUID(),observation=new UsageObservation();
    let auditID=0,attempted=false,saved=false,sequence=0;
    let maxTokens=options.maxTokens;
+   let budgetCeiling:number|undefined;
    let requestModel=model;
    let lastMessage:AssistantMessage|undefined;
-   const snapshot=()=>{const value=observation.result(undefined);return {...value,_quality:value._quality==='complete'?'partial':value._quality,_receipt_seq:++sequence};};
+   const reservation=()=>({...(budgetCeiling===undefined?{}:{_budget_ceiling:budgetCeiling})});
+   const snapshot=()=>{const value=observation.result(undefined);return {...value,...reservation(),_quality:value._quality==='complete'?'partial':value._quality,_receipt_seq:++sequence};};
    const record=async(message:AssistantMessage)=>{
     if(saved)return;saved=true;lastMessage=message;
     const status=message.stopReason==='error'?'failed':message.stopReason==='aborted'?'aborted':'completed';
-    const durable=await saveUsageReceipt(db,{requestID,auditID,status,finishedAt:new Date().toISOString(),usage:{...observation.result(message.usage,!attempted,['error','aborted'].includes(message.stopReason)),_receipt_seq:++sequence}});
+    const durable=await saveUsageReceipt(db,{requestID,auditID,status,finishedAt:new Date().toISOString(),usage:{...observation.result(message.usage,!attempted,['error','aborted'].includes(message.stopReason)),...reservation(),_receipt_seq:++sequence}});
     if(!durable)throw new UsageStorageUnavailable();
     if(message.errorMessage)await db.query('UPDATE llm_request_attempts SET error=$2 WHERE request_id=$1',[requestID,String(message.errorMessage).replaceAll(profile.apiKey||'\0','[redacted]').replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi,'$1[redacted]@').replace(/Bearer\s+[^\s]+/gi,'Bearer [redacted]').replace(/sk-[A-Za-z0-9_-]+/g,'[redacted]').slice(0,1000)]).catch(()=>undefined);
    };
@@ -76,14 +78,18 @@ export function meterProvider(db:Database,provider:Provider,profile:{id:number;n
        // Some PI adapters add a thinking allowance to maxTokens. Clamp the
        // model ceiling too, so thinking cannot expand this request's reservation.
        requestModel={...model,maxTokens};
+       const ceiling=model.contextWindow+maxTokens;
+       if(Number.isSafeInteger(ceiling)&&ceiling>0)budgetCeiling=ceiling;
       }
-      const audit=await tx.query(`INSERT INTO llm_request_attempts(request_id,task_id,conversation_id,role,profile_id,model,status,purpose,runtime_id)
-       VALUES($1,$2,$3,$4,$5,$6,'running',$7,$8) RETURNING id`,[requestID,scope.taskID||null,scope.conversationID??null,scope.role,profile.id>0?profile.id:null,model.id,scope.purpose,scope.runtimeID??null]);
+      const audit=await tx.query(`INSERT INTO llm_request_attempts(request_id,task_id,conversation_id,role,profile_id,model,status,purpose,runtime_id,usage)
+       VALUES($1,$2,$3,$4,$5,$6,'running',$7,$8,$9::jsonb) RETURNING id`,[requestID,scope.taskID||null,scope.conversationID??null,scope.role,profile.id>0?profile.id:null,model.id,scope.purpose,scope.runtimeID??null,JSON.stringify(reservation())]);
       await tx.query(`UPDATE llm_usage_ledger SET profile_name=$2,intent_id=$3,main_seg=$4,turn_id=$5,scope_key=COALESCE(runtime_id,$5,request_id) WHERE request_id=$1`,
        [requestID,profile.name,scope.intentID??null,scope.mainSegment??null,scope.turnID??null]);return audit;
      });
      auditID=Number(row.rows[0]!.id);
-     const inner=(target[key] as any).call(target,requestModel,messages,{...options,...(maxTokens===undefined?{}:{maxTokens}),
+     // Each physical attempt has its own reservation and receipt. Hidden SDK
+     // retries must not consume several requests against a single ceiling.
+     const inner=(target[key] as any).call(target,requestModel,messages,{...options,maxRetries:0,...(maxTokens===undefined?{}:{maxTokens}),
       onPayload:async(payload:unknown,m:Model<any>)=>{const result=await options.onPayload?.(payload,m);attempted=true;return result;},
       onResponse:async(r:any,m:Model<any>)=>{attempted=true;await options.onResponse?.(r,m);},
       onProviderStreamEvent:async(event:unknown,m:Model<any>)=>{const before=JSON.stringify(observation.counts);observation.observe(event,String(model.api));if(observation.seen&&JSON.stringify(observation.counts)!==before)await saveUsageReceipt(db,{requestID,auditID,status:'running',finishedAt:null,usage:snapshot()});await options.onProviderStreamEvent?.(event,m);}});
