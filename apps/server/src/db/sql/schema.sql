@@ -751,6 +751,22 @@ WHERE link.task_id=first_test.task_id
   AND link.asset_id=first_test.asset_id
   AND NOT link.tested;
 
+-- Explicit model selection for one task conversation. Other roles keep their routing.
+CREATE TABLE IF NOT EXISTS task_session_profiles (
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    session_key TEXT NOT NULL,
+    profile_id BIGINT NOT NULL REFERENCES llm_profiles(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, session_key)
+);
+
+CREATE TABLE IF NOT EXISTS task_session_preferences (
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    session_key TEXT NOT NULL,
+    thinking_level TEXT NOT NULL DEFAULT 'auto' CHECK (thinking_level IN ('auto','off','minimal','low','medium','high','xhigh')),
+    tool_preset TEXT NOT NULL DEFAULT 'configured' CHECK (tool_preset IN ('configured','none','read-only','default','full')),
+    PRIMARY KEY (task_id, session_key)
+);
+
 -- Ordered task-level LLM failover chain. A quota-exhausted entry is skipped
 -- until the user saves/resets the chain, which clears all failure state.
 CREATE TABLE IF NOT EXISTS task_llm_profiles (
@@ -1050,6 +1066,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS thinking_level TEXT NOT NULL DEFAULT 'auto' CHECK (thinking_level IN ('auto','off','minimal','low','medium','high','xhigh'));
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS tool_preset TEXT NOT NULL DEFAULT 'configured' CHECK (tool_preset IN ('configured','none','read-only','default','full'));
 CREATE INDEX IF NOT EXISTS idx_conversations_llm_profile ON conversations(llm_profile_id) WHERE llm_profile_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_conversations_pinned ON conversations(pinned_at DESC) WHERE pinned_at IS NOT NULL;
 DROP TRIGGER IF EXISTS trg_conversations_upd ON conversations;

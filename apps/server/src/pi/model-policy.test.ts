@@ -34,3 +34,15 @@ test('limiter uses stricter spacing and cancellation cannot reserve another slot
  await reserveRequest(db,profile(1,{ratePerSecond:4,ratePerMinute:30}) as never);assert.equal(updates[0],2000);
  wait=10000;await assert.rejects(reserveRequest(db,profile(1,{ratePerSecond:1}) as never,AbortSignal.abort()),{name:'AbortError'});assert.equal(updates.length,1);
 });
+test('session override failures do not exhaust the task fallback chain',async()=>{
+ const {db}=database();const query=db.query,updates:string[]=[];
+ db.query=async(sql:string,args:any[])=>{
+  if(sql.startsWith('SELECT profile_id FROM task_session_profiles'))return {rows:[{profile_id:2}]};
+  if(sql.startsWith('UPDATE task_llm_profiles'))updates.push(sql);
+  return query(sql,args);
+ };
+ const source=await makeModelResolver(db,buildModelSource)(1,'worker',{sessionKey:'intent:99'});
+ await source.modelPolicy!.onResponse({provider:'series-p2',stopReason:'error',errorMessage:'401: invalid API key'});
+ assert.equal(await source.modelPolicy!.retry(),false);
+ assert.deepEqual(updates,[]);
+});

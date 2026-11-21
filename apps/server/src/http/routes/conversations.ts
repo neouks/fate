@@ -3,7 +3,9 @@ import {activityDTO} from '../../engine/live-stream.js';
 import {readActivityPage,readActivityContent,readSnapshotContent} from '../../db/activity-content.js';
 import type { FastifyInstance } from 'fastify';
 import {taskSession} from './task-session.js';
+import {resolveModelProfiles} from '../../pi/modelResolver.js';
 import {aggregateUsage} from '../../db/usage-ledger.js';
+import {registerSessionControls} from './session-controls.js';
 
 const activity = activityDTO;
 function conversationDTO(row: Record<string, unknown>) {
@@ -13,6 +15,7 @@ function conversationDTO(row: Record<string, unknown>) {
 }
 
 export function registerConversationRoutes(app: FastifyInstance) {
+  registerSessionControls(app);
   const service = () => app.engine.conversations;
   const db = () => app.db;
 
@@ -28,6 +31,26 @@ export function registerConversationRoutes(app: FastifyInstance) {
     ]);
     return usageSnapshot(totals[0],models,latest.rows[0]);
   });
+  app.get('/api/tasks/:id/session-model',async req=>{
+    const taskID=Number((req.params as {id:string}).id),key=String((req.query as {session?:string}).session??'');
+    const session=await taskSession(db(),taskID,key);
+    const selected=await db().query('SELECT profile_id FROM task_session_profiles WHERE task_id=$1 AND session_key=$2',[taskID,key]);
+    const resolved=await resolveModelProfiles(db(),taskID,session.role,{sessionKey:key});
+    return {profile_id:selected.rows[0]?Number(selected.rows[0].profile_id):null,resolution:resolved.resolution};
+  });
+  app.patch('/api/tasks/:id/session-model',async(req,reply)=>{
+    const taskID=Number((req.params as {id:string}).id),body=req.body as {session?:string;profile_id?:unknown};
+    const key=String(body?.session??'');
+    await taskSession(db(),taskID,key);
+    const id=body.profile_id===null?null:Number(body.profile_id);
+    if(id!==null&&(!Number.isSafeInteger(id)||id<1))return reply.code(400).send({error:'模型编号无效'});
+    if(id!==null&&!await db().platform().profileByID(id))return reply.code(404).send({error:'模型配置不存在'});
+    if(id===null)await db().query('DELETE FROM task_session_profiles WHERE task_id=$1 AND session_key=$2',[taskID,key]);
+    else await db().query(`INSERT INTO task_session_profiles(task_id,session_key,profile_id) VALUES($1,$2,$3)
+      ON CONFLICT(task_id,session_key) DO UPDATE SET profile_id=EXCLUDED.profile_id`,[taskID,key,id]);
+    return {profile_id:id,effective:'next_run'};
+  });
+
   app.get('/api/conversations/:id/usage', async (req, reply) => {
     const id = Number((req.params as {id:string}).id);
     if (!Number.isSafeInteger(id) || id < 1 || !await conversationReadable(db(), id))

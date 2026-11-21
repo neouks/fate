@@ -1045,7 +1045,12 @@ export const api = {
 
   // ---- conversations (chat page) ----
   taskSessionUsage: (id: string, session: string | number, signal?: AbortSignal) => get<import('./session-usage').SessionUsage>(`/tasks/${id}/session-usage?${new URLSearchParams({session:typeof session==='number'?`main:${session}`:session})}`, {signal}),
+  taskSessionModel: (id: string, session: string, signal?: AbortSignal) => get<{profile_id:number|null;resolution:TaskLLMResolutions['mainagent']}>(`/tasks/${id}/session-model?${new URLSearchParams({session})}`, {signal}),
+  setTaskSessionModel: (id:string, session:string, profile_id:number|null) => patch<{profile_id:number|null;effective:string}>(`/tasks/${id}/session-model`,{session,profile_id}),
   conversationUsage: (id: number, signal?: AbortSignal) => get<import('./session-usage').SessionUsage>(`/conversations/${id}/usage`, {signal}),
+  sessionControls: (url: string, signal?: AbortSignal) => get<import('./session-controls').SessionControlSettings>(url, {signal}),
+  setSessionControls: (url: string, value: import('./session-controls').SessionControlPatch) => patch<import('./session-controls').SessionControlSettings>(url,value),
+  compactSession: (url: string) => post<{status:string}>(url,{}),
   conversations: (task?: string) => get<{ conversations: Conversation[] }>(`/conversations${task ? `?${new URLSearchParams({task})}` : ""}`).then((r) => arr(r.conversations)),
   createConversation: (agent_key: string, title = "", llm_profile_id?: number | null, task_id?: number | null) =>
     post<Conversation>("/conversations", { agent_key, title, llm_profile_id: llm_profile_id ?? null, task_id: task_id ?? null }),

@@ -13,9 +13,10 @@ import {resolveModelProfiles} from '../pi/modelResolver.js';
 import {registerNativeActivityRun} from './native-activity-recovery.js';
 import { trackWorkspaceFileWrites } from '../pi/workspace-file-changes.js';
 import { lockTaskWorkspace } from '../db/task-workspace-lock.js';
+import {readSessionPreferences,applySessionTools} from '../db/session-preferences.js';
 
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export async function configuredRole(db:Database,taskID:number,role:string,conversationID?:number){
+export async function configuredRole(db:Database,taskID:number,role:string,conversationID?:number,sessionKey?:string){
  const agent=await db.platform().getAgentByKey(role);
  const prompt=await resolveRolePrompt(db,role);
  const tools=(await db.query('SELECT key,enabled,description,exec FROM tools WHERE agents ? $1 ORDER BY key',[role])).rows;
@@ -24,7 +25,7 @@ export async function configuredRole(db:Database,taskID:number,role:string,conve
   WHERE a.key=$1 ORDER BY v.resource_id,v.mcp_tool_name`,[role])).rows;
  const skills=(await db.query('SELECT v.skill_name,v.enabled FROM agent_skill_visibility v JOIN agents a ON a.id=v.agent_id WHERE a.key=$1 ORDER BY v.skill_name',[role])).rows;
  const conv=conversationID?(await db.query('SELECT llm_profile_id FROM conversations WHERE id=$1',[conversationID])).rows[0]:undefined;
- const resolved=await resolveModelProfiles(db,taskID,role,{conversationID,profileID:Number(conv?.llm_profile_id)||undefined});
+ const resolved=await resolveModelProfiles(db,taskID,role,{conversationID,profileID:Number(conv?.llm_profile_id)||undefined,sessionKey});
  return {planner_context_budget_tokens:role==='planner'?await db.platform().getSetting('planner_context_budget_tokens'):undefined,
   worker_context_budget_tokens:role==='worker'?await db.platform().getSetting('worker_context_budget_tokens'):undefined,
   platform_policy:await platformPolicy(db,role),enabled:agent?.enabled??true,prompt_source:prompt.source,prompt_version:prompt.version,agent_hash:digest(agent),prompt_hash:digest([prompt.template,hostProtocol(role)]),tools_hash:digest(tools),resources_hash:digest([resources,skills]),
@@ -45,7 +46,9 @@ export async function createTrackedRunner(db:Database,taskID:number,role:string,
 async function createAdmittedRunner(db:Database,taskID:number,role:string,options:AgentRunnerOptions&{resourceLease:RuntimeResourceLease},conversationID:number|undefined,ownsResource:boolean){
  await options.resourceLease.beginInitialization(options.signal);
  options.signal?.throwIfAborted();
- const configured=await configuredRole(db,taskID,role,conversationID),id=randomUUID();
+ const preferences=await readSessionPreferences(db,{taskID,conversationID,sessionKey:options.intentID?`intent:${options.intentID}`:options.mainSegment!==undefined?`main:${options.mainSegment}`:['planner','goals'].includes(role)?'plan':undefined});
+ options={...options,...applySessionTools(options,preferences.tool_preset)};
+ const configured=await configuredRole(db,taskID,role,conversationID,options.intentID?`intent:${options.intentID}`:options.mainSegment!==undefined?`main:${options.mainSegment}`:undefined),id=randomUUID();
  if(options.nativeActivity&&!options.inMemory)options={...options,nativeActivityRuntime:id};
  if(options.mcpEntries?.length){
   const servers=await db.query('SELECT id,name FROM mcp_servers WHERE name=ANY($1::text[])',[options.mcpEntries.map(e=>e.name)]);
@@ -170,7 +173,10 @@ export async function recoverExpiredRuntimes(db:Database) {
 export async function runtimeConfiguration(db:Database,scope:{taskID?:number;conversationID?:number}){
  const rows=(await db.query(`SELECT * FROM runtime_role_configs WHERE ${scope.conversationID?'conversation_id':'task_id'}=$1 AND finished_at IS NULL AND expires_at>now() ORDER BY started_at`,[scope.conversationID??scope.taskID])).rows;
  const active=[];
- for(const row of rows){const current=await configuredRole(db,Number(row.task_id)||0,String(row.role),Number(row.conversation_id)||undefined),before=row.configured as Record<string,unknown>;
+ for(const row of rows){
+  const usage=(row.effective as {usage_scope?:{intentID?:number;mainSegment?:number}})?.usage_scope;
+  const sessionKey=usage?.intentID?`intent:${usage.intentID}`:usage?.mainSegment!==undefined?`main:${usage.mainSegment}`:undefined;
+  const current=await configuredRole(db,Number(row.task_id)||0,String(row.role),Number(row.conversation_id)||undefined,sessionKey),before=row.configured as Record<string,unknown>;
   const changed=Object.keys(current).filter(key=>key!=='model'&&JSON.stringify(current[key as keyof typeof current])!==JSON.stringify(before[key]));
   active.push({id:row.id,role:row.role,started_at:row.started_at,effective:row.effective,pending:changed.length?{changed_fields:changed,configuration:current,applies:'next_session'}:null});
  }

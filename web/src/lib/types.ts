@@ -810,7 +810,7 @@ export interface TaskLLMResolution {
   name: string;
   format: string;
   model: string;
-  source: "task_chain" | "agent_binding" | "global_profile" | "environment" | "global";
+  source: "task_chain" | "task_session" | "conversation" | "agent_binding" | "global_profile" | "environment" | "global";
   available: boolean;
   reason?: string;
 }

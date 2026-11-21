@@ -11,19 +11,25 @@ import {meterProvider} from './usage-meter.js';
 import {USAGE_STORAGE_ERROR} from './usage-outbox.js';
 import type {UsageScope} from '../db/usage-ledger.js';
 import {readWorkerTokenBudget} from '../db/worker-token-budget.js';
+import {readSessionPreferences,sessionProfile} from '../db/session-preferences.js';
 
 /** The management DTO and all role sessions use this same precedence and ordered chain. */
-export async function resolveModelProfiles(db:Database,taskID:number,role:string,context?:{conversationID?:number;profileID?:number}) {
+export async function resolveModelProfiles(db:Database,taskID:number,role:string,context?:{conversationID?:number;profileID?:number;sessionKey?:string}) {
   const task=await db.tasks().getTask(taskID);
   if(taskID&&!task)throw new Error(`任务 #${taskID} 不存在`);
+  const sessionKey=context?.sessionKey??(role==='planner'?'plan':undefined);
+  const selected=taskID&&sessionKey&&!context?.conversationID
+    ?(await db.query('SELECT profile_id FROM task_session_profiles WHERE task_id=$1 AND session_key=$2',[taskID,sessionKey])).rows[0]
+    :undefined;
+  const profileID=context?.profileID??(selected?Number(selected.profile_id):undefined);
   const chain=await db.query(`SELECT profile_id,status,position,last_error FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`,[taskID]);
   const agent=await db.query(`SELECT llm_profile_id AS id,enabled FROM agents WHERE key=$1`,[role]);
   let ids=chain.rows.filter(r=>r.status==='ready').map(r=>Number(r.profile_id));
-  const active=Number(context?.profileID??task?.active_llm_profile_id ?? task?.llm_profile_id ?? 0);
+  const active=Number(profileID??task?.active_llm_profile_id ?? task?.llm_profile_id ?? 0);
   if(ids.includes(active))ids=[active,...ids.filter(id=>id!==active)];
   let source='task_chain';
-  if(context?.profileID){ids=[context.profileID];source='conversation';}
-  if(!chain.rows.length&&!context?.profileID){
+  if(profileID){ids=[profileID];source=selected?'task_session':'conversation';}
+  if(!chain.rows.length&&!profileID){
     const bound=Number(task?.active_llm_profile_id??task?.llm_profile_id??agent.rows[0]?.id??0);
     const primary=bound||Number((await db.platform().activeProfile())?.id??0);
     source=task?.active_llm_profile_id||task?.llm_profile_id?'task_chain':Number(agent.rows[0]?.id)?'agent_binding':'global_profile';
@@ -76,7 +82,8 @@ export function makeModelResolver(db:Database,build=buildModelSource):ModelResol
   return async(taskID,role,context)=>{
     const resolved=await resolveModelProfiles(db,taskID,role,context);
     if(!resolved.resolution.available)throw new Error(resolved.resolution.reason);
-    const profiles=resolved.profiles, sources:ModelSource[]=[];
+    const preferences=await readSessionPreferences(db,{taskID,conversationID:context?.conversationID,sessionKey:context?.sessionKey??(['planner','goals'].includes(role)?'plan':undefined)});
+    const profiles=resolved.profiles.map(p=>sessionProfile(p,preferences)), sources:ModelSource[]=[];
     for(const profile of profiles){
       const headerSession=context?.conversationID?`conversation:${context.conversationID}`:`task:${taskID||'platform'}:${role}`;
       const scopedProfile={...profile,sessionHeaderValue:profile.sessionHeaderKey?headerSession:undefined};
@@ -160,7 +167,7 @@ export function makeModelResolver(db:Database,build=buildModelSource):ModelResol
         const openUntil=trip?new Date(Date.now()+(interval||coolMinutes*60_000)):null;
         await db.query(`INSERT INTO llm_profile_health(profile_id,fails,trips,open_until,last_error,last_at) VALUES($1,$2,$3,$4,$5,now())
           ON CONFLICT(profile_id) DO UPDATE SET fails=$2,trips=$3,open_until=$4,last_error=$5,last_at=now()`,[p.id,fails,nextTrips,openUntil,lastError]);
-        await db.query(`UPDATE task_llm_profiles SET last_error=$3,status=CASE WHEN $4 THEN 'quota_exhausted' ELSE status END,exhausted_at=CASE WHEN $4 THEN now() ELSE exhausted_at END WHERE task_id=$1 AND profile_id=$2`,[taskID,p.id,lastError,hard]);
+        if(resolved.source==='task_chain')await db.query(`UPDATE task_llm_profiles SET last_error=$3,status=CASE WHEN $4 THEN 'quota_exhausted' ELSE status END,exhausted_at=CASE WHEN $4 THEN now() ELSE exhausted_at END WHERE task_id=$1 AND profile_id=$2`,[taskID,p.id,lastError,hard]);
         const next=Math.max(index,lastResponseIndex+1);
         if(next>=sources.length)return false;
         index=next;retries=0;

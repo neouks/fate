@@ -122,7 +122,7 @@ export type EngineActivity = {
 };
 
 /** 模型来源解析（引擎不感知 provider 细节；测试注入 faux）。 */
-export type ModelResolver = (taskID: number, role: string, context?: {conversationID?:number;profileID?:number}) => Promise<ModelSource>;
+export type ModelResolver = (taskID: number, role: string, context?: {conversationID?:number;profileID?:number;sessionKey?:string}) => Promise<ModelSource>;
 
 export class Engine {
 
@@ -637,11 +637,11 @@ export class Engine {
 
   // ─── workerLoop ───────────────────────────────────────────────────────────
 
-  private async modelFor(rt: TaskRuntime, role: string): Promise<ModelSource | null> {
+  private async modelFor(rt: TaskRuntime, role: string, sessionKey?:string): Promise<ModelSource | null> {
     try {
       const enabled = await this.db.query('SELECT enabled FROM agents WHERE key=$1', [role]);
       if (enabled.rows[0]?.enabled === false) return null;
-      const model = await this.modelResolver(rt.taskID, role);
+      const model = await this.modelResolver(rt.taskID, role, {sessionKey});
       return model;
     }
     catch (err) {
@@ -728,7 +728,7 @@ export class Engine {
       resourceLease=await acquireRuntimeResources(this.db,{taskID:rt.taskID,role:'worker',intentID:intent.id},controller.signal,
         ()=>turn.onActivity({kind:'host_status',phase:'resource_wait',text:'正在等待执行资源；尚未加载模型会话或连接 MCP'},{worker:name,intentID:intent.id}));
       controller.signal.throwIfAborted();
-      model??=await this.modelFor(rt,'worker')??undefined;
+      model??=await this.modelFor(rt,'worker',`intent:${intent.id}`)??undefined;
       controller.signal.throwIfAborted();
       if(!model)throw new Error('Worker 模型配置不可用');
       const task=await this.db.tasks().getTask(rt.taskID);
@@ -1193,7 +1193,7 @@ export class Engine {
       const attached=typeof attachments==='function'?await attachments():attachments;
       controller.signal.throwIfAborted();
       message=[message,attached?.text].filter(Boolean).join('\n\n');
-      const model = await this.modelResolver(taskID, "mainagent");
+      const model = await this.modelResolver(taskID, "mainagent", {sessionKey:`main:${segment}`});
       if(attached?.images.length && !model.model.input.includes("image"))throw Object.assign(new Error("当前模型链未启用图片输入，请在 LLM 配置中启用 supports_images 或选择支持图片的模型"),{statusCode:400});
       controller.signal.throwIfAborted();
       const turn=this.beginActivityTurn(rt,{worker:"main",mainSeg:segment},requestID);

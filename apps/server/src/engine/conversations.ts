@@ -77,6 +77,8 @@ export class ConversationService {
   if((!message.trim()&&(!Array.isArray(attachments)||attachments.length===0))||message.length>100000)throw Object.assign(new Error('消息为空或过长'),{statusCode:400});
   const row=await writeDB.transaction(async tx=>{
    await tx.query('SELECT pg_advisory_xact_lock(4200000004)');
+   if((await tx.query('SELECT key FROM runtime_session_leases WHERE key=$1 AND expires_at>now()',[`compact:conversation:${id}`])).rowCount)
+    throw Object.assign(new Error('会话正在压缩，请完成或停止压缩后再发送'),{statusCode:409});
    const conv=(await tx.query('SELECT * FROM conversations WHERE id=$1 FOR UPDATE',[id])).rows[0];
    if(!conv)throw Object.assign(new Error('conversation not found'),{statusCode:404});
    assertActiveRole(String(conv.agent_key));
