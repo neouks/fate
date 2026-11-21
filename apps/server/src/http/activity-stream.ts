@@ -1,3 +1,4 @@
+import type {TodoItem} from '../tools/context.js';
 import {listHumanInputs} from '../db/human-input.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ServerResponse } from 'node:http';
@@ -42,7 +43,7 @@ export async function conversationReadable(db:Database,id:number){
 }
 /** A client retains only its cursor and latest projection, never a history queue. */
 class StreamClient {
- busy=false;closed=false;initial=true;previousSnapshots='';previousStatus='';previousRevision='';previousInputs='';
+ busy=false;closed=false;initial=true;previousSnapshots='';previousStatus='';previousRevision='';previousInputs='';previousTodos='';
  finalized=new Set<string>();delivered=new Map<string,{offset:number;hash:string;start:number}>();
  summaryVersions=new Map<string,string>();
  constructor(readonly raw:ServerResponse,public cursor:number,readonly taskID:number){}
@@ -92,6 +93,8 @@ class ActivityHub {
      const available=[...this.clients].filter(c=>!c.busy&&!c.closed);
      if(!available.length)return;
      const scope=this.scope,id=this.id;
+     // Current committed state is independent of activity cursors, including reconnects.
+     const todos=scope==='task'?(await this.db.query<{planner_todos:TodoItem[]}>('SELECT planner_todos FROM explorations WHERE id=$1',[id])).rows[0]?.planner_todos??[]:undefined;
      const inputSnapshots=new Map<number,Awaited<ReturnType<typeof listHumanInputs>>>();
      if(scope==='task')for(const taskID of new Set(available.map(c=>c.taskID).filter(Boolean)))inputSnapshots.set(taskID,await listHumanInputs(this.db,taskID));
      // Snapshot before final rows, preserving the final-message handoff ordering.
@@ -137,13 +140,13 @@ class ActivityHub {
            while(this.cacheKeys.size>1024){const first=this.cacheKeys.values().next().value!;this.cacheKeys.delete(first);const entry=cache.get(first);if(entry){cacheBytes-=entry.bytes;cache.delete(first);}}
          }summaries.push({items:ids.flatMap(turn=>found.get(turn)??[]),requested_ids:ids,versions});}
        const ping=Date.now()-this.lastPing>=15000;
-       for(const client of clients){client.busy=true;void this.deliver(client,rows,snapshots,summaries,status,revision,ping,inputSnapshots.get(client.taskID)).catch(()=>client.raw.destroy()).finally(()=>{client.busy=false;});}
+       for(const client of clients){client.busy=true;void this.deliver(client,rows,snapshots,summaries,status,revision,ping,inputSnapshots.get(client.taskID),todos).catch(()=>client.raw.destroy()).finally(()=>{client.busy=false;});}
      }
      if(Date.now()-this.lastPing>=15000)this.lastPing=Date.now();
    }catch{for(const c of this.clients)c.raw.destroy();}
    finally{this.busy=false;this.schedule(active?250:1000);}
  }
- private async deliver(c:StreamClient,rows:Row[],snapshots:Row[],summaries:SummaryBatch[],status:string,revision:string,ping:boolean,inputs?:Awaited<ReturnType<typeof listHumanInputs>>){
+ private async deliver(c:StreamClient,rows:Row[],snapshots:Row[],summaries:SummaryBatch[],status:string,revision:string,ping:boolean,inputs?:Awaited<ReturnType<typeof listHumanInputs>>,todos?:TodoItem[]){
    for(const row of rows){const m=row.metadata??{};if(m.stream_id)c.finalized.add(`${m.stream_id}:${m.channel??(row.kind==='thinking'?'thinking':'text')}`);
      await c.write(`id: ${row.id}\ndata: ${JSON.stringify({...activityDTO(row),...(this.scope==='task'?{exp_id:this.id,task_id:c.taskID}:{})})}\n\n`);c.cursor=Number(row.id);}
    for(const summary of summaries){const requested=summary.requested_ids.filter(turn=>!summary.versions.has(turn)||c.summaryVersions.get(turn)!==summary.versions.get(turn));
@@ -152,6 +155,7 @@ class ActivityHub {
      for(const turn of requested){const v=summary.versions.get(turn);if(v){c.summaryVersions.delete(turn);c.summaryVersions.set(turn,v);}}
      while(c.summaryVersions.size>1024)c.summaryVersions.delete(c.summaryVersions.keys().next().value!);
    }
+   if(todos){const version=fingerprint(JSON.stringify(todos));if(c.initial||version!==c.previousTodos){await c.event('planner_todos',{items:todos});c.previousTodos=version;}}
    if(inputs){const version=fingerprint(JSON.stringify(inputs));if(c.initial||version!==c.previousInputs){await c.event('human_inputs',{items:inputs});c.previousInputs=version;}}
    const keys=new Set(snapshots.map(r=>`${r.stream_id}:${r.channel}`));for(const k of c.finalized)if(!keys.has(k))c.finalized.delete(k);
    const items=snapshots.filter(r=>!c.finalized.has(`${r.stream_id}:${r.channel}`)).map(r=>({worker:r.worker==='main'?'mainagent':r.worker,intent_id:r.node_id==null?undefined:String(r.node_id),main_seg:r.main_seg,turn_id:r.turn_id,stream_id:r.stream_id,channel:r.channel,text:r.body,offset:String(r.body).length,text_start:Number(r.text_start),total_chars:Number(r.total_chars),truncated:Number(r.text_start)>0,ts:r.created_at,active:r.active}));

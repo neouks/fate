@@ -1,3 +1,4 @@
+import {streamChanges} from '../engine/stream-changes.js';
 import {directionReviewSchema,validateDirectionReviews} from '../agent/direction-review.js';
 import {INTENT_RETRY_GUIDANCE,intentRetryArgumentError} from './input-contracts.js';
 import type {WorkerCorrection} from '../agent/worker-correction.js';
@@ -334,6 +335,7 @@ export function todoWriteTool(ctx: ToolRunContext) {
           if(reviews.length)await db.exploration(c.expID).appendActivity({worker:c.role,kind:'status',summary:'已记录方向复核 '+reviews.length+' 项',detail:JSON.stringify(reviews),metadata:{event_type:'direction_review',semantic_verification:false}});
         });
         c.todos?.cache(c.expID,args.todos);
+        streamChanges.emit('change','task',c.expID);
         return { saved: args.todos.length,reviewed:reviews.length,meaning:'已校验引用与关闭所需读取记录；不代表宿主验证了结论语义' };
       },
     },

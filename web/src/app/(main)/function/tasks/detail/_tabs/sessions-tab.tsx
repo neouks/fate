@@ -89,6 +89,8 @@ import { SessionTranscript, SessionWorkspace, type TranscriptPositions } from ".
 import { WorkerQueue } from "./worker-queue";
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
+import { PlannerTodos } from "./planner-todos";
+import type { PlannerTodo } from "@/lib/planner-todos";
 function fmtBytes(n: number): string {
   if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
   if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`;
@@ -525,6 +527,7 @@ export function SessionsTab({
   // Worker sessions derived from exploration intents (paged past the old 300 cap).
   const [intents, setIntents] = React.useState<TaskNode[]>([]);
   const [intentAssets, setIntentAssets] = React.useState<IntentAsset[]>([]);
+  const [plannerTodos, setPlannerTodos] = React.useState<PlannerTodo[] | null>(null);
   const [olderIntentAssets, setOlderIntentAssets] = React.useState<IntentAsset[]>([]);
   const [olderIntents, setOlderIntents] = React.useState<TaskNode[]>([]);
   const [firstIntentsHasMore, setFirstIntentsHasMore] = React.useState(false);
@@ -846,6 +849,7 @@ export function SessionsTab({
     setIntents([]);
     setIntentAssets([]);
     setOlderIntentAssets([]);
+    setPlannerTodos(null);
     setOlderIntents([]);
     setFirstIntentsHasMore(false);
     setOlderIntentsHasMore(false);
@@ -922,6 +926,7 @@ export function SessionsTab({
       api
         .activity(taskId)
         .then((r) => {
+      setPlannerTodos([]);
           if (!alive) return;
           const buckets: SessionStore = {};
           for (const a of r.items) {
@@ -998,6 +1003,13 @@ export function SessionsTab({
         es.addEventListener("human_inputs",event=>{if(alive){try{humanInputs.receive(JSON.parse((event as MessageEvent).data).items,'snapshot');}catch{/* snapshot reconnect repairs */}}});
         es.addEventListener("open",()=>{if(alive)void humanInputs.refresh();});
         es.addEventListener("turn_summary",event=>{if(alive){try{notifyTurnSummaries(`task:${taskId}`,JSON.parse((event as MessageEvent).data));}catch{/* history repairs */}}});
+        es.addEventListener("planner_todos", event => {
+          if (!alive) return;
+          try {
+            const { items } = JSON.parse((event as MessageEvent).data);
+            if (Array.isArray(items)) setPlannerTodos(items);
+          } catch { /* The next snapshot on reconnect repairs malformed frames. */ }
+        });
         es.addEventListener("streams", event => {
           if(!alive)return;
           try {
@@ -1009,7 +1021,7 @@ export function SessionsTab({
             setStreaming(items);
           } catch {setSseLive(false);}
         });
-        es.addEventListener("access_revoked",()=>{if(alive){setStore({});setStreaming([]);esRef.current?.close();toast.error("任务已删除或授权已撤销");}});
+        es.addEventListener("access_revoked",()=>{if(alive){setStore({});setStreaming([]);setPlannerTodos(null);esRef.current?.close();toast.error("任务已删除或授权已撤销");}});
         es.onmessage = (e) => {
           if (!alive) return;
           let a: Activity;
@@ -1679,6 +1691,7 @@ export function SessionsTab({
             className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!"
           >
             <div className="flex w-full flex-col gap-3 p-2">
+              <PlannerTodos key={taskId} todos={plannerTodos} connected={sseLive || MOCK} />
               {(["mainagent", "planner", "system", "worker"] as const).map((role) => {
                 const items = grouped[role];
                 if (!items.length) return null;
