@@ -54,8 +54,7 @@ export function AgentToolLoadingEditor({ agentKey, tools, captureOn, onToggle, o
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
-  const visible = tools.filter(t => (!["web_search", "web_read"].includes(t.key) || ["planner", "worker", "mainagent"].includes(agentKey)) &&
-    `${t.key} ${t.description}`.toLowerCase().includes(query.toLowerCase()));
+  const visible = tools.filter(t => `${t.key} ${t.description}`.toLowerCase().includes(query.toLowerCase()));
   return <FieldGroup>
     <Field>
       <FieldLabel>工具授权与加载方式</FieldLabel>

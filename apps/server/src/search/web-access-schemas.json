@@ -1,0 +1,208 @@
+[
+  {
+    "name": "web_search",
+    "label": "Web Search",
+    "description": "Search the web for sources or answers. Full results are stored for retrieval with get_search_content by responseId. Prefer 2-4 varied queries.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "queries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Run concurrently (up to three at a time); vary the angle"
+        },
+        "numResults": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Default 5"
+        },
+        "includeContent": {
+          "type": "boolean",
+          "description": "Also fetch full page content"
+        },
+        "recencyFilter": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "year"
+          ]
+        },
+        "domainFilter": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prefix - to exclude"
+        },
+        "category": {
+          "type": "string",
+          "description": "Exa only, e.g. news"
+        },
+        "provider": {
+          "type": "string",
+          "description": "auto, all, a name, or comma-separated names; omit for the configured default. Allowed: deepseek, exa, brave, tavily, bocha, jina, searxng, duckduckgo."
+        },
+        "workflow": {
+          "type": "string",
+          "enum": [
+            "none",
+            "summary-review",
+            "auto-summary"
+          ],
+          "description": "Default none; summary-review opens the curator; auto-summary summarizes"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "Proxy URL; omit by default (env proxy vars ignored); \"\" forces direct"
+        }
+      }
+    }
+  },
+  {
+    "name": "fetch_content",
+    "label": "Fetch Content",
+    "description": "Fetch web pages, PDFs, GitHub repos, images, YouTube and local video, as the mode allows. Full content is stored for retrieval with get_search_content.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "forceClone": {
+          "type": "boolean",
+          "description": "Clone GitHub repos over the size limit"
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Question for video analysis"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "readable",
+            "raw"
+          ],
+          "description": "readable (default): extract readable content as markdown; raw: return the exact textual body using direct HTTP only."
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "Video frame time ('1:23:45') or range ('23:41-25:00'); needs ffmpeg"
+        },
+        "frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Frames over a range, 5s apart from one time, or over the video"
+        },
+        "model": {
+          "type": "string",
+          "description": "Gemini model for video analysis"
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "description": "authFetch profile name, or true for the only one"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "Proxy URL; omit by default; \"\" forces direct"
+        },
+        "redirects": {
+          "type": "string",
+          "enum": [
+            "same-origin"
+          ],
+          "description": "Refuse cross-origin redirects"
+        }
+      }
+    }
+  },
+  {
+    "name": "get_search_content",
+    "label": "Get Search Content",
+    "description": "Page through or search stored content from web_search or fetch_content by responseId.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "responseId"
+      ],
+      "properties": {
+        "responseId": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "queryIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "url": {
+          "type": "string"
+        },
+        "urlIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12000,
+          "description": "Characters, default the maximum"
+        },
+        "findText": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "minItems": 1,
+              "maxItems": 10
+            }
+          ],
+          "description": "Find passages instead of paging"
+        },
+        "findMode": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "case-insensitive",
+            "fuzzy"
+          ]
+        }
+      }
+    }
+  }
+]

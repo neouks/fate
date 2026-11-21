@@ -1065,7 +1065,7 @@ export interface Settings {
   // Web search. brave_key_set / tavily_key_set reflect whether a key is stored
   // (the values are never returned). On PUT, send the corresponding field to set/clear.
   web_search_enabled: boolean;
-  web_search_backend: string; // "ddgs" | "brave-free" | "tavily" | "deepseek"
+  web_search_backend: string; // pi-web-access 默认供应商，或 auto
   brave_key_set: boolean;
   tavily_key_set: boolean;
   // write-only: only sent on PUT to store/clear the key.
@@ -1630,25 +1630,41 @@ export interface FindingReportSections {description:string;impact:string[];remed
 export interface FindingStepImage {id:string;step_id?:string|null;caption:string;mime:string;position:number}
 export interface FindingReproductionDetail {reproduction:FindingReproduction|null;report_sections:FindingReportSections|null;report_revision:number;evidence_version:number;markdown:string;images:FindingStepImage[];versions:Array<{revision:number;evidence_version:number;created_at:string}>;job?:{id:number;conversation_id:number;status?:string;error?:string}}
 
-export type WebSearchSource = "deepseek" | "baidu" | "bing" | "github" | "cnblogs" | "csdn" | "wechat";
+export type WebSearchSource = "deepseek" | "exa" | "brave" | "tavily" | "bocha" | "jina" | "searxng" | "duckduckgo";
 export type WebSearchSelection = WebSearchSource | "auto";
-
 export interface WebSearchSettings {
+  implementation: "pi-web-access";
+  version: string;
   agent_roles: string[];
   effective_agent_roles: string[];
   web_search_enabled: boolean;
   web_search_backend: WebSearchSelection;
   sources: WebSearchSource[];
   default_source: WebSearchSelection;
-  deepseek_key_set: boolean;
+  providers: Array<{ id: WebSearchSource; label: string; needs_key: boolean; supports_key: boolean }>;
+  keys_set: Partial<Record<WebSearchSource, boolean>>;
+  searxng_url: string;
+  domain_filter: string[];
+  proxy_set: boolean;
   ready: boolean;
-  credential_source: string;
+  migration_notice?: string;
+}
+export interface WebSearchSettingsPatch {
+  web_search_enabled: boolean;
+  agent_roles?: string[];
+  sources?: WebSearchSource[];
+  default_source?: WebSearchSelection;
+  api_keys?: Partial<Record<WebSearchSource, string>>;
+  clear_keys?: WebSearchSource[];
+  searxng_url?: string;
+  domain_filter?: string[];
+  proxy?: string;
+  clear_proxy?: boolean;
 }
 export interface WebSearchTest {
   ok: boolean;
   error?: string;
   count?: number;
   latency_ms?: number;
-  failures?: Array<{source: WebSearchSource; reason: string}>;
-  results?: Array<{ title: string; url: string; summary: string; snippet: string; date: string | null; engine: WebSearchSource; source: string }>;
+  results?: Array<{ title: string; url: string; summary: string; snippet: string; engine: string; source: string }>;
 }

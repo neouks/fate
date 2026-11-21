@@ -15,8 +15,7 @@ test('MCP startup presets permit concurrent sessions and preserve explicit confi
       assert.ok(server.args.includes('--isolated'));
       assert.equal(server.enabled,false);
     }
-    const search=servers.find(s=>s.name==='web_search')!;
-    assert.equal(search.env.FATE_MCP_FETCH_PROXY,'1');
+    assert.equal(servers.some(s=>s.name==='web_search'),false);
     const browser=servers.find(s=>s.name==='playwright')!;
     await db.platform().saveMCP({...browser,args:['custom-command-argument'],enabled:true});
     const scope=await db.platform().saveMCP({name:'ScopeSentry',transport:'http',url:'https://example.com/mcp',command:'',args:[],env:{},enabled:false,insecure:false});

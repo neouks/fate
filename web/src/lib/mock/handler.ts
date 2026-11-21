@@ -2798,10 +2798,12 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
         default_source: patch.default_source ?? demoSearch.default_source,
         agent_roles: patch.agent_roles ?? demoSearch.agent_roles,
         web_search_enabled: patch.web_search_enabled ?? demoSearch.web_search_enabled,
-        deepseek_key_set: b.clear_key ? false : Boolean(b.api_key || demoSearch.deepseek_key_set) };
+        keys_set: { ...demoSearch.keys_set }, searxng_url: String(b.searxng_url ?? demoSearch.searxng_url), domain_filter: patch.domain_filter ?? demoSearch.domain_filter, proxy_set: b.clear_proxy ? false : Boolean(b.proxy || demoSearch.proxy_set) };
+      for (const [source, key] of Object.entries(b.api_keys ?? {})) if (key) demoSearch.keys_set[source as keyof typeof demoSearch.keys_set] = true;
+      for (const source of Array.isArray(b.clear_keys) ? b.clear_keys : []) demoSearch.keys_set[source as keyof typeof demoSearch.keys_set] = false;
       demoSearch.web_search_backend = demoSearch.default_source;
-      demoSearch.ready = demoSearch.deepseek_key_set || (demoSearch.default_source === "auto"
-        ? demoSearch.sources.some(s => s !== "deepseek") : demoSearch.default_source !== "deepseek");
+      const ready = (source: string) => ["exa", "duckduckgo"].includes(source) || (source === "searxng" ? !!demoSearch.searxng_url : !!demoSearch.keys_set[source as keyof typeof demoSearch.keys_set]);
+      demoSearch.ready = demoSearch.default_source === "auto" ? demoSearch.sources.some(ready) : ready(demoSearch.default_source);
       demoSearch.effective_agent_roles = demoSearch.web_search_enabled
         ? demoSearch.agent_roles.filter(role => ["planner","worker","mainagent"].includes(role) && demoSearch.ready) : [];
     }
@@ -3168,5 +3170,6 @@ export const mockFindingDeletionFeedback: {
 }[] = [];
 
 let demoSearch: WebSearchSettings = { sources:["deepseek"], default_source:"deepseek", web_search_backend:"deepseek",
-  web_search_enabled:false, agent_roles:[], effective_agent_roles:[], ready:false, credential_source:"", deepseek_key_set:false };
+  web_search_enabled:false, agent_roles:[], effective_agent_roles:[], ready:false, implementation:"pi-web-access", version:"0.48.0", keys_set:{}, searxng_url:"", domain_filter:[], proxy_set:false,
+  providers: ["deepseek","exa","brave","tavily","bocha","jina","searxng","duckduckgo"].map(id=>({id:id as WebSearchSettings["sources"][number],label:id,needs_key:!["exa","searxng","duckduckgo"].includes(id),supports_key:!["searxng","duckduckgo"].includes(id)})) };
 let httpEntrySettings = { enabled: false, username: "entry", password_set: false };

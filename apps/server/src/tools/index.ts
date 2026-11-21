@@ -1,7 +1,7 @@
 import { conversationDomainTools } from './conversations.js';
 import {askUserTool} from '../pi/human-input.js';
 import {trafficSearchTool} from './traffic-search.js';
-import {webSearchTool,webReadTool} from './web-search.js';
+import {webAccessTools} from './web-access.js';
 import {mergedAssetSearchTool as assetSearchTool} from './asset-search-compat.js';
 import { httpRequestTool } from "./evidence.js";
 import {contextSearchTool,contextGetTool} from './context-read.js';
@@ -20,7 +20,7 @@ import { graphOverviewTool } from "./overview.js";
 /** All implemented tools share one candidate inventory. User bindings decide
  * availability; task-dependent tools require a bound task, not a role name. */
 export function availableDomainTools(ctx: ToolRunContext, conversationOptions: Parameters<typeof conversationDomainTools>[2] = {}): ToolDefinition[] {
-  const tools: ToolDefinition[] = [askUserTool(), webSearchTool(ctx), webReadTool(ctx), contextGetTool(ctx),
+  const tools: ToolDefinition[] = [askUserTool(), ...webAccessTools(ctx), contextGetTool(ctx),
     ...conversationDomainTools(ctx, ctx.hooks.platform, conversationOptions)];
   if (ctx.taskID > 0 && ctx.expID > 0) tools.push(
     trafficSearchTool(ctx), contextSearchTool(ctx), graphOverviewTool(ctx, {forWorker: ctx.role === 'worker'}),

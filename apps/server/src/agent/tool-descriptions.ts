@@ -4,7 +4,6 @@ import {normalizeGoalProofInstructions} from './goal-proof-policy.js';
 import {FINDING_WRITE_GUIDANCE,isPreviousFindingDescription} from './finding-write-policy.js';
 import {describeToolContract,recognizedHistoricalDescription,mandatoryToolContract,PREVIOUS_REQUIRED_TOOL_CONTRACTS} from './tool-description-policy.js';
 import {CONSTRAINT_TOOL_DESCRIPTION} from './constraint-policy.js';
-import {WEB_SEARCH_DESCRIPTION,PREVIOUS_WEB_SEARCH_DESCRIPTION} from '../search/policy.js';
 import { LEGACY_TOOL_DESCRIPTIONS } from './prompt-legacy.js';
 import type {Database} from '../db/index.js';
 import {CONVERGENCE_ADD_INTENT_HINT,CONVERGENCE_PROVE_GOAL_HINT} from './planner-convergence.js';
@@ -70,6 +69,7 @@ const PREVIOUS_STEER_DESCRIPTION = '仅用结构化 correction 缩减原验收�
 const PREVIOUS_STEER_CONTRACT = ' stop_criteria 不传 fact_ids；reuse_evidence 必须传 fact_ids。仅支持这两种结构化纠偏，不能追加自由文本方法或替换业务目标。目标变化先 kill_work 确认结束，再 add_intent(replaces_intent_id)，使用新会话。原授权和禁止事项仍有效。';
 const PREVIOUS_FACT_DESCRIPTION = '保存新增事实，相关观察合并为同一结论。单条传 summary 等顶层字段；批量只传 facts 数组，不混用。asset_ids 仅列实际涉及资产，缺省不继承意图范围；scope 描述实际验证范围。核对逐项回执。';
 export function effectiveToolDescription(name: string, code: string, stored?: unknown): { description: string; source: string } {
+  if(['web_search','fetch_content','get_search_content'].includes(name)&&typeof stored==='string'&&stored.startsWith('pi-web-access '))stored=undefined;
   if(name==='steer_work'&&[PREVIOUS_STEER_DESCRIPTION,PREVIOUS_STEER_DESCRIPTION+PREVIOUS_STEER_CONTRACT].includes(String(stored)))stored=undefined;
   if(name==='add_intent'&&[PREVIOUS_INTENT_DESCRIPTION,PREVIOUS_INTENT_DESCRIPTION+' '+CONVERGENCE_ADD_INTENT_HINT].includes(String(stored)))stored=undefined;
   if(name==='add_intent'&&typeof stored==='string')stored=retireExplorationInstructions('add_intent',stored);
@@ -97,10 +97,8 @@ export function effectiveToolDescription(name: string, code: string, stored?: un
   const blackboardDefaults:Record<string,string>={record_fact:'Worker 暂存本意图的新事实或负面观察，最终 complete_intent 集中发布：summary 简述结论，evidence 保存真实证据，confidence 区分直接观察与推断。',report_finding:'提交本次已验证且可复现的漏洞和证据，Worker 先暂存，complete_intent 集中发布到探索图并连接资产。先 context_search 按 finding 类型 查重；疑似问题用事实记录。',checkpoint_intent:'阶段变化、连续操作或阻塞时保存当前意图进度、已尝试方法和下一步；进度不等于事实或完成。',complete_intent:'结束当前意图前保存逐项验收结果。criteria.index 从零开始，事实引用必须属于本意图；完整回答并有证据才 complete，否则 partial/blocked 并写 remaining。成功后停止操作。'};
   const retiredApprovalDefaults:Record<string,string>={"dispatch_intents": "请求宿主下发已有待执行意图，仅 Main 可用；不能绕过封禁或授权检查。", "insert_assets": "登记新资产及关系到资产图；登记不等于获准访问。探索结论使用 record_fact。", "set_constraints": "保存用户明确的允许或禁止约束，写明具体目标；约束不替代资产授权。"};
   const previous = stored===DIRECTION_PREVIOUS_TOOL_DESCRIPTIONS[name] || stored===PLANNER_RECALL_PREVIOUS[name] || name==='asset_search' && stored==='检索任务资产摘要，按 DSL 或未测条件分页' || name==='asset_get' && stored==='按资产 ID 和字段组读取详情' || name==='insert_assets' && stored==='登记新资产及关系到资产图，登记后可直接继续探索。探索结论使用 record_fact。' || stored===retiredApprovalDefaults[name] || name==='context_get' && stored===priorPagedDefault || stored===ARTEX_PREVIOUS_TOOL_DESCRIPTIONS[name] || stored===DIRECT_WRITE_PREVIOUS[name] || stored===priorDefaults[name] || stored===blackboardDefaults[name] || name === 'prove_goal' && stored === '用仍获授权的事实或漏洞证明目标；证据必须支持该目标，量化条件须核对实测值。';
-  const description = describeToolContract(name, name === 'web_search' ? WEB_SEARCH_DESCRIPTION : TOOL_DESCRIPTIONS[name] ?? code);
+  const description = describeToolContract(name, TOOL_DESCRIPTIONS[name] ?? code);
   if (name === 'tool_search' && stored === '按需发现已绑定工具；使用英文工具名或关键词') return {description, source: 'builtin'};
-  if (name === 'web_search' && ['DeepSeek 官方网络搜索',PREVIOUS_WEB_SEARCH_DESCRIPTION].includes(String(stored))) return {description, source: 'builtin'};
-  if (name === 'web_read' && stored === '读取公开技术文档正文') return {description, source: 'builtin'};
   if (typeof stored === 'string' && stored.trim() && stored !== description && stored !== LEGACY_TOOL_DESCRIPTIONS[name] && stored !== TOOL_DESCRIPTIONS[name] && !previous)
     return { description: mandatoryToolContract(name,normalizeGoalProofInstructions(stored)), source: 'custom' };
   return { description, source: 'builtin' };

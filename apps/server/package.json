@@ -29,6 +29,7 @@
     "https-proxy-agent": "9.1.0",
     "node-pty": "1.1.0",
     "pg": "^8.13.1",
+    "pi-web-access": "0.48.0",
     "socks-proxy-agent": "10.1.0",
     "tldts": "^7.4.18",
     "undici": "8.10.2"
